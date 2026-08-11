@@ -901,8 +901,8 @@ export function Notepad() {
   // Missing helper function
   const getAlbanianDateTime = () => {
     const d = new Date();
-    const day = String(d.getDate()).padStart(2, '0');
-    const month = String(d.getMonth() + 1).padStart(2, '0');
+    const day = d.getDate();
+    const month = d.getMonth() + 1;
     const year = d.getFullYear();
     const weekdays = [
       "E Diel",
@@ -914,7 +914,62 @@ export function Notepad() {
       "E Shtunë"
     ];
     const weekday = weekdays[d.getDay()];
-    return `${weekday} - ${day}/${month}/${year}`;
+    return `${day}/${month}/${year} ${weekday}`;
+  };
+  const renderAlbanianDateTime = () => {
+    const d = new Date();
+    const day = d.getDate();
+    const month = d.getMonth() + 1;
+    const year = d.getFullYear();
+    const weekdays = [
+      "E Diel",
+      "E Hënë",
+      "E Martë",
+      "E Mërkurë",
+      "E Enjte",
+      "E Premte",
+      "E Shtunë"
+    ];
+    const weekday = weekdays[d.getDay()];
+    return (
+      <span className="flex items-center gap-1 font-black tracking-wide" style={{ color: '#11ff00' }}>
+        <span>{day}</span>
+        <span className="opacity-40 font-normal">/</span>
+        <span>{month}</span>
+        <span className="opacity-40 font-normal">/</span>
+        <span>{year}</span>
+        <span className="opacity-40 font-normal mx-0.5">-</span>
+        <span>{weekday}</span>
+      </span>
+    );
+  };
+  const renderSplitDate = (dateVal: any) => {
+    if (!dateVal) return null;
+    const d = new Date(dateVal);
+    if (isNaN(d.getTime())) return null;
+    const day = d.getDate();
+    const month = d.getMonth() + 1;
+    const year = d.getFullYear();
+    const weekdays = [
+      "E Diel",
+      "E Hënë",
+      "E Martë",
+      "E Mërkurë",
+      "E Enjte",
+      "E Premte",
+      "E Shtunë"
+    ];
+    const weekday = weekdays[d.getDay()];
+    return (
+      <span className="inline-flex items-center gap-1 font-bold" style={{ color: '#11ff00' }}>
+        <span className="font-black">{day}</span>
+        <span className="opacity-40 font-normal">/</span>
+        <span className="font-bold">{month}</span>
+        <span className="opacity-40 font-normal">/</span>
+        <span className="font-semibold">{year}</span>
+        <span className="text-[10px] font-bold ml-1">{weekday}</span>
+      </span>
+    );
   };
   // Cell Long-Press / Hold refs and handlers
   const isLongPress = React.useRef<Record<number, boolean>>({});
@@ -5408,7 +5463,7 @@ Kthe VETËM JSON të vlefshëm pa koodblock markdown!`;
                     onClick={() => { setOnlineView(null); setSelectedOnlineDoc(null); setIsOnlineEditing(false); }}
                     className={`p-2 rounded-lg transition-colors flex items-center gap-1.5 text-xs font-bold border ${isDark ? "bg-zinc-800 border-zinc-700 hover:bg-zinc-700 text-zinc-200" : "bg-white border-zinc-200 hover:bg-zinc-50 text-zinc-700"}`}
                  >
-                    <ArrowLeft className="w-4 h-4 text-white font-bold" /> {t('Kthehu', 'Back')}
+                    <ArrowLeft className="w-4 h-4" /> {t('Kthehu', 'Back')}
                  </button>
                  <div className="flex flex-col">
                     <span className="text-sm font-extrabold flex items-center gap-1.5 uppercase tracking-wide">
@@ -5742,9 +5797,9 @@ Kthe VETËM JSON të vlefshëm pa koodblock markdown!`;
                                 <div className="pr-12">
                                    <h4 className="font-bold text-xs sm:text-sm line-clamp-1 pr-2">{d.title || "I paemërtuar"}</h4>
                                    <div className="text-[10px] mt-1.5 flex items-center justify-between text-zinc-500">
-                                      <span className="flex items-center gap-1">
-                                         <Calendar className="w-3 h-3" />
-                                         {safeFormatDate(d.createdAt, 'dd MMM yyyy')}
+                                      <span className="flex items-center gap-1" style={{ color: '#11ff00' }}>
+                                         <Calendar className="w-3 h-3" style={{ color: '#11ff00' }} />
+                                         {renderSplitDate(d.createdAt)}
                                       </span>
                                       <span>{d.rows?.length || 0} rreshta</span>
                                     </div>
@@ -5850,7 +5905,7 @@ Kthe VETËM JSON të vlefshëm pa koodblock markdown!`;
                                       <span className="px-1.5 py-0.5 text-[8px] font-extrabold rounded-full bg-accent-500/10 text-accent-500 border border-accent-500/20 uppercase">Online</span>
                                    </div>
                                    <div className="flex items-center gap-2 mt-0.5 text-[9px] text-zinc-500">
-                                      <span className="flex items-center gap-0.5"><Calendar className="w-3 h-3" /> {safeFormatDate(selectedOnlineDoc.createdAt, 'dd MMM yyyy')}</span>
+                                      <span className="flex items-center gap-0.5" style={{ color: '#11ff00' }}><Calendar className="w-3 h-3" style={{ color: '#11ff00' }} /> {renderSplitDate(selectedOnlineDoc.createdAt)}</span>
                                       <span>•</span>
                                       <span>{selectedOnlineDoc.rows?.length || 0} rreshta</span>
                                    </div>
@@ -8843,7 +8898,7 @@ Kthe VETËM JSON të vlefshëm pa koodblock markdown!`;
                                        <div className="flex-1">
                                           <h4 className={`font-bold ${textColor}`}>{docItem.title || 'I paemërtuar'}</h4>
                                           <div className={`text-xs mt-1 flex items-center gap-3 ${isDark ? "text-zinc-500" : "text-zinc-500"}`}>
-                                              <span className="flex items-center gap-1"><Calendar className="w-3 h-3" />{safeFormatDate(docItem.createdAt, 'dd MMM yyyy')}</span>
+                                              <span className="flex items-center gap-1" style={{ color: '#11ff00' }}><Calendar className="w-3 h-3" style={{ color: '#11ff00' }} />{renderSplitDate(docItem.createdAt)}</span>
                                               <span>•</span>
                                               <span>{docItem.rows?.length || 0} Rreshta</span>
                                               <span>•</span>
@@ -9028,7 +9083,7 @@ Kthe VETËM JSON të vlefshëm pa koodblock markdown!`;
                              <div className="flex-1">
                                 <h4 className={`font-bold ${textColor}`}>{cDoc.title}</h4>
                                 <div className={`text-xs mt-1 flex items-center gap-3 ${isDark ? "text-zinc-500": "text-zinc-500"}`}>
-                                   <span className="flex items-center gap-1"><Calendar className="w-3 h-3" />{safeFormatDate(cDoc.createdAt, 'dd MMM yyyy')}</span>
+                                   <span className="flex items-center gap-1" style={{ color: '#11ff00' }}><Calendar className="w-3 h-3" style={{ color: '#11ff00' }} />{renderSplitDate(cDoc.createdAt)}</span>
                                    <span>•</span>
                                    <span>{cDoc.rows?.length || 0} Rreshta</span>
                                    <span>•</span>
@@ -9892,11 +9947,9 @@ Kthe VETËM JSON të vlefshëm pa koodblock markdown!`;
                 >
                   <Cloud className="w-3.5 h-3.5" /> CLOUD
                 </button>
-                <button onClick={() => setAiChatModal(true)} className={`flex-1 flex justify-center items-center gap-1 px-1.5 py-1.5 text-xs font-bold rounded-xl transition-all active:scale-95 shadow-sm ${
-                  isDark ? "bg-purple-600 hover:bg-purple-500 text-white" : "bg-purple-500 hover:bg-purple-600 text-white"
-                }`}>
-                  <Sparkles className="w-3.5 h-3.5" /> AI Chat
-                </button>
+                <button onClick={() => setAiChatModal(true)} className={`flex-1 flex justify-center items-center gap-1 px-1.5 py-1.5 text-xs font-bold rounded-xl transition-all active:scale-95 shadow-sm bg-violet-600 hover:bg-violet-500 text-white shadow-violet-500/20`}>
+                   <Sparkles className="w-3.5 h-3.5 text-white animate-pulse" /> AI Chat
+                 </button>
              </div>
             
             {/* SEGMENTED TAB SELECTOR: LISTA OSE ETIKETA */}
@@ -10061,8 +10114,8 @@ Kthe VETËM JSON të vlefshëm pa koodblock markdown!`;
                                      )}
                                   </div>
                                   <div className={`flex flex-row flex-wrap items-center gap-x-2 gap-y-0.5 text-[10px] text-zinc-500`}>
-                                     <span className="flex items-center gap-0.5"><Calendar className="w-2.5 h-2.5 shrink-0" /> {safeFormatDate(doc.createdAt, 'dd MMM yyyy')}</span>
-                                     <span className="flex items-center gap-0.5"><Save className="w-2.5 h-2.5 shrink-0" /> {safeFormatDate(doc.updatedAt, 'HH:mm')}</span>
+                                     <span className="flex items-center gap-0.5" style={{ color: '#11ff00' }}><Calendar className="w-2.5 h-2.5 shrink-0" style={{ color: '#11ff00' }} /> {renderSplitDate(doc.createdAt)}</span>
+                                     <span className="flex items-center gap-0.5 text-zinc-400 dark:text-zinc-500"><Save className="w-2.5 h-2.5 shrink-0 text-zinc-500" /> <span style={{ color: '#38bdf8' }}>{safeFormatDate(doc.updatedAt, 'HH:mm')}</span></span>
                                   </div>
                                   {(doc.tags && doc.tags.length > 0) && (
                                     <div className="flex flex-wrap gap-1 mt-0.5">
@@ -10311,8 +10364,8 @@ Kthe VETËM JSON të vlefshëm pa koodblock markdown!`;
                                     <div className="flex flex-col flex-1 shadow-none min-w-0 pr-2 gap-0.5">
                                        <h3 className={`font-bold text-sm truncate ${textColor}`}>{doc.title}</h3>
                                        <div className={`flex flex-row flex-wrap items-center gap-x-2 gap-y-0.5 text-[10px] text-zinc-500`}>
-                                          <span className="flex items-center gap-0.5"><Calendar className="w-2.5 h-2.5 shrink-0" /> {safeFormatDate(doc.createdAt, 'dd MMM yyyy')}</span>
-                                          <span className="flex items-center gap-0.5"><Save className="w-2.5 h-2.5 shrink-0" /> {safeFormatDate(doc.updatedAt, 'HH:mm')}</span>
+                                          <span className="flex items-center gap-0.5" style={{ color: '#11ff00' }}><Calendar className="w-2.5 h-2.5 shrink-0" style={{ color: '#11ff00' }} /> {renderSplitDate(doc.createdAt)}</span>
+                                          <span className="flex items-center gap-0.5 text-zinc-400 dark:text-zinc-500"><Save className="w-2.5 h-2.5 shrink-0 text-zinc-500" /> <span style={{ color: '#38bdf8' }}>{safeFormatDate(doc.updatedAt, 'HH:mm')}</span></span>
                                        </div>
                                        {(doc.tags && doc.tags.length > 0) && (
                                           <div className="flex flex-wrap gap-1 mt-0.5">
@@ -10680,7 +10733,7 @@ Kthe VETËM JSON të vlefshëm pa koodblock markdown!`;
                     <Paintbrush className="w-4 h-4" />
                  </button>
                  {showThemeMenu && (
-                    <div className={`absolute left-0 md:left-1/2 md:-translate-x-1/2 top-full mt-2 p-2 rounded-xl border shadow-xl z-[150] flex flex-col gap-1.5 w-[220px] ${isDark ? "bg-zinc-900 border-zinc-800" : "bg-white border-zinc-200"}`}>
+                    <div className={`absolute right-0 md:right-auto md:left-1/2 md:-translate-x-1/2 top-full mt-2 p-2 rounded-xl border shadow-xl z-[150] flex flex-col gap-1.5 w-[220px] ${isDark ? "bg-zinc-900 border-zinc-800" : "bg-white border-zinc-200"}`}>
                        <div className="text-[10px] font-bold uppercase text-zinc-500 px-1 mb-1 border-b border-zinc-500/20 pb-1">{t('Ngjyra kryesore', 'Accent Color')}</div>
                        <div className="grid grid-cols-4 gap-1.5">
                           {(Object.keys(COLOR_THEMES) as Array<keyof typeof COLOR_THEMES>).map(c => (
@@ -10714,7 +10767,7 @@ Kthe VETËM JSON të vlefshëm pa koodblock markdown!`;
                   {showTextMenu && (
                      <>
                          <div className="fixed inset-0 z-[140]" onClick={() => setShowTextMenu(false)} />
-                         <div className={`absolute left-0 md:left-1/2 md:-translate-x-1/2 top-full mt-2 p-3 rounded-xl border shadow-xl z-[150] flex flex-col gap-3 w-[220px] ${isDark ? "bg-zinc-900 border-zinc-800" : "bg-white border-zinc-200"}`}>
+                         <div className={`absolute right-0 md:right-auto md:left-1/2 md:-translate-x-1/2 top-full mt-2 p-3 rounded-xl border shadow-xl z-[150] flex flex-col gap-3 w-[220px] ${isDark ? "bg-zinc-900 border-zinc-800" : "bg-white border-zinc-200"}`}>
                             <div className="flex flex-col gap-1.5">
                                <div className={`flex justify-between text-xs font-bold ${isDark ? 'text-zinc-400' : 'text-zinc-600'}`}>
                                    <span>{t('Zmadhim', 'Zoom')}</span>
@@ -10748,7 +10801,7 @@ Kthe VETËM JSON të vlefshëm pa koodblock markdown!`;
                   {showTextColorMenu && (
                      <>
                          <div className="fixed inset-0 z-[140]" onClick={() => setShowTextColorMenu(false)} />
-                         <div className={`absolute left-0 md:left-1/2 md:-translate-x-1/2 top-full mt-2 p-2 rounded-xl border shadow-xl z-[150] flex flex-col gap-1.5 w-[200px] ${isDark ? "bg-zinc-900 border-zinc-800" : "bg-white border-zinc-200"}`}>
+                         <div className={`absolute right-0 md:right-auto md:left-1/2 md:-translate-x-1/2 top-full mt-2 p-2 rounded-xl border shadow-xl z-[150] flex flex-col gap-1.5 w-[200px] ${isDark ? "bg-zinc-900 border-zinc-800" : "bg-white border-zinc-200"}`}>
                             <div className="text-[10px] font-bold uppercase text-zinc-500 px-1 mb-1 border-b border-zinc-500/20 pb-1">{t('Zgjidh Ngjyrën', 'Choose Color')}</div>
                             <div className="grid grid-cols-4 gap-1.5">
                                {TEXT_COLORS.map(c => (
@@ -10773,7 +10826,7 @@ Kthe VETËM JSON të vlefshëm pa koodblock markdown!`;
                  {showTagColorMenu && (
                      <>
                          <div className="fixed inset-0 z-[140]" onClick={() => setShowTagColorMenu(false)}></div>
-                         <div className={`absolute left-0 md:left-1/2 md:-translate-x-1/2 top-full mt-2 p-2 rounded-xl border shadow-xl z-[150] flex flex-col gap-1.5 w-[200px] ${isDark ? "bg-zinc-900 border-zinc-800" : "bg-white border-zinc-200"}`}>
+                         <div className={`absolute right-0 md:right-auto md:left-1/2 md:-translate-x-1/2 top-full mt-2 p-2 rounded-xl border shadow-xl z-[150] flex flex-col gap-1.5 w-[200px] ${isDark ? "bg-zinc-900 border-zinc-800" : "bg-white border-zinc-200"}`}>
                              <div className="text-[10px] font-bold uppercase text-zinc-500 px-1 mb-1 border-b border-zinc-500/20 pb-1">{t('Etiketë me Ngjyrë', 'Color Tag')}</div>
                              <div className="grid grid-cols-4 gap-1.5">
                                 {TAG_COLORS.map(c => (
@@ -10829,9 +10882,9 @@ Kthe VETËM JSON të vlefshëm pa koodblock markdown!`;
                  <Plus className="w-3.5 h-3.5" />
               </button>
 
-              <span className="text-[11px] font-black tracking-wide flex items-center gap-1.5 px-3 py-1.5 rounded-xl border border-blue-500 bg-blue-500/10 text-blue-400 dark:text-blue-300 shadow-[0_0_12px_rgba(59,130,246,0.35)] animate-pulse whitespace-nowrap shrink-0 h-9">
-                 <Calendar className="w-4 h-4 text-blue-400 dark:text-blue-300" />
-                 {getAlbanianDateTime()}
+              <span className="text-[11px] font-black tracking-wide flex items-center gap-1.5 px-3 py-1.5 rounded-xl border border-emerald-500 bg-emerald-500/10 shadow-[0_0_12px_rgba(17,255,0,0.35)] animate-pulse whitespace-nowrap shrink-0 h-9" style={{ color: '#11ff00', borderColor: '#11ff00' }}>
+                 <Calendar className="w-4 h-4" style={{ color: '#11ff00' }} />
+                 {renderAlbanianDateTime()}
               </span>
            </div>
          </div>
