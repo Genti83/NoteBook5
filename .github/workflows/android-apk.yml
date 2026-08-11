@@ -1,0 +1,213 @@
+name: Build Android APK
+
+on:
+  push:
+    branches: [ "main", "master" ]
+  pull_request:
+    branches: [ "main", "master" ]
+  workflow_dispatch:
+    inputs:
+      build_type:
+        description: 'Lloji i ndërtimit (debug, release, both)'
+        required: true
+        default: 'debug'
+        type: choice
+        options:
+          - 'debug'
+          - 'release'
+          - 'both'
+      build_bundle:
+        description: 'Gjenero edhe Android App Bundle (.aab) për Google Play'
+        required: false
+        default: false
+        type: boolean
+      gemini_api_key:
+        description: 'Gemini API Key (Opsionale: nëse nuk është vendosur te Repository Secrets)'
+        required: false
+        type: string
+
+jobs:
+  build:
+    name: Build Android App
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+
+    steps:
+      - name: Checkout Repository
+        uses: actions/checkout@v4
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+          cache: 'npm'
+
+      - name: Install Dependencies
+        run: npm ci || npm install
+
+      - name: Build Web App
+        env:
+          VITE_GEMINI_API_KEY: ${{ github.event.inputs.gemini_api_key || secrets.VITE_GEMINI_API_KEY || secrets.GEMINI_API_KEY || vars.VITE_GEMINI_API_KEY || '' }}
+          GEMINI_API_KEY: ${{ github.event.inputs.gemini_api_key || secrets.GEMINI_API_KEY || secrets.VITE_GEMINI_API_KEY || vars.GEMINI_API_KEY || '' }}
+        run: npm run build
+
+      - name: Add Android Platform
+        run: |
+          if [ ! -d "android" ]; then
+            npx cap add android
+          elif [ ! -f "android/gradlew" ]; then
+            echo "Drejtoria android ekziston por mungon gradlew. Po gjenerojmë wrapper-in e Gradle..."
+            cd android
+            gradle wrapper --gradle-version 8.5 || gradle wrapper || echo "Dështoi krijimi i gradle wrapper!"
+            cd ..
+          fi
+
+      - name: Sync Capacitor
+        run: npx cap sync android
+
+      - name: Generate google-services.json if missing
+        run: |
+          mkdir -p android/app
+          if [ ! -f "android/app/google-services.json" ]; then
+            echo '{
+              "project_info": {
+                "project_number": "763941768009",
+                "project_id": "gen-lang-client-0285886461",
+                "storage_bucket": "gen-lang-client-0285886461.firebasestorage.app"
+              },
+              "client": [
+                {
+                  "client_info": {
+                    "mobilesdk_app_id": "1:763941768009:android:a9f760da30e951bae1e898",
+                    "android_client_info": {
+                      "package_name": "com.notebook3.app"
+                    }
+                  },
+                  "oauth_client": [
+                    {
+                      "client_id": "763941768009-56j7cf164lf54kabjjin37nj7d4cmp98.apps.googleusercontent.com",
+                      "client_type": 3
+                    }
+                  ],
+                  "api_key": [
+                    {
+                      "current_key": "AIzaSyCADU2_rCXNhN4sDUjZAYgXbG8v_bQpRCI"
+                    }
+                  ],
+                  "services": {
+                    "appinvite_service": {
+                      "status": 1
+                    }
+                  }
+                }
+              ],
+              "configuration_version": "1"
+            }' > android/app/google-services.json
+            echo "Successfully generated google-services.json for Firebase compilation!"
+          else
+            echo "google-services.json already exists!"
+          fi
+
+      - name: Setup Java JDK 21
+        uses: actions/setup-java@v4
+        with:
+          distribution: 'zulu'
+          java-version: '21'
+
+      - name: Setup Gradle
+        uses: gradle/actions/setup-gradle@v3
+
+      - name: Build Android App (APK/AAB)
+        working-directory: ./android
+        run: |
+          chmod +x gradlew
+          
+          # Përcakto vlerat e paracaktura
+          BUILD_TYPE="debug"
+          BUILD_BUNDLE="false"
+          
+          # Ndrysho vlerat nëse thirret në mënyrë manuale (workflow_dispatch)
+          if [ "${{ github.event_name }}" = "workflow_dispatch" ]; then
+            if [ -n "${{ github.event.inputs.build_type }}" ] && [ "${{ github.event.inputs.build_type }}" != "null" ]; then
+              BUILD_TYPE="${{ github.event.inputs.build_type }}"
+            fi
+            if [ -n "${{ github.event.inputs.build_bundle }}" ] && [ "${{ github.event.inputs.build_bundle }}" != "null" ]; then
+              BUILD_BUNDLE="${{ github.event.inputs.build_bundle }}"
+            fi
+          fi
+          
+          echo "========================================="
+          echo " Ngjarja nxitëse: ${{ github.event_name }}"
+          echo " Lloji i ndërtimit: $BUILD_TYPE"
+          echo " Android App Bundle (AAB): $BUILD_BUNDLE"
+          echo "========================================="
+          
+          if [ "$BUILD_TYPE" = "debug" ] || [ "$BUILD_TYPE" = "both" ]; then
+            echo "--- Po ndërtohet Debug APK ---"
+            ./gradlew assembleDebug --no-daemon --stacktrace
+          fi
+          
+          if [ "$BUILD_TYPE" = "release" ] || [ "$BUILD_TYPE" = "both" ]; then
+            echo "--- Po ndërtohet Release APK ---"
+            ./gradlew assembleRelease --no-daemon --stacktrace
+            
+            if [ "$BUILD_BUNDLE" = "true" ]; then
+              echo "--- Po ndërtohet Release AAB Bundle ---"
+              ./gradlew bundleRelease --no-daemon --stacktrace
+            fi
+          fi
+
+      - name: Collect and List Generated Artifacts
+        run: |
+          echo "=== PO GRUMBULLOJMË SKEDARËT APK DHE AAB ==="
+          mkdir -p artifacts
+          find android/app/build/outputs/ -type f \( -name "*.apk" -o -name "*.aab" \) -exec cp -v {} artifacts/ \; || echo "Nuk u gjet asnjë skedar ose pati gabim gjatë kopjimit!"
+          echo "=== PËRMBAJTJA E DIREKTORISË ARTIFACTS ==="
+          ls -la artifacts/ || echo "Direktoria artifacts është bosh!"
+          echo "========================================"
+
+      - name: Upload Built Artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: NoteBook3-Android-Builds
+          path: artifacts/
+          if-no-files-found: warn
+
+      - name: Create or Update GitHub Release
+        if: github.event_name == 'push' && (github.ref == 'refs/heads/main' || github.ref == 'refs/heads/master')
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          echo "Po përgatitet publikimi i APK-së në GitHub Releases..."
+          
+          # Delete existing 'latest-apk' release and tag locally and remotely if they exist
+          gh release delete latest-apk --yes || true
+          git push --delete origin latest-apk || true
+          git tag -d latest-apk || true
+          
+          # Sleep briefly to ensure GitHub API processes the deletion
+          sleep 3
+          
+          # Find existing files to attach from flat artifacts directory
+          FILES_TO_UPLOAD=""
+          for f in artifacts/*; do
+            if [ -f "$f" ]; then
+              FILES_TO_UPLOAD="$FILES_TO_UPLOAD $f"
+            fi
+          done
+
+          echo "Skedarët që do të ngarkohen: $FILES_TO_UPLOAD"
+
+          if [ -n "$FILES_TO_UPLOAD" ]; then
+            gh release create latest-apk \
+              --title "Bllok Shënimesh - Android App APK (Latest Build)" \
+              --notes "Ky është versioni më i fundit i aplikacionit NoteBook për Android (APK) i ndërtuar automatikisht nga GitHub Actions. Shkarkoni 'app-debug.apk' ose skedarët e tjerë më poshtë për ta instaluar direkt në telefonin tuaj." \
+              --prerelease \
+              $FILES_TO_UPLOAD || echo "Gabim gjatë krijimit të release, po vazhdojmë..."
+          else
+            echo "Nuk u gjet asnjë skedar për të ngarkuar në Release!"
+          fi
+
+
+

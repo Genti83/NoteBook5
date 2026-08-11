@@ -1,0 +1,256 @@
+import { FirebaseAuthentication } from '@capacitor-firebase/authentication';
+import { signInWithCredential } from 'firebase/auth';
+import { useState, useEffect } from 'react';
+import { auth, db } from '../lib/firebase';
+import { 
+  onAuthStateChanged, 
+  User, 
+  signInWithPopup, 
+  GoogleAuthProvider, 
+  signInWithEmailAndPassword, 
+  createUserWithEmailAndPassword, 
+  signOut as firebaseSignOut,
+  getRedirectResult,
+  signInWithRedirect,
+  setPersistence,
+  browserLocalPersistence,
+  signInAnonymously,
+  sendPasswordResetEmail
+} from 'firebase/auth';
+import { Capacitor } from '@capacitor/core';
+
+// Helper to log errors
+export const addDebugLog = (msg: string) => {
+  try {
+    const logs = JSON.parse(localStorage.getItem('grid_notepad_debug_logs') || '[]');
+    logs.unshift(`[${new Date().toISOString()}] ${msg}`);
+    if (logs.length > 50) logs.length = 50;
+    localStorage.setItem('grid_notepad_debug_logs', JSON.stringify(logs));
+    window.dispatchEvent(new Event('debug-log-updated'));
+  } catch(e) {}
+};
+
+export function useFirebase() {
+  const [user, setUser] = useState<User | null>(null);
+  const [loading, setLoading] = useState(true);
+
+  useEffect(() => {
+    addDebugLog('useFirebase Init - Platform: ' + Capacitor.getPlatform());
+    
+    let unsubscribe = () => {};
+    
+    // Forcojme ruajtjen e sesionit (LOCAL persistence)
+    setPersistence(auth, browserLocalPersistence)
+      .then(() => {
+         addDebugLog('Persistence set to browserLocal');
+         unsubscribe = onAuthStateChanged(auth, (currentUser) => {
+           setUser(currentUser);
+           setLoading(false);
+           if (currentUser) {
+              if (currentUser.email) {
+                localStorage.setItem('grid_notepad_saved_email', currentUser.email);
+                if (currentUser.email.endsWith('@quicklogin.local')) {
+                   localStorage.setItem('grid_notepad_logged_in_provider', 'anonymous');
+                } else {
+                   const currProv = localStorage.getItem('grid_notepad_logged_in_provider');
+                   if (currProv !== 'email') {
+                      localStorage.setItem('grid_notepad_logged_in_provider', 'google');
+                   }
+                }
+              }
+            }
+            addDebugLog('Auth state changed. User: ' + (currentUser ? currentUser.email : 'null'));
+         }, (err) => {
+           addDebugLog('Auth state error: ' + err.message);
+           setLoading(false);
+         });
+      })
+      .catch((err) => {
+         addDebugLog("Persistence setup issue: " + err.message);
+         // Fallback anyway
+         unsubscribe = onAuthStateChanged(auth, (currentUser) => {
+           setUser(currentUser);
+           setLoading(false);
+         });
+      });
+
+    // Handle any redirect results if they came back from a mobile redirect flow
+    getRedirectResult(auth).then((result) => {
+      if (result && result.user) {
+        addDebugLog('Redirect auth success: ' + result.user.email);
+        setUser(result.user);
+      }
+    }).catch((err) => {
+      addDebugLog("Redirect auth error: " + err.message);
+    });
+
+    return () => unsubscribe();
+  }, []);
+
+  const loginWithGoogle = async () => {
+    try {
+      if (Capacitor.isNativePlatform()) {
+          addDebugLog('Starting Native Google Login');
+          try {
+             const result = await FirebaseAuthentication.signInWithGoogle();
+             if (result.credential?.idToken) {
+                 const credential = GoogleAuthProvider.credential(result.credential.idToken);
+                 const res = await signInWithCredential(auth, credential);
+                 addDebugLog('Native login success: ' + res.user.email);
+                 localStorage.setItem('grid_notepad_logged_in_provider', 'google');
+                 return res.user;
+             } else {
+                 throw new Error("No idToken returned from Google");
+             }
+          } catch(nativeErr: any) {
+             addDebugLog('Native plugin failed (' + nativeErr.message + '), falling back to web popup...');
+             const provider = new GoogleAuthProvider();
+             provider.setCustomParameters({ prompt: 'select_account' });
+             try {
+                const res = await signInWithPopup(auth, provider);
+                addDebugLog('Fallback popup login success: ' + res.user.email);
+                localStorage.setItem('grid_notepad_logged_in_provider', 'google');
+                return res.user;
+             } catch (popupErr: any) {
+                addDebugLog('Fallback popup failed in native app: ' + popupErr.message);
+                throw new Error("Nëse jeni në APK (Android), hyrja me Google kërkon shfletuesin Chrome. Për të qëndruar brenda aplikacionit APK, përdorni hyrjen me Email/Password!");
+             }
+          }
+      } else {
+          addDebugLog('Starting Web Google Login (Redirect)');
+          const provider = new GoogleAuthProvider();
+          provider.setCustomParameters({ prompt: 'select_account' });
+          
+          try {
+             // We use popup first, but if it fails (like auth/popup-blocked), we use redirect
+             const res = await signInWithPopup(auth, provider);
+             addDebugLog('Popup login success: ' + res.user.email);
+             localStorage.setItem('grid_notepad_logged_in_provider', 'google');
+             return res.user;
+          } catch (popupErr: any) {
+             if (popupErr.code === 'auth/popup-blocked' || popupErr.code === 'auth/popup-closed-by-user' || popupErr.message.includes('popup')) {
+                 addDebugLog('Popup failed, trying redirect...');
+                 await signInWithRedirect(auth, provider);
+                 return null;
+             }
+             throw popupErr;
+          }
+      }
+    } catch(err: any) {
+      addDebugLog('Google Login Exception: ' + err.message);
+      const msg = (err.message || '').toLowerCase();
+      if (msg.includes('unauthorized-domain') || msg.includes('unauthorized domain') || msg.includes('action is invalid') || msg.includes('requested action is invalid') || err.code === 'auth/unauthorized-domain') {
+          err.code = 'auth/unauthorized-domain';
+      }
+      throw err;
+    }
+  };
+
+  const loginWithEmail = async (email: string, password: string) => {
+    try {
+      addDebugLog('Starting Email Login for: ' + email);
+      const res = await signInWithEmailAndPassword(auth, email, password);
+      addDebugLog('Email Login Success: ' + res.user.uid);
+      localStorage.setItem('grid_notepad_logged_in_provider', 'email');
+      return res.user;
+    } catch(err: any) {
+      addDebugLog('Email Login Failed: ' + err.message + ' (code: ' + err.code + ')');
+      throw err;
+    }
+  };
+
+  const registerWithEmail = async (email: string, password: string) => {
+    try {
+      addDebugLog('Starting Email Register for: ' + email);
+      const res = await createUserWithEmailAndPassword(auth, email, password);
+      addDebugLog('Email Register Success: ' + res.user.uid);
+      localStorage.setItem('grid_notepad_logged_in_provider', 'email');
+      return res.user;
+    } catch(err: any) {
+      addDebugLog('Email Register Failed: ' + err.message + ' (code: ' + err.code + ')');
+      throw err;
+    }
+  };
+
+  const loginAnonymously = async () => {
+    try {
+      addDebugLog('Starting Anonymous Cloud Login');
+      const res = await signInAnonymously(auth);
+      addDebugLog('Anonymous Cloud Login Success: ' + res.user.uid);
+      localStorage.setItem('grid_notepad_logged_in_provider', 'anonymous');
+      return res.user;
+    } catch(err: any) {
+      addDebugLog('Anonymous Cloud Login Failed: ' + err.message + ' (code: ' + err.code + ')');
+      
+      const isRestricted = err.code === 'auth/admin-restricted-operation' || 
+                          err.code === 'auth/operation-not-allowed' ||
+                          err.message?.toLowerCase().includes('disabled') ||
+                          err.message?.toLowerCase().includes('not enabled') ||
+                          err.message?.toLowerCase().includes('restricted');
+                          
+      if (isRestricted) {
+         addDebugLog('Anonymous provider is disabled on Firebase Console. Activating robust silent guest fallback...');
+         let guestEmail = localStorage.getItem('grid_notepad_guest_email');
+         let guestPwd = localStorage.getItem('grid_notepad_guest_pwd');
+         
+         if (!guestEmail || !guestPwd) {
+            const randId = Math.floor(100000 + Math.random() * 900000);
+            guestEmail = `guest_${randId}@quicklogin.local`;
+            guestPwd = `GuestPass_${randId}!`;
+         }
+         
+         try {
+            addDebugLog('Registering silent guest user: ' + guestEmail);
+            const res = await createUserWithEmailAndPassword(auth, guestEmail, guestPwd);
+            localStorage.setItem('grid_notepad_guest_email', guestEmail!);
+            localStorage.setItem('grid_notepad_guest_pwd', guestPwd!);
+            localStorage.setItem('grid_notepad_logged_in_provider', 'anonymous');
+            addDebugLog('Silent guest register success: ' + res.user.uid);
+            return res.user;
+         } catch(regErr: any) {
+            if (regErr.code === 'auth/email-already-in-use') {
+               addDebugLog('Silent guest already exists. Logging in: ' + guestEmail);
+               const res = await signInWithEmailAndPassword(auth, guestEmail!, guestPwd!);
+               localStorage.setItem('grid_notepad_guest_email', guestEmail!);
+               localStorage.setItem('grid_notepad_guest_pwd', guestPwd!);
+               localStorage.setItem('grid_notepad_logged_in_provider', 'anonymous');
+               addDebugLog('Silent guest login success: ' + res.user.uid);
+               return res.user;
+            }
+            throw regErr;
+         }
+      }
+      throw err;
+    }
+  };
+
+  const logout = async () => {
+    addDebugLog('Logging out');
+    localStorage.removeItem('grid_notepad_logged_in_provider');
+    localStorage.removeItem('grid_notepad_saved_pwd');
+    localStorage.removeItem('grid_notepad_guest_pwd');
+    await firebaseSignOut(auth);
+  };
+
+  const resetPassword = async (email: string) => {
+    try {
+      addDebugLog('Starting Password Reset for: ' + email);
+      await sendPasswordResetEmail(auth, email);
+      addDebugLog('Password Reset Email Sent successfully');
+    } catch(err: any) {
+      addDebugLog('Password Reset Failed: ' + err.message + ' (code: ' + err.code + ')');
+      throw err;
+    }
+  };
+
+  return {
+    user,
+    loading,
+    loginWithGoogle,
+    loginWithEmail,
+    registerWithEmail,
+    loginAnonymously,
+    logout,
+    resetPassword
+  };
+}
