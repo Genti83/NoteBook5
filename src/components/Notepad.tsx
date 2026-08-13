@@ -1618,6 +1618,7 @@ const handleSaveLabelModal = () => {
   const [aiChatImage, setAiChatImage] = useState<string | null>(null);
   const [pendingAiChanges, setPendingAiChanges] = useState<{ documentId: string, newHeaders: string[], newColumnWidths?: number[], newRows: GridRow[] } | null>(null);
   const [pendingAiActions, setPendingAiActions] = useState<any[]>([]);
+  const [aiPreviewDoc, setAiPreviewDoc] = useState<any | null>(null);
   const [aiChatAudio, setAiChatAudio] = useState<string | null>(null);
   const [isRecordingMime, setIsRecordingMime] = useState(false);
   const mediaRecorderRef = useRef<MediaRecorder | null>(null);
@@ -2182,7 +2183,153 @@ Kthe VETËM JSON të vlefshëm pa koodblock markdown!`;
      setPendingAiActions([]);
   };
 
-  const exportChatResponseToPdf = () => {
+    const exportAiPreviewCsv = (docToExport: any) => {
+    if (!docToExport) return;
+    const headerLine = docToExport.headers.join(',');
+    const rowLines = docToExport.rows.map((r: any) => {
+      return docToExport.headers.map((_: any, idx: number) => {
+        const val = r[`col${idx + 1}`] || r.cells?.[idx] || '';
+        return `"${val.toString().replace(/"/g, '""')}"`;
+      }).join(',');
+    });
+    const csvContent = [headerLine, ...rowLines].join('\n');
+    const blob = new Blob([csvContent], { type: 'text/csv;charset=utf-8;' });
+    const url = URL.createObjectURL(blob);
+    const link = document.createElement('a');
+    link.href = url;
+    link.setAttribute('download', `${docToExport.title || 'AI_Parapamje'}.csv`);
+    document.body.appendChild(link);
+    link.click();
+    document.body.removeChild(link);
+    showToast("CSV u shkarkua me sukses!");
+  };
+
+  const exportAiPreviewTxt = (docToExport: any) => {
+    if (!docToExport) return;
+    const rowLines = docToExport.rows.map((r: any, rIdx: number) => {
+      const cells = docToExport.headers.map((h: string, idx: number) => {
+        return `${h}: ${r[`col${idx + 1}`] || r.cells?.[idx] || ''}`;
+      }).join(' | ');
+      return `${rIdx + 1}. ${cells}`;
+    });
+    const txtContent = [`Titulli: ${docToExport.title || 'AI Parapamje'}`, `Data: ${new Date().toLocaleDateString()}`, '', ...rowLines].join('\n');
+    const blob = new Blob([txtContent], { type: 'text/plain;charset=utf-8;' });
+    const url = URL.createObjectURL(blob);
+    const link = document.createElement('a');
+    link.href = url;
+    link.setAttribute('download', `${docToExport.title || 'AI_Parapamje'}.txt`);
+    document.body.appendChild(link);
+    link.click();
+    document.body.removeChild(link);
+    showToast("TXT u shkarkua me sukses!");
+  };
+
+  const exportAiPreviewPdf = (docToExport: any) => {
+    if (!docToExport) return;
+    const pdfDoc = new jsPDF();
+    const pageWidth = 210;
+    const margin = 10;
+    const printableWidth = pageWidth - (margin * 2);
+    const rowNumWidth = 10;
+    const tableWidth = printableWidth - rowNumWidth;
+    let y = 15;
+
+    pdfDoc.setFontSize(16);
+    pdfDoc.setFont("helvetica", "bold");
+    pdfDoc.setTextColor(30, 41, 59);
+    pdfDoc.text(docToExport.title || "Parapamje AI", margin, y);
+
+    y += 6;
+    pdfDoc.setFontSize(9);
+    pdfDoc.setFont("helvetica", "normal");
+    pdfDoc.setTextColor(100, 116, 139);
+    const dateStr = format(new Date(), 'dd.MM.yyyy HH:mm');
+    pdfDoc.text(`Parapamje e Detajuar AI • Gjeneruar më: ${dateStr}`, margin, y);
+
+    y += 4;
+    pdfDoc.setDrawColor(226, 232, 240);
+    pdfDoc.setLineWidth(0.5);
+    pdfDoc.line(margin, y, pageWidth - margin, y);
+    y += 8;
+
+    const actualWidths = docToExport.headers.map(() => 150);
+    const sumWidths = actualWidths.reduce((a: number, b: number) => a + b, 0) || 1;
+    const pdfColWidths = actualWidths.map((w: number) => (w / sumWidths) * tableWidth);
+
+    const drawTableHeader = () => {
+      pdfDoc.setFillColor(241, 245, 249);
+      pdfDoc.rect(margin, y, printableWidth, 8, "F");
+      pdfDoc.setFontSize(9);
+      pdfDoc.setFont("helvetica", "bold");
+      pdfDoc.setTextColor(51, 65, 85);
+      pdfDoc.text("Nr.", margin + 2, y + 5.5);
+      let currentX = margin + rowNumWidth;
+
+      pdfDoc.setDrawColor(203, 213, 225);
+      pdfDoc.setLineWidth(0.2);
+      pdfDoc.line(currentX, y, currentX, y + 8);
+      docToExport.headers.forEach((h: string, idx: number) => {
+        const colW = pdfColWidths[idx];
+        pdfDoc.text(h, currentX + 2, y + 5.5);
+        currentX += colW;
+        if (idx < docToExport.headers.length - 1) {
+          pdfDoc.line(currentX, y, currentX, y + 8);
+        }
+      });
+      pdfDoc.setDrawColor(203, 213, 225);
+      pdfDoc.setLineWidth(0.3);
+      pdfDoc.line(margin, y + 8, margin + printableWidth, y + 8);
+      pdfDoc.line(margin, y, margin + printableWidth, y);
+      pdfDoc.line(margin, y, margin, y + 8);
+      pdfDoc.line(margin + printableWidth, y, margin + printableWidth, y + 8);
+      y += 8;
+    };
+
+    drawTableHeader();
+
+    docToExport.rows.forEach((r: any, rIdx: number) => {
+      const cellTexts = docToExport.headers.map((_: any, idx: number) => {
+        const val = (r[`col${idx + 1}`] || r.cells?.[idx] || '').toString();
+        return pdfDoc.splitTextToSize(val, pdfColWidths[idx] - 4);
+      });
+      const maxLines = Math.max(1, ...cellTexts.map((lines: any) => lines.length));
+      let rowHeight = Math.max(8, maxLines * 4.5 + 3.5);
+
+      if (y + rowHeight > 280) {
+        pdfDoc.addPage();
+        y = 15;
+        drawTableHeader();
+      }
+
+      pdfDoc.setFillColor(255, 255, 255);
+      pdfDoc.rect(margin, y, printableWidth, rowHeight, "F");
+      pdfDoc.setFontSize(8.5);
+      pdfDoc.setFont("helvetica", "normal");
+      pdfDoc.setTextColor(51, 65, 85);
+      pdfDoc.text(`${rIdx + 1}`, margin + 2, y + 5.5);
+
+      let currentX = margin + rowNumWidth;
+      docToExport.headers.forEach((_: any, idx: number) => {
+        const colW = pdfColWidths[idx];
+        const lines = cellTexts[idx];
+        lines.forEach((line: string, lineIdx: number) => {
+          const lineY = y + 5.5 + (lineIdx * 4.5);
+          pdfDoc.text(line, currentX + 2, lineY);
+        });
+        currentX += colW;
+      });
+
+      pdfDoc.setDrawColor(226, 232, 240);
+      pdfDoc.setLineWidth(0.2);
+      pdfDoc.line(margin, y + rowHeight, margin + printableWidth, y + rowHeight);
+      y += rowHeight;
+    });
+
+    pdfDoc.save(`${docToExport.title || 'AI_Parapamje'}.pdf`);
+    showToast("PDF u shkarkua me sukses!");
+  };
+
+const exportChatResponseToPdf = () => {
     if (!aiChatResponse) {
        showToast("Nuk ka përgjigje nga AI për t'u shkarkuar!");
        return;
@@ -8169,7 +8316,273 @@ Kthe VETËM JSON të vlefshëm pa koodblock markdown!`;
             </div>
          </div>
       )}
-      {/* DOCUMENT FULLVIEW MODAL */}
+            {/* AI DOCUMENT PREVIEW MODAL */}
+      {aiPreviewDoc && (
+         <div className="fixed inset-0 z-[115] flex flex-col items-center justify-start bg-black/85 p-2 sm:p-6 animate-in fade-in overflow-y-auto">
+            {/* Top Toolbar / Action Bar */}
+            <div className="w-full max-w-4xl flex items-center justify-between gap-3 bg-zinc-900 border border-zinc-800 p-4 rounded-t-2xl shadow-lg shrink-0 mt-2">
+               <div className="flex items-center gap-2">
+                  <div className="w-2.5 h-2.5 rounded-full bg-emerald-500 animate-pulse" />
+                  <span className="text-xs font-black text-emerald-400 uppercase tracking-widest">Parashikim i Hollësishëm AI (Faqe PDF)</span>
+               </div>
+               <div className="flex items-center gap-2">
+                  <button 
+                     onClick={() => {
+                        const newDocId = `doc-${Date.now()}-${Math.random().toString(36).substr(2, 9)}`;
+                        const finalTitle = aiPreviewDoc.title || `Bllok i Ri AI`;
+                        const newDoc = {
+                           id: newDocId,
+                           title: finalTitle,
+                           headers: aiPreviewDoc.headers || ["Data", "Emri", "Sasia (kg)", "Cmimi", "Vlera"],
+                           columnWidths: aiPreviewDoc.columnWidths || [120, 200, 100, 100, 150],
+                           rows: aiPreviewDoc.rows.map((r, idx) => {
+                              const rowObj = { id: r.id || `r-${idx}-${Date.now()}`, status: r.status || 'none' };
+                              aiPreviewDoc.headers.forEach((_, cIdx) => {
+                                 rowObj[`col${cIdx + 1}`] = r[`col${cIdx + 1}`] || r.cells?.[cIdx] || '';
+                              });
+                              return rowObj;
+                           }),
+                           createdAt: new Date().toISOString(),
+                           updatedAt: new Date().toISOString()
+                        };
+                        
+                        setDocuments(prevDocs => {
+                           const next = [...prevDocs, newDoc];
+                           localStorage.setItem('grid_notepad_documents_v2', JSON.stringify(next));
+                           syncWithGoogleCloud(next, true);
+                           return next;
+                        });
+                        
+                        setActiveDocId(newDocId);
+                        setHeaders(newDoc.headers);
+                        setColumnWidths(newDoc.columnWidths);
+                        setRows(newDoc.rows);
+                        setTitle(newDoc.title);
+                        setAiPreviewDoc(null);
+                        setAiChatModal(false);
+                        showToast(`✨ U ruajt dhe u hap në Notebook: "${finalTitle}"!`);
+                     }}
+                     className="h-8 px-3 bg-emerald-600 hover:bg-emerald-500 text-white font-bold text-[11px] rounded-lg flex items-center gap-1 active:scale-95 transition-all shadow"
+                  >
+                     <Save className="w-3.5 h-3.5" /> Ruaj & Zbato
+                  </button>
+                  <button onClick={() => setAiPreviewDoc(null)} className="p-1.5 rounded-lg bg-zinc-800 text-zinc-400 hover:text-red-500 transition-colors">
+                     <X className="w-4 h-4" />
+                  </button>
+               </div>
+            </div>
+
+            {/* Main Sheet Container */}
+            <div className="w-full max-w-4xl bg-zinc-950 p-4 sm:p-6 border-x border-b border-zinc-800 flex flex-col gap-5 overflow-visible">
+               
+               {/* Calculations / Stats */}
+               {(() => {
+                  const calcs = (() => {
+                     const list = [];
+                     if (!aiPreviewDoc.headers || !aiPreviewDoc.rows) return list;
+                     aiPreviewDoc.headers.forEach((h, idx) => {
+                        const hLower = h.toLowerCase();
+                        const isNumericHeader = hLower.includes('sasi') || hLower.includes('cmim') || hLower.includes('çmim') || hLower.includes('vler') || hLower.includes('lek') || hLower.includes('euro') || hLower.includes('kg') || hLower.includes('ark') || hLower.includes('pun') || hLower.includes('dit') || hLower.includes('litr') || hLower.includes('cop');
+                        if (isNumericHeader) {
+                           let sum = 0;
+                           let count = 0;
+                           aiPreviewDoc.rows.forEach((r) => {
+                              const rawVal = r[`col${idx + 1}`] || r.cells?.[idx];
+                              if (rawVal !== undefined && rawVal !== null) {
+                                 const cleaned = rawVal.toString().replace(/[^\d.-]/g, '');
+                                 const val = parseFloat(cleaned);
+                                 if (!isNaN(val)) {
+                                    sum += val;
+                                    count++;
+                                 }
+                              }
+                           });
+                           if (count > 0) {
+                              list.push({
+                                 header: h,
+                                 sum: sum.toFixed(2).replace(/\.00$/, ''),
+                                 avg: (sum / count).toFixed(2).replace(/\.00$/, ''),
+                                 count
+                              });
+                           }
+                        }
+                     });
+                     return list;
+                  })();
+
+                  if (calcs.length === 0) return null;
+                  return (
+                     <div className="grid grid-cols-2 sm:grid-cols-3 md:grid-cols-4 gap-2 shrink-0">
+                        {calcs.map((c, i) => (
+                           <div key={i} className="p-2.5 rounded-lg border border-zinc-800 bg-zinc-900/60 flex flex-col gap-0.5">
+                              <span className="text-[9px] uppercase font-bold text-zinc-400 tracking-wider">Kalkulim: {c.header}</span>
+                              <div className="flex items-baseline justify-between gap-1">
+                                 <span className="text-sm font-black text-emerald-400">{c.sum}</span>
+                                 <span className="text-[9px] text-zinc-500">Mes: {c.avg}</span>
+                              </div>
+                           </div>
+                        ))}
+                     </div>
+                  );
+               })()}
+
+               {/* Realistic Printed PDF Sheet (White Page Paper Look) */}
+               <div className="w-full bg-white text-zinc-900 rounded-xl shadow-2xl border border-zinc-300 p-6 sm:p-12 font-sans select-none overflow-x-auto">
+                  <div className="min-w-[600px] flex flex-col gap-4">
+                     {/* Letterhead */}
+                     <div className="flex flex-col gap-1">
+                        <h2 className="text-2xl font-black text-[#1e293b] tracking-wider uppercase">
+                           {aiPreviewDoc.title || "ANESTI PAPAXHI"}
+                        </h2>
+                        <div className="flex justify-between items-center text-[10px] text-zinc-500 font-semibold border-b border-zinc-300 pb-2">
+                           <span>Lista e Shënimeve të Detajuara • Parapamje AI</span>
+                           <span>Gjeneruar më: {format(new Date(), 'dd.MM.yyyy HH:mm')}</span>
+                        </div>
+                     </div>
+
+                     {/* The Paper Table */}
+                     <div className="border border-[#cbd5e1] rounded overflow-hidden">
+                        <table className="w-full text-left text-[11px] border-collapse">
+                           <thead>
+                              <tr className="bg-[#f1f5f9] border-b border-[#cbd5e1]">
+                                 <th className="p-2 border-r border-[#cbd5e1] font-bold text-[#334155] uppercase tracking-wider w-10 text-center">Nr.</th>
+                                 {aiPreviewDoc.headers.map((h, idx) => (
+                                    <th key={idx} className="p-2 border-r border-[#cbd5e1] last:border-r-0 font-bold text-[#334155] uppercase tracking-wider">{h}</th>
+                                 ))}
+                              </tr>
+                           </thead>
+                           <tbody>
+                              {aiPreviewDoc.rows.map((r, rIdx) => {
+                                 const isGreen = r.status === 'ok';
+                                 const isBlue = r.status === 'blue';
+                                 const isYellow = r.status === 'yellow';
+                                 const isRed = r.status === 'x';
+                                 
+                                 let rowBg = 'bg-white';
+                                 let rowTextColor = 'text-zinc-800 font-medium';
+                                 let textDecoration = '';
+                                 
+                                 if (isGreen) {
+                                    rowBg = 'bg-[#e2f0d9]'; // Perfect light pastel green from user's image
+                                    rowTextColor = 'text-green-950 font-bold';
+                                 } else if (isBlue) {
+                                    rowBg = 'bg-[#cff4fc]'; // Cool pastel blue
+                                    rowTextColor = 'text-blue-950 font-bold';
+                                 } else if (isYellow) {
+                                    rowBg = 'bg-[#fff2cc]'; // Pastel yellow from image
+                                    rowTextColor = 'text-amber-950 font-bold';
+                                 } else if (isRed) {
+                                    rowBg = 'bg-[#fce4d6]'; // Pastel red/pink peach from image
+                                    rowTextColor = 'text-red-900/80 line-through decoration-red-600 decoration-2 font-bold';
+                                 }
+                                 
+                                 return (
+                                    <tr key={rIdx} className={`border-b border-[#cbd5e1] last:border-b-0 ${rowBg} ${rowTextColor} transition-colors`}>
+                                       <td className="p-2 border-r border-[#cbd5e1] text-center font-mono text-zinc-500 bg-zinc-50/50">{rIdx + 1}</td>
+                                       {aiPreviewDoc.headers.map((_, cIdx) => {
+                                          const val = r[`col${cIdx + 1}`] || r.cells?.[cIdx] || '';
+                                          return (
+                                             <td key={cIdx} className="p-2 border-r border-[#cbd5e1] last:border-r-0 whitespace-pre-line leading-relaxed">
+                                                {val}
+                                             </td>
+                                          );
+                                       })}
+                                    </tr>
+                                 );
+                              })}
+                           </tbody>
+                        </table>
+                     </div>
+
+                     {/* Footer notes */}
+                     <div className="flex justify-between items-center text-[9px] text-zinc-400 font-medium pt-3 mt-2 border-t border-dashed border-zinc-200">
+                        <span>Bllok Shënimesh Pro • AI Smart Export Engine</span>
+                        <span>Faqja 1/1</span>
+                     </div>
+                  </div>
+               </div>
+
+               {/* Bottom Quick Downloads */}
+               <div className="flex justify-between items-center pt-2 flex-wrap gap-2 shrink-0 border-t border-zinc-800">
+                  <div className="flex items-center gap-1.5">
+                     <button
+                        type="button"
+                        onClick={() => exportAiPreviewPdf(aiPreviewDoc)}
+                        className="h-8 px-3.5 bg-red-600 hover:bg-red-500 text-white font-bold text-xs rounded-xl flex items-center gap-1.5 active:scale-95 transition-all shadow-md"
+                     >
+                        <FileText className="w-3.5 h-3.5" /> Shkarko PDF
+                     </button>
+                     <button
+                        type="button"
+                        onClick={() => exportAiPreviewCsv(aiPreviewDoc)}
+                        className="h-8 px-3.5 bg-blue-600 hover:bg-blue-500 text-white font-bold text-xs rounded-xl flex items-center gap-1.5 active:scale-95 transition-all shadow-md"
+                     >
+                        <FileSpreadsheet className="w-3.5 h-3.5" /> Shkarko CSV
+                     </button>
+                     <button
+                        type="button"
+                        onClick={() => exportAiPreviewTxt(aiPreviewDoc)}
+                        className="h-8 px-3.5 bg-zinc-700 hover:bg-zinc-600 text-white font-bold text-xs rounded-xl flex items-center gap-1.5 active:scale-95 transition-all shadow-md"
+                     >
+                        <File className="w-3.5 h-3.5" /> Shkarko TXT
+                     </button>
+                  </div>
+
+                  <div className="flex items-center gap-2">
+                     <button
+                        type="button"
+                        onClick={() => {
+                           const newDocId = `doc-${Date.now()}-${Math.random().toString(36).substr(2, 9)}`;
+                           const finalTitle = aiPreviewDoc.title || `Bllok i Ri AI`;
+                           const newDoc = {
+                              id: newDocId,
+                              title: finalTitle,
+                              headers: aiPreviewDoc.headers || ["Data", "Emri", "Sasia (kg)", "Cmimi", "Vlera"],
+                              columnWidths: aiPreviewDoc.columnWidths || [120, 200, 100, 100, 150],
+                              rows: aiPreviewDoc.rows.map((r, idx) => {
+                                 const rowObj = { id: r.id || `r-${idx}-${Date.now()}`, status: r.status || 'none' };
+                                 aiPreviewDoc.headers.forEach((_, cIdx) => {
+                                    rowObj[`col${cIdx + 1}`] = r[`col${cIdx + 1}`] || r.cells?.[cIdx] || '';
+                                 });
+                                 return rowObj;
+                              }),
+                              createdAt: new Date().toISOString(),
+                              updatedAt: new Date().toISOString()
+                           };
+                           
+                           setDocuments(prevDocs => {
+                              const next = [...prevDocs, newDoc];
+                              localStorage.setItem('grid_notepad_documents_v2', JSON.stringify(next));
+                              syncWithGoogleCloud(next, true);
+                              return next;
+                           });
+                           
+                           setActiveDocId(newDocId);
+                           setHeaders(newDoc.headers);
+                           setColumnWidths(newDoc.columnWidths);
+                           setRows(newDoc.rows);
+                           setTitle(newDoc.title);
+                           setAiPreviewDoc(null);
+                           setAiChatModal(false);
+                           showToast(`✨ U ruajt dhe u hap në Notebook: "${finalTitle}"!`);
+                        }}
+                        className="h-8 px-4 bg-emerald-600 hover:bg-emerald-500 text-white font-bold text-xs rounded-xl flex items-center gap-1.5 active:scale-95 transition-all shadow"
+                     >
+                        <Save className="w-3.5 h-3.5" /> Ruaj & Hap në Notebook
+                     </button>
+                     <button
+                        type="button"
+                        onClick={() => setAiPreviewDoc(null)}
+                        className="h-8 px-4 font-bold text-xs rounded-xl border border-zinc-700 bg-zinc-800 hover:bg-zinc-700 text-zinc-300 active:scale-95 transition-all"
+                     >
+                        Mbyll
+                     </button>
+                  </div>
+               </div>
+            </div>
+         </div>
+      )}
+{/* DOCUMENT FULLVIEW MODAL */}
       {fullViewDoc && (
          <div className="fixed inset-0 z-[120] flex flex-col bg-zinc-950 text-white p-4 sm:p-6 animate-in fade-in overflow-hidden">
             <div className="flex justify-between items-center border-b border-zinc-800 pb-4 mb-4">
@@ -8298,6 +8711,22 @@ Kthe VETËM JSON të vlefshëm pa koodblock markdown!`;
                 </div>
                 <div className="flex items-center gap-2">
                    <button
+                      onClick={() => {
+                         setAiPreviewDoc({
+                            id: activeDocId || 'active-preview',
+                            title: title || 'Bllok Shënimesh',
+                            headers: headers || ["Data", "Emri", "Sasia (kg)", "Cmimi", "Vlera"],
+                            columnWidths: columnWidths || [120, 200, 100, 100, 150],
+                            rows: rows || []
+                         });
+                      }}
+                      className="text-[11px] px-2.5 py-1 bg-indigo-600 hover:bg-indigo-500 text-white font-bold rounded-lg flex items-center gap-1 active:scale-95 transition-all shadow"
+                      title="Hap Parapamjen e Hollësishme në format PDF (Faqe)"
+                   >
+                      <Eye className="w-3.5 h-3.5" /> Parapamje Faqe
+                   </button>
+
+                   <button
                       onClick={() => setShowKeyConfig(!showKeyConfig)}
                       className={`text-[11px] px-2.5 py-1 rounded-lg border font-semibold flex items-center gap-1.5 transition-all ${
                          userGeminiKey ? 'bg-emerald-500/10 text-emerald-500 border-emerald-500/30' : 'bg-amber-500/10 text-amber-500 border-amber-500/30 hover:bg-amber-500/20'
@@ -8362,15 +8791,43 @@ Kthe VETËM JSON të vlefshëm pa koodblock markdown!`;
                           <div className="whitespace-pre-wrap">{aiChatResponse}</div>
                        </div>
                        
-                       <div className="flex items-center justify-between gap-2 flex-wrap">
-                          <button
-                             type="button"
-                             onClick={exportChatResponseToPdf}
-                             className="px-3.5 py-1.5 bg-accent-600 hover:bg-accent-500 text-white font-bold text-xs rounded-lg flex items-center gap-1.5 shadow"
-                          >
-                             <FileText className="w-4 h-4 animate-bounce" /> Shkarko Planin si PDF
-                          </button>
-                       </div>
+                        <div className="flex items-center justify-between gap-2 flex-wrap border-t border-zinc-700/30 pt-2 mt-1">
+                           <button
+                              type="button"
+                              onClick={exportChatResponseToPdf}
+                              className="h-8 px-3 bg-indigo-600/20 hover:bg-indigo-600 text-indigo-400 hover:text-white font-bold text-[11px] rounded-lg flex items-center gap-1 transition-all shadow"
+                              title="Shkarko përgjigjen e plotë të AI si PDF"
+                           >
+                              <Sparkles className="w-3.5 h-3.5" /> Plan si PDF
+                           </button>
+                           
+                           <div className="flex items-center gap-1">
+                              <button
+                                 type="button"
+                                 onClick={exportPdf}
+                                 className="h-8 px-2.5 bg-red-600 hover:bg-red-500 text-white font-bold text-[11px] rounded-lg flex items-center gap-1 active:scale-95 transition-all shadow"
+                                 title="Shkarko Bllokun Aktiv si PDF"
+                              >
+                                 <FileText className="w-3.5 h-3.5" /> PDF
+                              </button>
+                              <button
+                                 type="button"
+                                 onClick={exportCsv}
+                                 className="h-8 px-2.5 bg-blue-600 hover:bg-blue-500 text-white font-bold text-[11px] rounded-lg flex items-center gap-1 active:scale-95 transition-all shadow"
+                                 title="Shkarko Bllokun Aktiv si CSV"
+                              >
+                                 <FileSpreadsheet className="w-3.5 h-3.5" /> CSV
+                              </button>
+                              <button
+                                 type="button"
+                                 onClick={exportTxt}
+                                 className="h-8 px-2.5 bg-zinc-600 hover:bg-zinc-500 text-white font-bold text-[11px] rounded-lg flex items-center gap-1 active:scale-95 transition-all shadow"
+                                 title="Shkarko Bllokun Aktiv si TXT"
+                              >
+                                 <File className="w-3.5 h-3.5" /> TXT
+                              </button>
+                           </div>
+                        </div>
 
                        {pendingAiActions && pendingAiActions.length > 0 && (
                           <div className={`p-4 rounded-xl border flex flex-col gap-3 shadow-lg ${isDark ? "bg-zinc-900 border-yellow-500/30 text-zinc-300" : "bg-yellow-50/50 border-yellow-400/50 text-zinc-700"}`}>
@@ -8427,6 +8884,25 @@ Kthe VETËM JSON të vlefshëm pa koodblock markdown!`;
                                 >
                                    Refuzo
                                 </button>
+                                 <button
+                                    type="button"
+                                    onClick={() => {
+                                       const act = pendingAiActions.find(a => a.type === 'CREATE_DOCUMENT' || a.type === 'UPDATE_DOCUMENT_ROWS');
+                                       if (act) {
+                                          setAiPreviewDoc({
+                                             id: act.documentId || 'ai-proposed',
+                                             title: act.title || 'Parapamje Shënimesh AI',
+                                             headers: act.headers || act.newHeaders || ["Data", "Emri", "Sasia (kg)", "Cmimi", "Vlera"],
+                                             rows: act.rows || act.newRows || []
+                                          });
+                                       } else {
+                                          showToast("Nuk ka ndonjë tabelë të re për parashikim.");
+                                       }
+                                    }}
+                                    className="px-3 py-1.5 text-xs font-bold rounded-lg bg-indigo-600 hover:bg-indigo-500 text-white shadow flex items-center gap-1 active:scale-95 transition-all"
+                                 >
+                                    <Eye className="w-3.5 h-3.5" /> Parapamje
+                                 </button>
                                 <button
                                    onClick={executePendingAiActions}
                                    className="px-3.5 py-1.5 text-xs font-bold rounded-lg bg-emerald-600 hover:bg-emerald-500 text-white shadow"
@@ -8445,6 +8921,21 @@ Kthe VETËM JSON të vlefshëm pa koodblock markdown!`;
                        
                        <div className="flex flex-col gap-2 mt-4">
                           <span className={`text-xs font-semibold uppercase tracking-wider ${isDark ? "text-zinc-500" : "text-zinc-400"}`}>{t('Sugjerime të Shpejta', 'Quick Suggestions')}</span>
+                          <button 
+                             type="button"
+                             onClick={() => {
+                                setAiPreviewDoc({
+                                   id: activeDocId || 'active-preview',
+                                   title: title || 'Bllok Shënimesh',
+                                   headers: headers || ["Data", "Emri", "Sasia (kg)", "Cmimi", "Vlera"],
+                                   columnWidths: columnWidths || [120, 200, 100, 100, 150],
+                                   rows: rows || []
+                                });
+                             }}
+                             className={`w-full text-left p-3 rounded-lg text-sm transition-colors border font-bold flex items-center gap-2 ${isDark ? "bg-indigo-950/20 border-indigo-500/30 text-indigo-400 hover:bg-indigo-900/40" : "bg-indigo-50 border-indigo-200 hover:bg-indigo-100 text-indigo-900"}`}
+                          >
+                             👁️ {t('Parashiko Bllokun Aktiv si Faqe PDF', 'Preview Active Block as PDF Page')}
+                          </button>
                           <button 
                              onClick={() => {
                                  setAiChatInput('Të lutem analizo këtë bllok dhe më nxirr një raport të plotë bazuar në të dhënat që përmban.');
@@ -9925,31 +10416,36 @@ Kthe VETËM JSON të vlefshëm pa koodblock markdown!`;
          </div>
          
          <div className={`px-4 py-2 border-b flex flex-col gap-2 ${isDark ? "border-zinc-800 bg-zinc-900/50" : "border-zinc-200 bg-zinc-50/80"}`}>
-            <div className="flex flex-row gap-2 w-full items-center pb-0.5">
-               <button onClick={exportAllPdf} className={`flex-1 flex justify-center items-center gap-1 px-1.5 py-1.5 text-xs font-bold rounded-xl transition-all active:scale-95 shadow-sm ${
+            <div className="flex flex-row gap-1.5 w-full items-center pb-0.5">
+               <button onClick={exportAllPdf} className={`flex-1 flex justify-center items-center gap-1 px-1 py-1.5 text-[11px] sm:text-xs font-bold rounded-xl transition-all active:scale-95 shadow-sm h-9 whitespace-nowrap ${
                  isDark ? "bg-red-600 hover:bg-red-500 text-white" : "bg-red-500 hover:bg-red-600 text-white"
                }`}>
-                 <FolderDown className="w-3.5 h-3.5" /> PDF
+                 <FolderDown className="w-3.5 h-3.5 shrink-0" /> PDF
                </button>
-               <button onClick={() => executeProtectedAction(() => setBlueModal(true))} className={`flex-1 flex justify-center items-center gap-1 px-1.5 py-1.5 text-xs font-bold rounded-xl transition-all active:scale-95 shadow-sm ${
+               <button onClick={() => executeProtectedAction(() => setBlueModal(true))} className={`flex-1 flex justify-center items-center gap-1 px-1 py-1.5 text-[11px] sm:text-xs font-bold rounded-xl transition-all active:scale-95 shadow-sm h-9 whitespace-nowrap ${
                  isDark ? "bg-blue-600 hover:bg-blue-500 text-white" : "bg-blue-500 hover:bg-blue-600 text-white"
                }`}>
-                 <Lock className="w-3.5 h-3.5" /> Sekrete
+                 <Lock className="w-3.5 h-3.5 shrink-0" /> Sekrete
                </button>
                <button 
                   onClick={() => {
                      executeProtectedAction(() => setShowCloudSelectionModal(true));
                   }} 
-                  className={`flex-1 flex justify-center items-center gap-1 px-1.5 py-1.5 text-xs font-bold rounded-xl transition-all active:scale-95 shadow-sm ${
+                  className={`flex-1 flex justify-center items-center gap-1 px-1 py-1.5 text-[11px] sm:text-xs font-bold rounded-xl transition-all active:scale-95 shadow-sm h-9 whitespace-nowrap ${
                     isDark ? "bg-green-600 hover:bg-green-500 text-white" : "bg-green-500 hover:bg-green-600 text-white"
                   }`}
                   title="Zgjidhni platformën Cloud Firebase ose Gist"
                 >
-                  <Cloud className="w-3.5 h-3.5" /> CLOUD
+                  <Cloud className="w-3.5 h-3.5 shrink-0" /> CLOUD
                 </button>
-                <button onClick={() => setAiChatModal(true)} className={`flex-1 flex justify-center items-center gap-1 px-1.5 py-1.5 text-xs font-bold rounded-xl transition-all active:scale-95 shadow-sm bg-violet-600 hover:bg-violet-500 text-white shadow-violet-500/20`}>
-                   <Sparkles className="w-3.5 h-3.5 text-white animate-pulse" /> AI Chat
-                 </button>
+                <button 
+                   onClick={() => setAiChatModal(true)} 
+                   className={`flex-1 flex justify-center items-center gap-1 px-1 py-1.5 text-[11px] sm:text-xs font-bold rounded-xl transition-all active:scale-95 shadow-sm h-9 whitespace-nowrap ${
+                     isDark ? "bg-violet-600 hover:bg-violet-500 text-white shadow-violet-500/20" : "bg-violet-500 hover:bg-violet-600 text-white shadow-violet-500/10"
+                   }`}
+                >
+                  <Sparkles className="w-3.5 h-3.5 text-white animate-pulse shrink-0" /> AI Chat
+                </button>
              </div>
             
             {/* SEGMENTED TAB SELECTOR: LISTA OSE ETIKETA */}

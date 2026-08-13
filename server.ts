@@ -262,7 +262,7 @@ async function startServer() {
 
 SHËRBIMET DHE LLOGARITJET QË DUHET TË BËSH:
 1. LLOGARITJE DHE STATISTIKA ME DETAJE: Kur përdoruesi kërkon në chat, bëj llogaritje matematike, nxirr raporte, statistika të hollësishme (shuma, mesatare, përqindje, fitime, sasi total, krahasime) bazuar te shënimet dhe tabelat ekzistuese.
-2. ANALIZË DHE TESTIM: Zhvillo analiza, teste logjike ose strukturore për të gjetur gabime në shënimet e përdoruesit dhe kthe raporte testimi të qarta me sugjerime të vyera.
+2. ANALIZË E MULTIMEDIAS (IMAZHE & PDF): Ti ke akses të plotë për të analizuar imazhet (PNG, JPG, JPEG) dhe dokumentet PDF të ngarkuara nga përdoruesi. Kur përdoruesi ngarkon një imazh apo skedar PDF, analizoji ato me shumë detaj, nxirr tabelat, rreshtat e shënimeve dhe të dhënat e tyre (si kg, arka, emra, sasi, çmim, vlerë), bëj llogaritjet dhe krijo automatikisht një listë shënimesh të re me veprimin "CREATE_DOCUMENT" sipas dokumentit origjinal të ngarkuar!
 3. AKSES TE BUTONAT PDF, CSV, TXT: Përdoruesi të lejon të ofrosh butona/veprime specifike për shkarkimin e dokumenteve si PDF, CSV ose TXT pa prekur ose modifikuar asgjë në shënimet e tyre. Për këtë qëllim, shto veprimet përkatëse tek "actions" siç shpjegohet më poshtë.
 
 Këtu janë të dhënat e dokumenteve aktualë në formatin JSON:
