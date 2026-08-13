@@ -3687,7 +3687,7 @@ const exportChatResponseToPdf = () => {
        setDocuments(parsedDocs);
        
        const lastActiveDocId = localStorage.getItem('grid_notepad_active_doc_id');
-       if (lastActiveDocId) {
+       if (false && lastActiveDocId) { // Gid: Always start on main list
           const matchedDoc = parsedDocs.find((d: any) => d.id === lastActiveDocId);
           if (matchedDoc) {
              setActiveDocId(matchedDoc.id);
@@ -8711,19 +8711,16 @@ const exportChatResponseToPdf = () => {
                 </div>
                 <div className="flex items-center gap-2">
                    <button
-                      onClick={() => {
-                         setAiPreviewDoc({
-                            id: activeDocId || 'active-preview',
-                            title: title || 'Bllok Shënimesh',
-                            headers: headers || ["Data", "Emri", "Sasia (kg)", "Cmimi", "Vlera"],
-                            columnWidths: columnWidths || [120, 200, 100, 100, 150],
-                            rows: rows || []
-                         });
-                      }}
-                      className="text-[11px] px-2.5 py-1 bg-indigo-600 hover:bg-indigo-500 text-white font-bold rounded-lg flex items-center gap-1 active:scale-95 transition-all shadow"
-                      title="Hap Parapamjen e Hollësishme në format PDF (Faqe)"
+                      id="ai-chat-back-btn"
+                      onClick={() => setAiChatModal(false)}
+                      className={`text-[11px] px-2.5 py-1.5 rounded-lg border font-bold flex items-center gap-1.5 active:scale-95 transition-all ${
+                         isDark 
+                            ? 'bg-zinc-800 hover:bg-zinc-700 text-zinc-300 border-zinc-700/60' 
+                            : 'bg-zinc-100 hover:bg-zinc-200 text-zinc-700 border-zinc-300'
+                      }`}
+                      title="Kthehu në Notebook"
                    >
-                      <Eye className="w-3.5 h-3.5" /> Parapamje Faqe
+                      <ArrowLeft className="w-3.5 h-3.5" /> Kthehu
                    </button>
 
                    <button
@@ -8921,21 +8918,6 @@ const exportChatResponseToPdf = () => {
                        
                        <div className="flex flex-col gap-2 mt-4">
                           <span className={`text-xs font-semibold uppercase tracking-wider ${isDark ? "text-zinc-500" : "text-zinc-400"}`}>{t('Sugjerime të Shpejta', 'Quick Suggestions')}</span>
-                          <button 
-                             type="button"
-                             onClick={() => {
-                                setAiPreviewDoc({
-                                   id: activeDocId || 'active-preview',
-                                   title: title || 'Bllok Shënimesh',
-                                   headers: headers || ["Data", "Emri", "Sasia (kg)", "Cmimi", "Vlera"],
-                                   columnWidths: columnWidths || [120, 200, 100, 100, 150],
-                                   rows: rows || []
-                                });
-                             }}
-                             className={`w-full text-left p-3 rounded-lg text-sm transition-colors border font-bold flex items-center gap-2 ${isDark ? "bg-indigo-950/20 border-indigo-500/30 text-indigo-400 hover:bg-indigo-900/40" : "bg-indigo-50 border-indigo-200 hover:bg-indigo-100 text-indigo-900"}`}
-                          >
-                             👁️ {t('Parashiko Bllokun Aktiv si Faqe PDF', 'Preview Active Block as PDF Page')}
-                          </button>
                           <button 
                              onClick={() => {
                                  setAiChatInput('Të lutem analizo këtë bllok dhe më nxirr një raport të plotë bazuar në të dhënat që përmban.');
