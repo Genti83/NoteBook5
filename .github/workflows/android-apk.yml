@@ -201,8 +201,8 @@ jobs:
 
           if [ -n "$FILES_TO_UPLOAD" ]; then
             gh release create latest-apk \
-              --title "Bllok Shënimesh - Android App APK (Latest Build)" \
-              --notes "Ky është versioni më i fundit i aplikacionit NoteBook për Android (APK) i ndërtuar automatikisht nga GitHub Actions. Shkarkoni 'app-debug.apk' ose skedarët e tjerë më poshtë për ta instaluar direkt në telefonin tuaj." \
+              --title "NoteBook3 - Android App APK (Latest Build)" \
+              --notes "Ky është versioni më i fundit i aplikacionit NoteBook3 për Android (APK) i ndërtuar automatikisht nga GitHub Actions. Shkarkoni 'app-debug.apk' ose skedarët e tjerë më poshtë për ta instaluar direkt në telefonin tuaj." \
               --prerelease \
               $FILES_TO_UPLOAD || echo "Gabim gjatë krijimit të release, po vazhdojmë..."
           else
