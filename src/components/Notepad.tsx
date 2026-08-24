@@ -93,16 +93,24 @@ interface LabelScrollingTextProps {
 }
 const LabelScrollingText: React.FC<LabelScrollingTextProps> = ({ label, textColor }) => {
   const containerRef = React.useRef<HTMLDivElement>(null);
-  const textRef = React.useRef<HTMLSpanElement>(null);
   const [isOverflowing, setIsOverflowing] = React.useState<boolean>(false);
 
   React.useEffect(() => {
     const container = containerRef.current;
-    const text = textRef.current;
-    if (!container || !text) return;
+    if (!container) return;
     const checkOverflow = () => {
-      const textWidth = text.getBoundingClientRect().width;
+      const testSpan = document.createElement('span');
+      testSpan.style.visibility = 'hidden';
+      testSpan.style.position = 'absolute';
+      testSpan.style.whiteSpace = 'nowrap';
+      testSpan.className = 'text-xs sm:text-sm font-extrabold';
+      testSpan.innerText = label;
+      document.body.appendChild(testSpan);
+      
+      const textWidth = testSpan.getBoundingClientRect().width;
       const containerWidth = container.getBoundingClientRect().width;
+      
+      document.body.removeChild(testSpan);
       setIsOverflowing(textWidth > containerWidth);
     };
     checkOverflow();
@@ -130,13 +138,13 @@ const LabelScrollingText: React.FC<LabelScrollingTextProps> = ({ label, textColo
       )}
       {isOverflowing ? (
         <div className="w-full overflow-hidden whitespace-nowrap relative">
-          <div className="inline-block animate-marquee-8s whitespace-nowrap font-extrabold text-xs sm:text-sm">
-            <span ref={textRef} className={`pr-6 ${textColor}`}>{label}</span>
+          <div className="inline-block animate-marquee-slow whitespace-nowrap font-extrabold text-xs sm:text-sm">
+            <span className={`pr-6 ${textColor}`}>{label}</span>
             <span className={`pr-6 ${textColor}`}>{label}</span>
           </div>
         </div>
       ) : (
-        <span ref={textRef} className={`text-xs sm:text-sm font-extrabold block ${textColor}`} title={label}>
+        <span className={`text-xs sm:text-sm font-extrabold block truncate ${textColor}`} title={label}>
           {label}
         </span>
       )}
@@ -766,7 +774,7 @@ export function Notepad() {
     setOnlineView('gist');
     setOnlineDashboardTab('lists');
   };
-  const saveToGist = async (docsOverride?: any, isSilent = false, blueTextOverride?: string, secretListOverride?: any[]) => {
+  const saveToGist = async (docsOverride?: any, isSilent = false, blueTextOverride?: string, secretListOverride?: any[], customLabelsOverride?: string[]) => {
       const token = gistToken || localStorage.getItem('grid_notepad_gist_token');
       if (!token) {
         if (!isSilent) showToast("Ju lutem vendosni një GitHub Token");
@@ -777,10 +785,12 @@ export function Notepad() {
           const docsToBackup = docsOverride || documents;
           const finalBlueText = blueTextOverride !== undefined ? blueTextOverride : onlineBlueText;
           const finalSecretList = secretListOverride !== undefined ? secretListOverride : onlineSecretList;
+          const finalCustomLabels = customLabelsOverride !== undefined ? customLabelsOverride : customLabels;
           const backupData = {
             documents: docsToBackup,
             blueText: finalBlueText,
-            secretList: finalSecretList
+            secretList: finalSecretList,
+            customLabels: finalCustomLabels
           };
           const content = JSON.stringify(backupData);
           let method = 'POST';
@@ -853,6 +863,10 @@ export function Notepad() {
               setOnlineSecretList(parsedData.secretList);
               setSecretList(parsedData.secretList);
               localStorage.setItem('grid_notepad_secret_list', JSON.stringify(parsedData.secretList));
+            }
+            if (parsedData.customLabels !== undefined) {
+              setCustomLabels(parsedData.customLabels);
+              localStorage.setItem('customLabels', JSON.stringify(parsedData.customLabels));
             }
           }
           setDocuments(parsedDocs);
@@ -4570,11 +4584,17 @@ const exportChatResponseToPdf = () => {
   };
   const exportLocalBackup = async () => {
     try {
-       const dataStr = JSON.stringify(documents, null, 2);
+       const backupData = {
+          documents,
+          customLabels,
+          blueText,
+          secretList
+       };
+       const dataStr = JSON.stringify(backupData, null, 2);
        const dataBlob = new Blob([dataStr], { type: 'application/json' });
-       const filename = `GridNotepad_Backup_${format(new Date(), 'yyyy-MM-dd_HH-mm')}.json`;
+       const filename = `NoteBook3_Backup_${format(new Date(), 'yyyy-MM-dd_HH-mm')}.json`;
        
-       await handleDownload(dataBlob, filename, 'application/json', 'Backup për Notepad');
+       await handleDownload(dataBlob, filename, 'application/json', 'Backup për NoteBook3');
     } catch(err: any) {
        showToast("Gabim gjatë ruajtjes së kopjes rezervë.");
     }
@@ -4587,11 +4607,39 @@ const exportChatResponseToPdf = () => {
      reader.onload = (event) => {
         try {
            const content = event.target?.result as string;
-           const parsed = JSON.parse(content) as GridDocument[];
+           const parsed = JSON.parse(content);
            
-           if (Array.isArray(parsed) && parsed.length > 0 && parsed[0].id && parsed[0].rows) {
-              setDocuments(parsed);
-              triggerAutoSave(parsed);
+           let docsToSet: GridDocument[] = [];
+           let labelsToSet: string[] = [];
+           
+           if (Array.isArray(parsed)) {
+              docsToSet = parsed;
+           } else if (parsed && typeof parsed === 'object') {
+              if (Array.isArray(parsed.documents)) {
+                 docsToSet = parsed.documents;
+              }
+              if (Array.isArray(parsed.customLabels)) {
+                 labelsToSet = parsed.customLabels;
+              }
+              if (parsed.blueText !== undefined) {
+                 setBlueText(parsed.blueText);
+                 localStorage.setItem('grid_notepad_blue_text', parsed.blueText);
+              }
+              if (Array.isArray(parsed.secretList)) {
+                 setSecretList(parsed.secretList);
+                 localStorage.setItem('grid_notepad_secret_list', JSON.stringify(parsed.secretList));
+              }
+           }
+           
+           if (docsToSet.length > 0 && docsToSet[0].id && docsToSet[0].rows) {
+              setDocuments(docsToSet);
+              triggerAutoSave(docsToSet);
+              
+              if (labelsToSet.length > 0) {
+                 setCustomLabels(labelsToSet);
+                 localStorage.setItem('customLabels', JSON.stringify(labelsToSet));
+              }
+              
               showToast("Të dhënat u rikthyen me sukses nga pajisja!");
               setBackupModal(false);
            } else {
@@ -4893,15 +4941,101 @@ const exportChatResponseToPdf = () => {
       }, 1000);
       setShowOptionsMenu(false);
   };
-  const filteredDocs = documents.filter(doc => {
-     if (selectedTag && !(doc.tags || []).includes(selectedTag)) return false;
-     if (!catalogSearch.trim()) return true;
-     const q = catalogSearch.toLowerCase();
-     if (doc.title.toLowerCase().includes(q)) return true;
-     return doc.rows.some(r => 
-        headers.some((_, c) => (r[`col${c+1}`] || '').toString().toLowerCase().includes(q))
-     );
-  });
+     const getDocLockStatus = (doc: any) => {
+       if (!doc || !doc.rows || doc.rows.length === 0) return 'none';
+       const contentRows = doc.rows.filter((r: any) => 
+          (r.col1 && r.col1.trim()) || 
+          (r.col2 && r.col2.trim()) || 
+          (r.col3 && r.col3.trim()) || 
+          (r.col4 && r.col4.trim()) ||
+          r.image
+       );
+       if (contentRows.length === 0) return 'none';
+       
+       if (contentRows.some((r: any) => r.status === 'ok')) return 'green';
+       if (contentRows.some((r: any) => r.status === 'blue')) return 'blue';
+       if (contentRows.some((r: any) => r.status === 'yellow')) return 'yellow';
+       if (contentRows.every((r: any) => r.status === 'x')) return 'red';
+       return 'none';
+    };
+
+   const sortDocuments = (docs: GridDocument[]) => {
+       return [...docs].sort((a, b) => {
+          const statusA = getDocLockStatus(a);
+          const statusB = getDocLockStatus(b);
+          const getPriority = (status: string) => {
+             switch (status) {
+                case 'green': return 1;
+                case 'blue': return 2;
+                case 'yellow': return 3;
+                case 'none': return 4;
+                case 'red': return 5;
+                default: return 6;
+             }
+          };
+          return getPriority(statusA) - getPriority(statusB);
+       });
+    };
+
+   const renderDocLockIcon = (doc: any) => {
+      const lockStatus = getDocLockStatus(doc);
+      let colorClass = "text-zinc-400";
+      let title = t("Lista pa status", "List with no status");
+      
+      if (lockStatus === 'red') {
+         colorClass = "text-red-500";
+         title = t("Të gjitha rreshtat e mbaruara", "All rows finished");
+      } else if (lockStatus === 'green') {
+         colorClass = "text-green-500";
+         title = t("Lista aktive/OK", "Active/OK list");
+      } else if (lockStatus === 'blue') {
+         colorClass = "text-blue-500";
+         title = t("Lista me status blu", "Blue status list");
+      } else if (lockStatus === 'yellow') {
+         colorClass = "text-yellow-500";
+         title = t("Lista me status të verdhë", "Yellow status list");
+      } else {
+         colorClass = "text-green-500 animate-pulse";
+         title = t("Listë e Re", "New List");
+      }
+      
+      return <Lock className={`w-3.5 h-3.5 ${colorClass} shrink-0`} title={title} />;
+   };
+
+   const getDocCardStyle = (doc: any, isDark: boolean) => {
+      const lockStatus = getDocLockStatus(doc);
+      if (lockStatus === 'red') {
+         return isDark 
+            ? "bg-red-950/15 border-red-500/35 hover:border-red-500/70 shadow-md shadow-red-500/5 transition-all duration-200" 
+            : "bg-red-50/55 border-red-200 hover:border-red-350 shadow-sm transition-all duration-200";
+      } else if (lockStatus === 'green') {
+         return isDark 
+            ? "bg-emerald-950/15 border-emerald-500/35 hover:border-emerald-500/70 shadow-md shadow-emerald-500/5 transition-all duration-200" 
+            : "bg-emerald-50/55 border-emerald-200 hover:border-emerald-350 shadow-sm transition-all duration-200";
+      } else if (lockStatus === 'blue') {
+         return isDark 
+            ? "bg-blue-950/15 border-blue-500/35 hover:border-blue-500/70 shadow-md shadow-blue-500/5 transition-all duration-200" 
+            : "bg-blue-50/55 border-blue-200 hover:border-blue-350 shadow-sm transition-all duration-200";
+      } else if (lockStatus === 'yellow') {
+         return isDark 
+            ? "bg-yellow-950/10 border-yellow-500/25 hover:border-yellow-500/60 shadow-md shadow-yellow-500/5 transition-all duration-200" 
+            : "bg-yellow-50/55 border-yellow-200 hover:border-yellow-350 shadow-sm transition-all duration-200";
+      } else {
+         return isDark 
+            ? "bg-zinc-900 border-zinc-800 hover:border-zinc-700 shadow-sm transition-all duration-200" 
+            : "bg-white border-zinc-200 hover:border-zinc-350 shadow-sm transition-all duration-200";
+      }
+   };
+
+   const filteredDocs = sortDocuments(documents.filter(doc => {
+      if (selectedTag && !(doc.tags || []).includes(selectedTag)) return false;
+      if (!catalogSearch.trim()) return true;
+      const q = catalogSearch.toLowerCase();
+      if (doc.title.toLowerCase().includes(q)) return true;
+      return doc.rows.some(r => 
+         headers.some((_, c) => (r[`col${c+1}`] || '').toString().toLowerCase().includes(q))
+      );
+   }));
   // LOCK SCREEN VIEW
   const handleAppUnlock = () => {
       const savedPassword = localStorage.getItem('grid_notepad_pin');
@@ -10462,15 +10596,18 @@ const exportChatResponseToPdf = () => {
                </button>
             </div>
             
-            {/* If Lista Tab, show Search */}
-            {mainTab === 'lista' && (
+            {/* If Lista Tab or Etiketa catalog (outside folder), show Search */}
+            {(mainTab === 'lista' || (mainTab === 'etiketa' && selectedLabelFolder === null)) && (
                <div className="flex gap-2 w-full mt-1 shrink-0 pb-1">
                   <div className="relative flex-grow">
                      <Search className="w-4 h-4 absolute left-3 top-1/2 -translate-y-1/2 text-zinc-500" />
                      <input 
                         value={catalogSearch}
                         onChange={(e) => setCatalogSearch(e.target.value)}
-                        placeholder={t("Kërko dokumente ose tekst brenda tyre...", "Search documents or text inside them...")}
+                        placeholder={mainTab === 'lista' 
+                           ? t("Kërko dokumente ose tekst brenda tyre...", "Search documents or text inside them...")
+                           : t("Kërko etiketa...", "Search labels...")
+                        }
                         className={`w-full pl-9 pr-4 py-1.5 text-sm rounded-lg border focus:outline-none focus:border-accent-500 transition-colors ${
                            isDark ? "bg-zinc-800 border-zinc-700 text-white placeholder-zinc-500" : "bg-white border-zinc-300 text-zinc-900 placeholder-zinc-400"
                         }`}
@@ -10596,103 +10733,175 @@ const exportChatResponseToPdf = () => {
             ) : (
                /* TAB ETIKETA */
                selectedLabelFolder === null ? (
-                  /* LABELS LIST VIEW */
-                  <div className="flex flex-col gap-4 animate-in fade-in duration-200">
-                     <div className="flex justify-between items-center mb-1">
-                        <h3 className={`text-sm font-extrabold tracking-tight ${textColor}`}>
-                           {t("Etiketat e Personalizuara", "Custom Labels")}
-                        </h3>
-                        <button
-                           onClick={handleAddCustomLabel}
-                           className="flex items-center gap-1.5 px-3 py-1.5 text-xs font-bold bg-orange-600 hover:bg-orange-500 text-white rounded-lg active:scale-95 transition-all shadow-md shadow-orange-500/10"
-                        >
-                           <Plus className="w-3.5 h-3.5" />
-                           {t("Krijo Etiketë", "Create Label")}
-                        </button>
-                     </div>
-                     
-                     <div className="grid grid-cols-3 sm:grid-cols-3 md:grid-cols-4 gap-2.5 sm:gap-4 animate-in fade-in duration-350">
-                        {customLabels.length > 0 && (
-                           /* KRIJO KARTËN E ETIKETËS RE BRENDA GRIDIT */
-                           <button 
-                              type="button"
-                              onClick={handleAddCustomLabel}
-                              className={`p-2.5 sm:p-4 rounded-2xl border-2 border-dashed transition-all active:scale-95 text-left flex items-center justify-between h-[80px] sm:h-[84px] ${
-                                isDark 
-                                  ? "border-zinc-800 hover:border-orange-500 bg-zinc-900/30 hover:bg-zinc-900/60 text-zinc-400 hover:text-orange-500" 
-                                  : "border-zinc-200 hover:border-orange-500 bg-zinc-50 hover:bg-orange-50/10 text-zinc-500 hover:text-orange-600"
-                              }`}
-                           >
-                              <div className="flex items-center gap-1.5 sm:gap-3 min-w-0">
-                                 <div className="p-1.5 sm:p-2.5 bg-orange-500/10 text-orange-500 rounded-xl shrink-0 inline-flex items-center justify-center w-8 h-8 sm:w-10 sm:h-10 shadow-inner">
-                                    <Plus className="w-4 h-4 sm:w-5 h-5" />
-                                 </div>
-                                 <div className="flex flex-col gap-0.5 min-w-0">
-                                    <span className="text-[11px] sm:text-xs md:text-sm font-extrabold truncate">{t('Krijo', 'Create')}</span>
-                                    <span className="text-[9px] text-zinc-500 leading-tight font-semibold truncate">{t('Etiketë', 'Label')}</span>
-                                 </div>
-                              </div>
-                              <Plus className="w-3.5 h-3.5 text-zinc-400 shrink-0 hidden sm:block" />
-                           </button>
-                        )}
-                        {customLabels.map((label, idx) => {
-                           // Count how many documents belong to this label
-                           const labelDocsCount = documents.filter(doc => doc.tags && doc.tags.includes(label)).length;
-                           return (
-                              <div
-                                 key={label}
-                                 className={`p-2.5 sm:p-3.5 rounded-2xl border transition-all hover:-translate-y-1 cursor-pointer flex flex-col justify-between h-[80px] sm:h-[84px] shadow-sm hover:shadow-lg ${
-                                    isDark 
-                                       ? "bg-zinc-900 border-zinc-800 hover:border-orange-500/50 hover:bg-zinc-800" 
-                                       : "bg-white border-zinc-200 hover:border-orange-500/50 hover:bg-orange-50/10"
-                                 }`}
-                                 onClick={() => setSelectedLabelFolder(label)}
-                              >
-                                 {/* Top Row: Full Name of Label (Scrolling text if overflows) */}
-                                 <LabelScrollingText label={label} textColor={textColor} />
-                                 {/* Bottom Row: Folder Icon and List Count (emri te larte ikones) */}
-                                 <div className="flex items-center gap-2">
-                                    <div className="p-1 bg-orange-500/10 text-orange-500 rounded-lg shrink-0 w-6 h-6 flex items-center justify-center shadow-inner">
-                                       <FolderOpen className="w-3.5 h-3.5" />
-                                    </div>
-                                    <span className="text-[9px] text-zinc-500 font-bold truncate">
-                                       {labelDocsCount === 1 
-                                          ? t("1 Listë", "1 List") 
-                                          : t(`${labelDocsCount} Lista`, `${labelDocsCount} Lists`)}
-                                    </span>
-                                 </div>
-                              </div>
-                           );
-                        })}
-                        
-                        {customLabels.length === 0 && (
-                           <div className="col-span-full flex flex-col items-center justify-center py-16 px-4 text-center">
-                              <div className="w-16 h-16 rounded-full bg-orange-500/10 flex items-center justify-center mb-4 text-orange-500 border border-orange-500/20 shadow-inner">
-                                 <Tag className="w-8 h-8 animate-pulse" />
-                              </div>
-                              <h4 className={`text-base font-bold mb-1.5 ${isDark ? "text-zinc-200" : "text-zinc-800"}`}>
-                                 {t("Nuk ka etiketa të krijuara", "No custom labels created")}
-                              </h4>
-                              <p className="text-xs text-zinc-500 max-w-xs mb-5 leading-relaxed">
-                                 {t("Organizoni shënimet tuaja nëpërmjet etiketave të personalizuara për t'i gjetur ato më lehtë.", "Organize your notes using custom labels to find them more easily.")}
-                              </p>
-                              <button
-                                 type="button"
-                                 onClick={handleAddCustomLabel}
-                                 className="inline-flex items-center gap-1.5 px-4 py-2 text-xs font-bold bg-orange-600 hover:bg-orange-500 text-white rounded-xl active:scale-95 transition-all shadow-md shadow-orange-500/15 cursor-pointer"
-                              >
-                                 <Plus className="w-4 h-4" />
-                                 {t("Krijoni një etiketë të re.", "Create a new label.")}
-                              </button>
-                           </div>
-                        )}
-                     </div>
-                  </div>
-               ) : (
-                  /* INSIDE LABEL VIEW */
+                    /* LABELS LIST VIEW */
+                    <div className="flex flex-col gap-4 animate-in fade-in duration-200">
+                       <div className="flex justify-between items-center mb-1">
+                          <h3 className={`text-sm font-extrabold tracking-tight ${textColor}`}>
+                             {t("Etiketat e Personalizuara", "Custom Labels")}
+                          </h3>
+                          <button
+                             onClick={handleAddCustomLabel}
+                             className="flex items-center gap-1.5 px-3 py-1.5 text-xs font-bold bg-orange-600 hover:bg-orange-500 text-white rounded-lg active:scale-95 transition-all shadow-md shadow-orange-500/10"
+                          >
+                             <Plus className="w-3.5 h-3.5" />
+                             {t("Krijo Etiketë", "Create Label")}
+                          </button>
+                       </div>
+                       
+                       {(() => {
+                          const filteredLabels = customLabels.filter(label => 
+                             label.toLowerCase().includes(catalogSearch.toLowerCase().trim())
+                          );
+                          
+                          return (
+                             <div className={catalogLayout === 'grid'
+                                ? "grid grid-cols-3 sm:grid-cols-3 md:grid-cols-4 gap-2.5 sm:gap-4 animate-in fade-in duration-350"
+                                : "flex flex-col gap-1.5 max-w-4xl animate-in fade-in duration-350"
+                             }>
+                                {/* CREATE LABEL BUTTON */}
+                                {customLabels.length > 0 && (
+                                   catalogLayout === 'grid' ? (
+                                      <button 
+                                         type="button"
+                                         onClick={handleAddCustomLabel}
+                                         className={`p-2.5 sm:p-4 rounded-2xl border-2 border-dashed transition-all active:scale-95 text-left flex items-center justify-between h-[80px] sm:h-[84px] ${
+                                           isDark 
+                                             ? "border-zinc-800 hover:border-orange-500 bg-zinc-900/30 hover:bg-zinc-900/60 text-zinc-400 hover:text-orange-500" 
+                                             : "border-zinc-200 hover:border-orange-500 bg-zinc-50 hover:bg-orange-50/10 text-zinc-500 hover:text-orange-600"
+                                         }`}
+                                      >
+                                         <div className="flex items-center gap-1.5 sm:gap-3 min-w-0">
+                                            <div className="p-1.5 sm:p-2.5 bg-orange-500/10 text-orange-500 rounded-xl shrink-0 inline-flex items-center justify-center w-8 h-8 sm:w-10 sm:h-10 shadow-inner">
+                                               <Plus className="w-4 h-4 sm:w-5 h-5" />
+                                            </div>
+                                            <div className="flex flex-col gap-0.5 min-w-0">
+                                               <span className="text-[11px] sm:text-xs md:text-sm font-extrabold truncate">{t('Krijo', 'Create')}</span>
+                                               <span className="text-[9px] text-zinc-500 leading-tight font-semibold truncate">{t('Etiketë', 'Label')}</span>
+                                            </div>
+                                         </div>
+                                         <Plus className="w-3.5 h-3.5 text-zinc-400 shrink-0 hidden sm:block" />
+                                      </button>
+                                   ) : (
+                                      <button 
+                                         type="button"
+                                         onClick={handleAddCustomLabel}
+                                         className={`p-2.5 sm:p-3.5 rounded-xl border-2 border-dashed transition-all active:scale-95 text-left flex items-center gap-3 w-full ${
+                                           isDark 
+                                             ? "border-zinc-800 hover:border-orange-500 bg-zinc-900/30 hover:bg-zinc-900/60 text-zinc-400 hover:text-orange-500" 
+                                             : "border-zinc-200 hover:border-orange-500 bg-zinc-50 hover:bg-orange-50/10 text-zinc-500 hover:text-orange-600"
+                                         }`}
+                                      >
+                                         <div className="p-1.5 bg-orange-500/10 text-orange-500 rounded-xl shrink-0 w-8 h-8 flex items-center justify-center shadow-inner">
+                                            <Plus className="w-4 h-4" />
+                                         </div>
+                                         <div className="flex flex-col gap-0.5">
+                                            <span className="text-xs font-extrabold">{t('Krijo Etiketë të Re', 'Create New Label')}</span>
+                                            <span className="text-[10px] text-zinc-500 leading-tight font-semibold">{t('Kategorizo listat tuaja', 'Categorize your lists')}</span>
+                                         </div>
+                                      </button>
+                                   )
+                                )}
+                                
+                                {/* LABELS LIST */}
+                                {filteredLabels.map((label, idx) => {
+                                   const labelDocsCount = documents.filter(doc => doc.tags && doc.tags.includes(label)).length;
+                                   
+                                   return (
+                                      <div
+                                         key={label}
+                                         className={`rounded-2xl border transition-all hover:translate-x-1 cursor-pointer flex shadow-sm hover:shadow-lg ${
+                                            catalogLayout === 'grid'
+                                               ? 'p-2.5 sm:p-3.5 flex-col justify-between h-[80px] sm:h-[84px] hover:-translate-y-1'
+                                               : 'p-3 items-center justify-between'
+                                         } ${
+                                            isDark 
+                                               ? "bg-zinc-900 border-zinc-800 hover:border-orange-500/50 hover:bg-zinc-800" 
+                                               : "bg-white border-zinc-200 hover:border-orange-500/50 hover:bg-orange-50/10"
+                                         }`}
+                                         onClick={() => setSelectedLabelFolder(label)}
+                                      >
+                                         {catalogLayout === 'grid' ? (
+                                            <>
+                                               {/* Top Row: Label Name */}
+                                               <LabelScrollingText label={label} textColor={textColor} />
+                                               {/* Bottom Row: Folder Icon and List Count */}
+                                               <div className="flex items-center gap-2">
+                                                  <div className="p-1 bg-orange-500/10 text-orange-500 rounded-lg shrink-0 w-6 h-6 flex items-center justify-center shadow-inner">
+                                                     <FolderOpen className="w-3.5 h-3.5" />
+                                                  </div>
+                                                  <span className="text-[9px] text-zinc-500 font-bold truncate">
+                                                     {labelDocsCount === 1 
+                                                        ? t("1 Listë", "1 List") 
+                                                        : t(`${labelDocsCount} Lista`, `${labelDocsCount} Lists`)}
+                                                  </span>
+                                               </div>
+                                            </>
+                                         ) : (
+                                            <>
+                                               {/* Left side: Icon + Name */}
+                                               <div className="flex items-center gap-3 min-w-0 flex-grow pr-4">
+                                                  <div className="p-1.5 bg-orange-500/10 text-orange-500 rounded-lg shrink-0 w-8 h-8 flex items-center justify-center shadow-inner">
+                                                     <FolderOpen className="w-4 h-4" />
+                                                  </div>
+                                                  <div className="min-w-0 flex-grow">
+                                                     <LabelScrollingText label={label} textColor={textColor} />
+                                                  </div>
+                                               </div>
+                                               {/* Right side: Count & arrow */}
+                                               <div className="flex items-center gap-2 shrink-0">
+                                                  <span className="text-xs text-zinc-500 font-bold">
+                                                     {labelDocsCount === 1 
+                                                        ? t("1 Listë", "1 List") 
+                                                        : t(`${labelDocsCount} Lista`, `${labelDocsCount} Lists`)}
+                                                  </span>
+                                                  <ChevronRight className="w-4 h-4 text-zinc-400" />
+                                               </div>
+                                            </>
+                                         )}
+                                      </div>
+                                   );
+                                })}
+                                
+                                {/* EMPTY SEARCH STATE */}
+                                {customLabels.length > 0 && filteredLabels.length === 0 && (
+                                   <div className="col-span-full flex flex-col items-center justify-center py-12 px-4 text-center">
+                                      <Tag className="w-8 h-8 text-zinc-500/60 mb-2" />
+                                      <p className="text-xs text-zinc-500 dark:text-zinc-400">
+                                         {t("Nuk u gjet asnjë etiketë.", "No labels found.")}
+                                      </p>
+                                   </div>
+                                )}
+                                
+                                {/* EMPTY INITIAL STATE */}
+                                {customLabels.length === 0 && (
+                                   <div className="col-span-full flex flex-col items-center justify-center py-16 px-4 text-center">
+                                      <div className="w-16 h-16 rounded-full bg-orange-500/10 flex items-center justify-center mb-4 text-orange-500 border border-orange-500/20 shadow-inner">
+                                         <Tag className="w-8 h-8 animate-pulse" />
+                                      </div>
+                                      <h4 className={`text-base font-bold mb-1.5 ${isDark ? "text-zinc-200" : "text-zinc-800"}`}>
+                                         {t("Nuk ka etiketa të krijuara", "No custom labels created")}
+                                      </h4>
+                                      <p className="text-xs text-zinc-500 max-w-xs mb-5 leading-relaxed">
+                                         {t("Organizoni shënimet tuaja nëpërmjet etiketave të personalizuara për t'i gjetur ato më lehtë.", "Organize your notes using custom labels to find them more easily.")}
+                                      </p>
+                                      <button
+                                         type="button"
+                                         onClick={handleAddCustomLabel}
+                                         className="inline-flex items-center gap-1.5 px-4 py-2 text-xs font-bold bg-orange-600 hover:bg-orange-500 text-white rounded-xl active:scale-95 transition-all shadow-md shadow-orange-500/15 cursor-pointer"
+                                      >
+                                         <Plus className="w-4 h-4" />
+                                         {t("Krijoni një etiketë të re.", "Create a new label.")}
+                                      </button>
+                                   </div>
+                                )}
+                             </div>
+                          );
+                       })()
+                    }</div>) : (
+                   /* INSIDE LABEL VIEW */
                   (() => {
                      const currentLabelIdx = customLabels.indexOf(selectedLabelFolder);
-                     const labelFilteredDocs = documents
+                     const labelFilteredDocs = sortDocuments(documents
                         .filter(doc => doc.tags && doc.tags.includes(selectedLabelFolder))
                         .filter(doc => {
                            if (!catalogSearch.trim()) return true;
@@ -10701,7 +10910,7 @@ const exportChatResponseToPdf = () => {
                            return doc.rows.some(r => 
                               Object.values(r).some(val => (val || '').toString().toLowerCase().includes(q))
                            );
-                        });
+                        }));
                      return (
                         <div className="flex flex-col gap-4 animate-in fade-in duration-200">
                            {/* Header / Breadcrumb */}

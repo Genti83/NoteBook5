@@ -65,3 +65,13 @@ body {
   animation: marquee-8s 8s cubic-bezier(0.25, 1, 0.5, 1) infinite;
 }
 
+@keyframes marquee-slow {
+  0%, 15% { transform: translateX(0); }
+  85%, 100% { transform: translateX(-50%); }
+}
+
+.animate-marquee-slow {
+  display: inline-block;
+  animation: marquee-slow 15s cubic-bezier(0.25, 1, 0.5, 1) infinite;
+}
+
