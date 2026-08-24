@@ -217,7 +217,7 @@ async function startServer() {
   app.post('/api/ai/chat', async (req, res) => {
     res.setHeader('Content-Type', 'application/json');
     try {
-      const { prompt, documents, activeDocId, image, audio, blueText, secretList, userEmail, geminiKey } = req.body;
+      const { prompt, documents, activeDocId, image, audio, blueText, secretList, customLabels, userEmail, geminiKey } = req.body;
 
       // Robust Multi-tier API Key Resolution
       let apiKey = (geminiKey || '').trim();
@@ -264,6 +264,7 @@ SHËRBIMET DHE LLOGARITJET QË DUHET TË BËSH:
 1. LLOGARITJE DHE STATISTIKA ME DETAJE: Kur përdoruesi kërkon në chat, bëj llogaritje matematike, nxirr raporte, statistika të hollësishme (shuma, mesatare, përqindje, fitime, sasi total, krahasime) bazuar te shënimet dhe tabelat ekzistuese.
 2. ANALIZË E MULTIMEDIAS (IMAZHE & PDF): Ti ke akses të plotë për të analizuar imazhet (PNG, JPG, JPEG) dhe dokumentet PDF të ngarkuara nga përdoruesi. Kur përdoruesi ngarkon një imazh apo skedar PDF, analizoji ato me shumë detaj, nxirr tabelat, rreshtat e shënimeve dhe të dhënat e tyre (si kg, arka, emra, sasi, çmim, vlerë), bëj llogaritjet dhe krijo automatikisht një listë shënimesh të re me veprimin "CREATE_DOCUMENT" sipas dokumentit origjinal të ngarkuar!
 3. AKSES TE BUTONAT PDF, CSV, TXT: Përdoruesi të lejon të ofrosh butona/veprime specifike për shkarkimin e dokumenteve si PDF, CSV ose TXT pa prekur ose modifikuar asgjë në shënimet e tyre. Për këtë qëllim, shto veprimet përkatëse tek "actions" siç shpjegohet më poshtë.
+4. ANALIZË DHE KRIJIM I ETIKETAVE (LABELS / FOLDERS): Ti ke akses të plotë tek etiketat për t'i analizuar, llogaritur apo krijuar etiketa të reja. Nëse përdoruesi kërkon të krijojë etiketa të reja, propozo veprimin "ADD_LABELS" me një listë të emrave të etiketave të reja. KUJDES: Ti mund vetëm të SHTOSH etiketa të reja, dhe ËSHTË E NDALUAR RREPTËSISHT të zëvendësosh ose të fshish etiketat ekzistuese (kujdes jo të zëvendësosh ekzistueset)!
 
 Këtu janë të dhënat e dokumenteve aktualë në formatin JSON:
 ${JSON.stringify(documents, null, 2)}
@@ -273,6 +274,9 @@ ${blueText || 'Ska shënime'}
 
 Lista e Checklistave Sekrete:
 ${JSON.stringify(secretList || [], null, 2)}
+
+Etiketat (Labels/Folders) ekzistuese të përdoruesit:
+${JSON.stringify(customLabels || [], null, 2)}
 
 Dokumenti aktual aktiv që përdoruesi po shikon është me ID: "${activeDocId}". Ofroni përgjigjen duke u bazuar plotësisht në KËTË DOKUMENT.
 
@@ -310,34 +314,38 @@ TI GJITHMONË DUHET TË KTHESH PËRGJIGJEN TËNDE NË FORMATIN JSON SI MË POSHT
        "newRows": []
     },
     {
+       "type": "ADD_LABELS",
+       "labels": ["Emri i Etiketës së Re 1", "Emri i Etiketës së Re 2"]
+    },
+    {
        "type": "DELETE_DOCUMENT",
        "documentId": "id_e_dokumentit_qe_duhet_fshire",
        "title": "Titulli i dokumentit të fshirë"
-    },
-    {
-       "type": "EXPORT_PDF",
-       "title": "Shkarko Dokumentin si PDF"
-    },
-    {
-       "type": "EXPORT_CSV",
-       "title": "Shkarko Dokumentin si CSV"
-    },
-    {
-       "type": "EXPORT_TXT",
-       "title": "Shkarko Dokumentin si TXT"
-    },
-    {
-       "type": "EXPORT_ALL_PDF",
-       "title": "Shkarko të Gjithë Arkivën si PDF"
-    },
-    {
-       "type": "EXPORT_ALL_CSV",
-       "title": "Shkarko të Gjithë Arkivën si CSV"
-    },
-    {
-       "type": "EXPORT_ALL_TXT",
-       "title": "Shkarko të Gjithë Arkivën si TXT"
-    }
+     },
+     {
+        "type": "EXPORT_PDF",
+        "title": "Shkarko Dokumentin si PDF"
+     },
+     {
+        "type": "EXPORT_CSV",
+        "title": "Shkarko Dokumentin si CSV"
+     },
+     {
+        "type": "EXPORT_TXT",
+        "title": "Shkarko Dokumentin si TXT"
+     },
+     {
+        "type": "EXPORT_ALL_PDF",
+        "title": "Shkarko të Gjithë Arkivën si PDF"
+     },
+     {
+        "type": "EXPORT_ALL_CSV",
+        "title": "Shkarko të Gjithë Arkivën si CSV"
+     },
+     {
+        "type": "EXPORT_ALL_TXT",
+        "title": "Shkarko të Gjithë Arkivën si TXT"
+     }
   ]
 }
 Kthe VETËM JSON të vlefshëm pa koodblock markdown!`;

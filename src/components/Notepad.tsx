@@ -1176,7 +1176,7 @@ export function Notepad() {
     // Auto-sync customLabels to Google Cloud
     const freq = parseInt(localStorage.getItem('grid_cloud_sync_freq') || '3000', 10);
     if (freq !== -1 && navigator.onLine) {
-       syncWithGoogleCloud(documents, true);
+       syncWithGoogleCloud(documents, true, undefined, undefined, labels);
     }
   };
   const isDocAllDeletedX = (doc: any) => {
@@ -1766,6 +1766,7 @@ const handleSaveLabelModal = () => {
           audio: aiChatAudio,
           blueText,
           secretList,
+          customLabels,
           userEmail: mail,
            geminiKey: userGeminiKey || localStorage.getItem('grid_notepad_gemini_key') || ''
         });
@@ -2194,6 +2195,20 @@ Kthe VETËM JSON të vlefshëm pa koodblock markdown!`;
                exportAllTxt();
                hasAppliedAny = true;
                showToast("⚡ Po shkarkohet e gjithë arkiva si TXT...");
+           } else if (act.type === 'ADD_LABELS' && Array.isArray(act.labels)) {
+               const newLabels = act.labels.filter((lbl: string) => lbl && lbl.trim() !== '');
+               if (newLabels.length > 0) {
+                   const uniqueNewLabels = newLabels.filter((lbl: string) => !customLabels.includes(lbl));
+                   if (uniqueNewLabels.length > 0) {
+                       const updated = [...customLabels, ...uniqueNewLabels];
+                       saveCustomLabels(updated);
+                       hasAppliedAny = true;
+                       showToast(`✨ U shtuan ${uniqueNewLabels.length} etiketa të reja!`);
+                       appendDebugLog(`🎉 [AI Chat] U shtuan etiketat e reja: ${uniqueNewLabels.join(', ')}`);
+                   } else {
+                       showToast("🤖 Etiketat e propozuara ekzistojnë tashmë.");
+                   }
+               }
            }
       });
       
@@ -2402,12 +2417,13 @@ const exportChatResponseToPdf = () => {
        showToast("Gabim gjatë shkarkimit të PDF-së: " + e.message);
     }
   };
-   const syncWithGoogleCloud = async (docsToSync?: GridDocument[], silent = false, blueTextToSync?: string, secretListToSync?: any[]) => {
+   const syncWithGoogleCloud = async (docsToSync?: GridDocument[], silent = false, blueTextToSync?: string, secretListToSync?: any[], customLabelsToSync?: string[]) => {
     const docs = docsToSync || documents;
     const uid = getActiveUid() || 'genti8319@gmail.com';
     const isCloudView = onlineView === 'cloud';
     const finalBlueText = blueTextToSync !== undefined ? blueTextToSync : (isCloudView ? onlineBlueText : blueText);
     const finalSecretList = secretListToSync !== undefined ? secretListToSync : (isCloudView ? onlineSecretList : secretList);
+    const finalCustomLabels = customLabelsToSync !== undefined ? customLabelsToSync : customLabels;
     
     appendDebugLog(`☁️ [Google Cloud Sync] Po ngarkohen ${docs.length} dokumente për përdoruesin: ${uid}`);
     const idToken = auth.currentUser ? await auth.currentUser.getIdToken(true).catch(() => null) : null;
@@ -2416,7 +2432,7 @@ const exportChatResponseToPdf = () => {
       documents: docs,
       blueText: finalBlueText,
       secretList: finalSecretList,
-      customLabels: customLabels,
+      customLabels: finalCustomLabels,
       pin: localStorage.getItem('grid_notepad_pin') || null,
       gistToken: gistToken || localStorage.getItem('grid_notepad_gist_token') || null,
       gistId: gistId || localStorage.getItem('grid_notepad_gist_id') || null,
@@ -2464,7 +2480,7 @@ const exportChatResponseToPdf = () => {
     }
     if (success && gistToken && gistId && !isGistSyncingRef.current) {
         isGistSyncingRef.current = true;
-        saveToGist(docs, true).finally(() => {
+        saveToGist(docs, true, finalBlueText, finalSecretList, finalCustomLabels).finally(() => {
             isGistSyncingRef.current = false;
         });
     }
@@ -2974,6 +2990,10 @@ const exportChatResponseToPdf = () => {
             loadedDocs = json.documents;
             setOnlineBlueText(json.blueText || '');
             setOnlineSecretList(json.secretList || []);
+            if (json.customLabels) {
+              setCustomLabels(json.customLabels);
+              localStorage.setItem('customLabels', JSON.stringify(json.customLabels));
+            }
             break;
           }
         }
@@ -2997,6 +3017,10 @@ const exportChatResponseToPdf = () => {
              const sData = settingsSnap.data();
              setOnlineBlueText(sData.blueText || '');
              setOnlineSecretList(sData.secretList || []);
+             if (sData.customLabels) {
+                setCustomLabels(sData.customLabels);
+                localStorage.setItem('customLabels', JSON.stringify(sData.customLabels));
+             }
           } else {
              setOnlineBlueText('');
              setOnlineSecretList([]);
@@ -3174,6 +3198,10 @@ const exportChatResponseToPdf = () => {
                      if (data.geminiKey) {
                         setUserGeminiKey(data.geminiKey);
                         localStorage.setItem('grid_notepad_gemini_key', data.geminiKey);
+                     }
+                     if (data.customLabels !== undefined) {
+                        setCustomLabels(data.customLabels);
+                        localStorage.setItem('customLabels', JSON.stringify(data.customLabels));
                      }
                   }
                }
@@ -4623,7 +4651,7 @@ const exportChatResponseToPdf = () => {
               }
               if (parsed.blueText !== undefined) {
                  setBlueText(parsed.blueText);
-                 localStorage.setItem('grid_notepad_blue_text', parsed.blueText);
+                 localStorage.setItem('grid_notepad_blue', parsed.blueText);
               }
               if (Array.isArray(parsed.secretList)) {
                  setSecretList(parsed.secretList);
@@ -4725,6 +4753,8 @@ const exportChatResponseToPdf = () => {
            const data = {
                documents,
                blueText,
+               secretList,
+               customLabels,
                pin: localStorage.getItem('grid_notepad_pin') || null
            };
            const dataStr = JSON.stringify(data, null, 2);
@@ -4750,6 +4780,14 @@ const exportChatResponseToPdf = () => {
                   if (jsonData.blueText !== undefined) {
                       localStorage.setItem('grid_notepad_blue', jsonData.blueText);
                       setBlueText(jsonData.blueText);
+                  }
+                  if (jsonData.secretList !== undefined) {
+                      localStorage.setItem('grid_notepad_secret_list', JSON.stringify(jsonData.secretList));
+                      setSecretList(jsonData.secretList);
+                  }
+                  if (jsonData.customLabels !== undefined) {
+                      localStorage.setItem('customLabels', JSON.stringify(jsonData.customLabels));
+                      setCustomLabels(jsonData.customLabels);
                   }
                   if (jsonData.pin !== undefined) {
                       if (jsonData.pin) {
@@ -10661,28 +10699,19 @@ const exportChatResponseToPdf = () => {
                           {t('Asnjë dokument nuk u gjet.', 'No documents found.')}
                         </div>
                      ) : filteredDocs.map(doc => {
-                        const allDeleted = isDocAllDeletedX(doc);
-                        return (
-                           <div 
-                              key={doc.id} 
-                               onClick={() => openDocument(doc)} 
-                               className={`flex items-between justify-between py-1.5 px-2.5 border rounded-lg cursor-pointer transition-all hover:translate-x-1 ${
-                                  allDeleted
-                                     ? isDark 
-                                        ? "bg-red-950/10 border-red-900/40 hover:border-red-700 shadow-sm" 
-                                        : "bg-red-50/20 border-red-200 hover:border-red-300 shadow-sm"
-                                     : isDark 
-                                        ? "bg-zinc-900 border-zinc-800 hover:border-zinc-600 shadow-sm" 
-                                        : "bg-white border-zinc-200 hover:border-zinc-400 shadow-sm"
-                               }`}
-                            >
-                               <div className="flex flex-col flex-1 shadow-none min-w-0 pr-2 gap-0.5">
-                                  <div className="flex items-center gap-1.5 min-w-0">
-                                     <h3 className={`font-bold text-sm truncate ${textColor}`}>{doc.title}</h3>
-                                     {allDeleted && (
-                                        <Lock className="w-3.5 h-3.5 text-red-500 shrink-0" title={t("Të gjitha rreshtat e fshira", "All rows deleted")} />
-                                     )}
-                                  </div>
+                         return (
+                            <div 
+                               key={doc.id} 
+                                onClick={() => openDocument(doc)} 
+                                className={`flex items-between justify-between py-1.5 px-2.5 border rounded-lg cursor-pointer transition-all hover:translate-x-1 ${
+                                   getDocCardStyle(doc, isDark)
+                                }`}
+                             >
+                                <div className="flex flex-col flex-1 shadow-none min-w-0 pr-2 gap-0.5">
+                                   <div className="flex items-center gap-1.5 min-w-0">
+                                      <h3 className={`font-bold text-sm truncate ${textColor}`}>{doc.title}</h3>
+                                      {renderDocLockIcon(doc)}
+                                   </div>
                                   <div className={`flex flex-row flex-wrap items-center gap-x-2 gap-y-0.5 text-[10px] text-zinc-500`}>
                                      <span className="flex items-center gap-0.5" style={{ color: '#11ff00' }}><Calendar className="w-2.5 h-2.5 shrink-0" style={{ color: '#11ff00' }} /> {renderSplitDate(doc.createdAt)}</span>
                                      <span className="flex items-center gap-0.5 text-zinc-400 dark:text-zinc-500"><Save className="w-2.5 h-2.5 shrink-0 text-zinc-500" /> <span style={{ color: '#38bdf8' }}>{safeFormatDate(doc.updatedAt, 'HH:mm')}</span></span>
@@ -10997,14 +11026,17 @@ const exportChatResponseToPdf = () => {
                            labelFilteredDocs
                               .map(doc => (
                                  <div 
-                                    key={doc.id} 
-                                    onClick={() => openDocument(doc)} 
-                                    className={`flex items-center justify-between p-2 border rounded-xl cursor-pointer transition-all hover:translate-x-1 ${
-                                       isDark ? "bg-zinc-900 border-zinc-800 hover:border-zinc-600 shadow-sm" : "bg-white border-zinc-200 hover:border-zinc-400 shadow-sm"
-                                    }`}
-                                 >
-                                    <div className="flex flex-col flex-1 shadow-none min-w-0 pr-2 gap-0.5">
-                                       <h3 className={`font-bold text-sm truncate ${textColor}`}>{doc.title}</h3>
+                                     key={doc.id} 
+                                     onClick={() => openDocument(doc)} 
+                                     className={`flex items-center justify-between p-2 border rounded-xl cursor-pointer transition-all hover:translate-x-1 ${
+                                        getDocCardStyle(doc, isDark)
+                                     }`}
+                                  >
+                                     <div className="flex flex-col flex-1 shadow-none min-w-0 pr-2 gap-0.5">
+                                        <div className="flex items-center gap-1.5 min-w-0">
+                                           <h3 className={`font-bold text-sm truncate ${textColor}`}>{doc.title}</h3>
+                                           {renderDocLockIcon(doc)}
+                                        </div>
                                        <div className={`flex flex-row flex-wrap items-center gap-x-2 gap-y-0.5 text-[10px] text-zinc-500`}>
                                           <span className="flex items-center gap-0.5" style={{ color: '#11ff00' }}><Calendar className="w-2.5 h-2.5 shrink-0" style={{ color: '#11ff00' }} /> {renderSplitDate(doc.createdAt)}</span>
                                           <span className="flex items-center gap-0.5 text-zinc-400 dark:text-zinc-500"><Save className="w-2.5 h-2.5 shrink-0 text-zinc-500" /> <span style={{ color: '#38bdf8' }}>{safeFormatDate(doc.updatedAt, 'HH:mm')}</span></span>
