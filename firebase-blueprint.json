@@ -11,6 +11,7 @@
         "headers": { "type": "array", "description": "Column headers of the document" },
         "columnWidths": { "type": "array", "description": "Column width configurations" },
         "tags": { "type": "array", "description": "Tags associated with the document" },
+        "textColor": { "type": "string", "description": "Document text/accent color mode" },
         "userId": { "type": "string", "description": "The owner ID or registered email" },
         "lastUpdated": { "type": "string", "description": "ISO timestamp of last update" }
       },
@@ -22,11 +23,18 @@
       "type": "object",
       "properties": {
         "blueText": { "type": "string", "description": "The encrypted or plain drafting text of the secrets modal" },
-        "secretList": { "type": "array", "description": "Secrets checklist items" },
+        "secretList": { "type": "array", "description": "Secrets checklist items with colors" },
+        "customLabels": { "type": "array", "description": "Custom folder labels" },
+        "trashItems": { "type": "array", "description": "Deleted lists, notes, and labels archived in Listat ne Kosh" },
+        "notesColor": { "type": "string", "description": "Color for text notes" },
+        "textColorMode": { "type": "string", "description": "Global text color preference" },
+        "textSize": { "type": "number", "description": "Grid font size" },
+        "textWeight": { "type": "number", "description": "Grid font weight" },
         "pin": { "type": "string", "description": "Hashed or plain numeric password/PIN" },
         "gistToken": { "type": "string", "description": "GitHub Gist API Token" },
         "gistId": { "type": "string", "description": "GitHub Gist ID" },
         "geminiKey": { "type": "string", "description": "Google Gemini API Key" },
+        "settingsUpdatedAt": { "type": "string", "description": "ISO timestamp of last settings/labels/secrets update" },
         "userId": { "type": "string", "description": "The user identifier" }
       },
       "required": ["userId"]

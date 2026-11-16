@@ -17,8 +17,10 @@ service cloud.firestore {
     }
 
     function isOwner(userId) {
-      return userId == request.auth.uid || 
-             (request.auth.token != null && request.auth.token.email != null && userId == request.auth.token.email);
+      return userId is string && (
+        userId == request.auth.uid || 
+        (request.auth.token != null && request.auth.token.email != null && userId.lower() == request.auth.token.email.lower())
+      );
     }
 
     function isValidDocument(data) {
@@ -41,7 +43,7 @@ service cloud.firestore {
 
     // Documents match block
     match /documents/{documentId} {
-      allow get: if isSignedIn() && (isOwner(resource.data.userId) || documentId == 'test');
+      allow get: if isSignedIn() && (resource == null || isOwner(resource.data.userId) || documentId == 'test');
       allow list: if isSignedIn() && (resource.data.userId == request.auth.uid || 
                     (request.auth.token != null && request.auth.token.email != null && resource.data.userId == request.auth.token.email));
       
@@ -57,7 +59,8 @@ service cloud.firestore {
                        isOwner(request.resource.data.userId);
                        
       allow delete: if isSignedIn() && 
-                       isOwner(resource.data.userId);
+                       isValidId(documentId) &&
+                       (resource == null || isOwner(resource.data.userId));
     }
 
     // Settings match block

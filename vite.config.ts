@@ -5,34 +5,37 @@ import { defineConfig } from 'vite';
 import { VitePWA } from 'vite-plugin-pwa';
 
 export default defineConfig(() => {
+  const isCapacitorBuild = process.env.CAPACITOR_BUILD === 'true';
   return {
     plugins: [
-      react(), 
+      react(),
       tailwindcss(),
-      VitePWA({
-        registerType: 'autoUpdate',
-        workbox: {
-          navigateFallbackDenylist: [/^\/api/],
-        },
-        manifest: {
-          name: 'NoteBook3',
-          short_name: 'NoteBook3',
-          description: 'Aplikacion i avancuar për shënime',
-          theme_color: '#ffffff',
-          icons: [
-            {
-              src: 'icon.svg',
-              sizes: '512x512',
-              type: 'image/svg+xml',
-              purpose: 'any maskable'
-            }
-          ]
-        }
-      })
+      ...(isCapacitorBuild
+        ? []
+        : [
+            VitePWA({
+              registerType: 'autoUpdate',
+              workbox: {
+                navigateFallbackDenylist: [/^\/api/],
+                maximumFileSizeToCacheInBytes: 5 * 1024 * 1024,
+              },
+              manifest: {
+                name: 'NoteBook3',
+                short_name: 'NoteBook3',
+                description: 'Aplikacion i avancuar për shënime',
+                theme_color: '#ffffff',
+                icons: [
+                  {
+                    src: 'icon.svg',
+                    sizes: '512x512',
+                    type: 'image/svg+xml',
+                    purpose: 'any maskable'
+                  }
+                ]
+              }
+            })
+          ])
     ],
-    define: {
-      'import.meta.env.VITE_GEMINI_API_KEY': JSON.stringify(process.env.VITE_GEMINI_API_KEY || process.env.GEMINI_API_KEY || ''),
-    },
     resolve: {
       alias: {
         '@': path.resolve(__dirname, '.'),

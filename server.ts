@@ -2,7 +2,7 @@ import express from 'express';
 import path from 'path';
 import fs from 'fs';
 import { createServer as createViteServer } from 'vite';
-import { GoogleGenAI } from '@google/genai';
+import { GoogleGenAI, ThinkingLevel } from '@google/genai';
 
 const STORAGE_FILE = path.join(process.cwd(), 'cloud_db.json');
 
@@ -117,31 +117,44 @@ async function startServer() {
          return res.status(401).json({ success: false, error: 'Ju lutemi kyçuni me Email/Fjalëkalim ose me Google për të sinkronizuar të dhënat.' });
       }
 
-      const { documents, activeDocId, blueText, secretList, pin, gistToken, gistId, customLabels } = req.body;
+      const { documents, activeDocId, blueText, secretList, pin, gistToken, gistId, customLabels, notesColor, textColorMode, textSize, textWeight, settingsUpdatedAt, trashItems } = req.body;
       const key = (verified.email || verified.uid).toLowerCase();
 
       const db = readCloudDb();
       const lastUpdated = new Date().toISOString();
+      const resolvedSettingsUpdatedAt = settingsUpdatedAt || db[key]?.settingsUpdatedAt || lastUpdated;
       db[key] = {
         documents: documents || [],
         activeDocId: activeDocId || null,
         blueText: blueText !== undefined ? blueText : db[key]?.blueText,
         secretList: secretList !== undefined ? secretList : db[key]?.secretList,
         customLabels: customLabels !== undefined ? customLabels : db[key]?.customLabels,
+        trashItems: Array.isArray(trashItems) ? trashItems : (db[key]?.trashItems || []),
+        notesColor: notesColor !== undefined ? notesColor : db[key]?.notesColor,
+        textColorMode: textColorMode !== undefined ? textColorMode : db[key]?.textColorMode,
+        textSize: textSize !== undefined ? textSize : db[key]?.textSize,
+        textWeight: textWeight !== undefined ? textWeight : db[key]?.textWeight,
         pin: pin !== undefined ? pin : db[key]?.pin,
         gistToken: gistToken !== undefined ? gistToken : db[key]?.gistToken,
         gistId: gistId !== undefined ? gistId : db[key]?.gistId,
         geminiKey: req.body.geminiKey !== undefined ? req.body.geminiKey : db[key]?.geminiKey,
+        settingsUpdatedAt: resolvedSettingsUpdatedAt,
         lastUpdated
       };
       
-      // Also keep a snapshot history (max 5)
+      // Also keep a complete snapshot history (max 5) including labels, secrets, trashItems & colors
       const backupKey = key + '_backups';
       if (!Array.isArray(db[backupKey])) db[backupKey] = [];
       db[backupKey].unshift({
         timestamp: lastUpdated,
         docCount: (documents || []).length,
-        documents: documents || []
+        documents: documents || [],
+        customLabels: db[key].customLabels || [],
+        secretList: db[key].secretList || [],
+        trashItems: db[key].trashItems || [],
+        blueText: db[key].blueText || '',
+        notesColor: db[key].notesColor || 'default',
+        textColorMode: db[key].textColorMode || 'default'
       });
       if (db[backupKey].length > 5) db[backupKey] = db[backupKey].slice(0, 5);
 
@@ -150,6 +163,7 @@ async function startServer() {
         success: true,
         message: 'Dokumentat u sinkronizuan me sukses në Google Cloud Server!',
         lastUpdated,
+        settingsUpdatedAt: resolvedSettingsUpdatedAt,
         docCount: (documents || []).length
       });
     } catch (err: any) {
@@ -170,7 +184,7 @@ async function startServer() {
       const db = readCloudDb();
       const record = db[userId];
       if (!record || !record.documents) {
-        return res.json({ success: true, documents: [], lastUpdated: null });
+        return res.json({ success: true, documents: [], trashItems: record?.trashItems || [], lastUpdated: null });
       }
       return res.json({
         success: true,
@@ -179,10 +193,16 @@ async function startServer() {
         blueText: record.blueText,
         secretList: record.secretList,
         customLabels: record.customLabels || [],
+        trashItems: Array.isArray(record.trashItems) ? record.trashItems : [],
+        notesColor: record.notesColor || 'default',
+        textColorMode: record.textColorMode || 'default',
+        textSize: record.textSize,
+        textWeight: record.textWeight,
         pin: record.pin,
         gistToken: record.gistToken,
         gistId: record.gistId,
         geminiKey: record.geminiKey,
+        settingsUpdatedAt: record.settingsUpdatedAt || record.lastUpdated || null,
         lastUpdated: record.lastUpdated
       });
     } catch (err: any) {
@@ -213,39 +233,55 @@ async function startServer() {
     }
   });
 
+  // Track temporary per-key/per-model cooldowns on 429 quota limits so fallback models respond cleanly
+  const modelCooldownUntil = new Map<string, number>();
+
   // AI API Route handlers
   app.post('/api/ai/chat', async (req, res) => {
     res.setHeader('Content-Type', 'application/json');
     try {
-      const { prompt, documents, activeDocId, image, audio, blueText, secretList, customLabels, userEmail, geminiKey } = req.body;
+      const { prompt, documents, activeDocId, image, audio, blueText, secretList, customLabels, userEmail, geminiKey, isBackgroundAutopilot } = req.body;
 
-      // Robust Multi-tier API Key Resolution
+      // Robust Multi-tier API Key Resolution (supports both AIza... and newer AQ.... keys)
+      const isPlaceholderKey = (val: string) => {
+        const v = (val || '').trim();
+        return !v || v.length < 15 || v === 'MY_GEMINI_API_KEY' || v === 'undefined' || v === 'null' || /\s/.test(v);
+      };
+      const isSupportedGoogleKeyFormat = (k: string) =>
+        k.startsWith('AIza') || k.startsWith('AQ.');
+
       let apiKey = (geminiKey || '').trim();
+      if (isPlaceholderKey(apiKey)) apiKey = '';
+
       if (!apiKey) {
         const verified = getVerifiedUser(req);
         const activeUserKey = verified ? (verified.email || verified.uid).toLowerCase() : (userEmail || '').trim().toLowerCase();
         if (activeUserKey) {
           const db = readCloudDb();
           if (db[activeUserKey] && db[activeUserKey].geminiKey) {
-            apiKey = db[activeUserKey].geminiKey.trim();
+            const storedKey = String(db[activeUserKey].geminiKey).trim();
+            if (!isPlaceholderKey(storedKey)) {
+              apiKey = storedKey;
+            }
           }
         }
       }
 
-      // Check if user-supplied key has the valid Google API key structure (starts with AIzaSy).
-      // Discard it if it does not, to immediately fall back to the platform key.
-      if (apiKey && !apiKey.startsWith('AIzaSy')) {
-        console.warn(`Ignoring non-Google format API key: ${apiKey.slice(0, 10)}...`);
+      if (apiKey && !isSupportedGoogleKeyFormat(apiKey)) {
+        console.warn(`Ignoring unrecognized API key format: ${apiKey.slice(0, 6)}...`);
         apiKey = '';
       }
 
       if (!apiKey) {
-        apiKey = (process.env.GEMINI_API_KEY || '').trim();
+        const envKey = (process.env.GEMINI_API_KEY || '').trim();
+        if (!isPlaceholderKey(envKey)) {
+          apiKey = envKey;
+        }
       }
 
       if (!apiKey) {
         return res.status(400).json({ 
-          error: 'Çelësi juaj API i Gemini mungon. Ju lutem konfiguroni atë në panelin "Settings > Secrets" të AI Studio ose shtoni një çelës API të vlefshëm në cilësimet e Notepad-it.' 
+          error: 'Çelësi juaj API i Gemini mungon. Ju lutem konfiguroni atë në panelin "Settings > Secrets" të AI Studio ose klikoni ikonën e çelësit (🔑) lart te AI Assistant për të vendosur çelësin tuaj API (AIza... ose AQ...).' 
         });
       }
 
@@ -258,27 +294,132 @@ async function startServer() {
         }
       });
 
-      const systemInstruction = `Ti je një asistent AI për një aplikacion Bllok/Notepad, i jepur pas llogaritjeve, analizës inteligjente, matematikës, menaxhimit, hartimit dhe përmbledhjeve të çdo lloji në notebook. Përdoruesi po të jep leje dhe AKSES TË PLOTË për menaxhim, hartim dhe gjithçka tjetër në bllokun e shënimeve (përfshirë ato manuale, të nënvizuara dhe ato në Cloud për llogarinë ${userEmail || 'genti8319@gmail.com'}).
+      const buildCompactDocumentsForAi = (rawDocs: any[], activeId: string, promptStr: string) => {
+        if (!Array.isArray(rawDocs)) return [];
+        const qLower = String(promptStr || '').toLowerCase();
+        const MAX_TOTAL_CHARS = 110000; // ~30k tokens max — stays safely under 250k TPM free-tier limit
+
+        const sumCol = (rowsArr: any[], key: string) => {
+          let sum = 0;
+          let count = 0;
+          for (const r of rowsArr) {
+            if (r?.status === 'x') continue;
+            const raw = String(r?.[key] || '').trim().replace(/\s+/g, '');
+            if (!raw) continue;
+            const clean = raw.replace(/,/g, '.');
+            if (/^[+-]?(\d+(\.\d+)?|\.\d+)$/.test(clean)) {
+              const n = Number(clean);
+              if (Number.isFinite(n)) {
+                sum += n;
+                count++;
+              }
+            }
+          }
+          if (count === 0) return null;
+          return Number.isInteger(sum) ? String(sum) : String(Number(sum.toFixed(4)));
+        };
+
+        const compactDoc = (d: any, includeRows: boolean) => {
+          const hdrs: string[] = Array.isArray(d?.headers) ? d.headers : [];
+          const rawRows: any[] = Array.isArray(d?.rows) ? d.rows : [];
+          const filledRows: any[] = [];
+
+          for (const r of rawRows) {
+            if (!r || typeof r !== 'object') continue;
+            const rowObj: any = { id: r.id };
+            if (r.status && r.status !== 'none') rowObj.status = r.status;
+            let hasVal = false;
+            for (let ci = 0; ci < hdrs.length; ci++) {
+              const k = `col${ci + 1}`;
+              const val = r[k];
+              if (val !== undefined && val !== null && String(val).trim() !== '') {
+                rowObj[k] = String(val);
+                hasVal = true;
+              }
+            }
+            if (hasVal || (r.status && r.status !== 'none')) {
+              filledRows.push(rowObj);
+            }
+          }
+
+          const numericTotals: Record<string, string> = {};
+          hdrs.forEach((h, ci) => {
+            const tot = sumCol(filledRows, `col${ci + 1}`);
+            if (tot !== null) numericTotals[h || `Col ${ci + 1}`] = tot;
+          });
+
+          const base: any = {
+            id: d.id,
+            title: d.title || 'Pa Titull',
+            headers: hdrs,
+            filledRowsCount: filledRows.length
+          };
+          if (Array.isArray(d.tags) && d.tags.length > 0) base.tags = d.tags;
+          if (Object.keys(numericTotals).length > 0) base.numericTotals = numericTotals;
+          if (includeRows) base.rows = filledRows;
+          else base.rowsPreview = filledRows.slice(0, 5);
+          return base;
+        };
+
+        // Prioritize activeDocId and any documents mentioned by title first
+        const prioritized = [...rawDocs].sort((a, b) => {
+          const aPri = a?.id === activeId ? 2 : (a?.title && qLower.includes(String(a.title).toLowerCase()) ? 1 : 0);
+          const bPri = b?.id === activeId ? 2 : (b?.title && qLower.includes(String(b.title).toLowerCase()) ? 1 : 0);
+          return bPri - aPri;
+        });
+
+        const result: any[] = [];
+        let runningChars = 0;
+        for (const doc of prioritized) {
+          const fullCompact = compactDoc(doc, true);
+          const fullLen = JSON.stringify(fullCompact).length;
+          if (runningChars + fullLen <= MAX_TOTAL_CHARS || doc?.id === activeId) {
+            result.push(fullCompact);
+            runningChars += fullLen;
+          } else {
+            const summaryCompact = compactDoc(doc, false);
+            result.push(summaryCompact);
+            runningChars += JSON.stringify(summaryCompact).length;
+          }
+        }
+        return result;
+      };
+
+      const compactedDocs = buildCompactDocumentsForAi(documents, activeDocId, prompt);
+      const compactSecrets = Array.isArray(secretList) ? secretList.slice(0, 100) : [];
+      const compactLabels = Array.isArray(customLabels) ? customLabels : [];
+
+      const systemInstruction = `Ti je një asistent AI për një aplikacion Bllok/Notepad, i jepur pas llogaritjeve, analizës inteligjente, matematikës, menaxhimit, hartimit dhe përmbledhjeve të çdo lloji në notebook. Përdoruesi po të jep leje dhe AKSES TË PLOTË për menaxhim, hartim, gjenerim raportesh PDF dhe gjithçka tjetër në bllokun e shënimeve (përfshirë ato manuale, të nënvizuara dhe ato në Cloud për llogarinë ${userEmail || 'genti8319@gmail.com'}).
 
 SHËRBIMET DHE LLOGARITJET QË DUHET TË BËSH:
 1. LLOGARITJE DHE STATISTIKA ME DETAJE: Kur përdoruesi kërkon në chat, bëj llogaritje matematike, nxirr raporte, statistika të hollësishme (shuma, mesatare, përqindje, fitime, sasi total, krahasime) bazuar te shënimet dhe tabelat ekzistuese.
 2. ANALIZË E MULTIMEDIAS (IMAZHE & PDF): Ti ke akses të plotë për të analizuar imazhet (PNG, JPG, JPEG) dhe dokumentet PDF të ngarkuara nga përdoruesi. Kur përdoruesi ngarkon një imazh apo skedar PDF, analizoji ato me shumë detaj, nxirr tabelat, rreshtat e shënimeve dhe të dhënat e tyre (si kg, arka, emra, sasi, çmim, vlerë), bëj llogaritjet dhe krijo automatikisht një listë shënimesh të re me veprimin "CREATE_DOCUMENT" sipas dokumentit origjinal të ngarkuar!
 3. AKSES TE BUTONAT PDF, CSV, TXT: Përdoruesi të lejon të ofrosh butona/veprime specifike për shkarkimin e dokumenteve si PDF, CSV ose TXT pa prekur ose modifikuar asgjë në shënimet e tyre. Për këtë qëllim, shto veprimet përkatëse tek "actions" siç shpjegohet më poshtë.
 4. ANALIZË DHE KRIJIM I ETIKETAVE (LABELS / FOLDERS): Ti ke akses të plotë tek etiketat për t'i analizuar, llogaritur apo krijuar etiketa të reja. Nëse përdoruesi kërkon të krijojë etiketa të reja, propozo veprimin "ADD_LABELS" me një listë të emrave të etiketave të reja. KUJDES: Ti mund vetëm të SHTOSH etiketa të reja, dhe ËSHTË E NDALUAR RREPTËSISHT të zëvendësosh ose të fshish etiketat ekzistuese (kujdes jo të zëvendësosh ekzistueset)!
+5. GJENERIM I DOKUMENTEVE & ARKIVAVE PDF ME DETAJE ("GENERATE_PDF_REPORT" / "pdfReport"):
+   - Kur përdoruesi kërkon PDF, raport PDF, arkiv PDF, ose thotë "më bëj llogari dhe gjenero PDF", "nxjerr raport me detaje në PDF", "përgatit dokument PDF me listat...", ti DUHET të studiosh, analizosh, llogaritësh shumat/totalet/detajet dhe të kthesh një objekt të strukturuar "pdfReport" DHE veprimin "GENERATE_PDF_REPORT" në "actions".
+   - "pdfReport" mund të përmbajë:
+     * "title": Titulli i qartë i raportit ose arkivës PDF.
+     * "subtitle": Përshkrimi/konteksti i shkurtër (p.sh. "Analizë Financiare & Llogaritje").
+     * "summary": Teksti i plotë i raportit, shpjegimeve, llogaritjeve dhe konkluzioneve.
+     * "metrics": Listë me tregues kryesorë [{ "label": "Emërtimi", "value": "Vlera e llogaritur" }] (p.sh. Totali kg, Vlera totale, Numri i listave, etj.).
+     * "documentIds": Array opsionale me ID-të ekzistuese të listave/blloqeve relevante nga "documents" për t'i përfshirë me të gjitha detajet dhe ngjyrat (statuset) e tyre në PDF (ose "includeAllDocuments": true nëse përdoruesi kërkon të gjithë arkivën e detajuar).
+     * "sections": Array me tabela/lista analitike të llogaritura nga ti, ku çdo seksion ka: { "heading": "...", "notes": "...", "headers": ["..."], "rows": [{ "cells": ["..."], "status": "none" | "ok" | "blue" | "yellow" | "x" }] }.
+   - Ky veprim nuk ndryshon ose fshin asnjë shënim të përdoruesit, por gjeneron direkt arkivën PDF nga chat-i.
 
-Këtu janë të dhënat e dokumenteve aktualë në formatin JSON:
-${JSON.stringify(documents, null, 2)}
+Këtu janë të dhënat e dokumenteve aktualë në formatin JSON (vetëm rreshtat me shënime + totalet numerike):
+${JSON.stringify(compactedDocs)}
 
 Shënimet Sekrete të përdoruesit (Blue/Secret Editor Text):
-${blueText || 'Ska shënime'}
+${String(blueText || 'Ska shënime').slice(0, 8000)}
 
 Lista e Checklistave Sekrete:
-${JSON.stringify(secretList || [], null, 2)}
+${JSON.stringify(compactSecrets)}
 
 Etiketat (Labels/Folders) ekzistuese të përdoruesit:
-${JSON.stringify(customLabels || [], null, 2)}
+${JSON.stringify(compactLabels)}
 
-Dokumenti aktual aktiv që përdoruesi po shikon është me ID: "${activeDocId}". Ofroni përgjigjen duke u bazuar plotësisht në KËTË DOKUMENT.
+Dokumenti aktual aktiv që përdoruesi po shikon është me ID: "${activeDocId}". Ofroni përgjigjen duke u bazuar plotësisht në KËTË DOKUMENT (ose në të gjitha dokumentet kur kërkohet analizë/arkiv e përgjithshme).
 
 RREGULLA TË RREPTA TË SIGURISË DHE KUFIZIMET:
 1. LEJE DHE KONFIRMIM NË DRITARE NJOFTIMI: Ti nuk mund të fshish apo ndryshosh asgjë direkt pa konfirmimin e përdoruesit. Çdo propozim për krijim, ndryshim apo fshirje DUHET të kthehet si një strukturë "actions" në formatin JSON të specifikuar më poshtë, në mënyrë që të shfaqet në dritaren e njoftimit për konfirmim dhe leje manuale nga përdoruesi.
@@ -291,7 +432,32 @@ RREGULLA TË RREPTA TË SIGURISË DHE KUFIZIMET:
 TI GJITHMONË DUHET TË KTHESH PËRGJIGJEN TËNDE NË FORMATIN JSON SI MË POSHTË:
 {
   "text": "Teksti i përgjigjes tënde për përdoruesin (raporti i plotë i llogaritjeve, analizat me detaje, statistikat e nxjerra apo plani i detajuar).",
+  "pdfReport": {
+    "title": "Titulli i Raportit PDF (vetëm kur përdoruesi kërkon PDF/raport/arkiv)",
+    "subtitle": "Nëntitulli",
+    "summary": "Përmbledhja dhe llogaritjet e detajuara për PDF",
+    "metrics": [
+      { "label": "Totali", "value": "0" }
+    ],
+    "includeAllDocuments": false,
+    "documentIds": [],
+    "sections": [
+      {
+        "heading": "Tabela e Detajuar / Llogaritjet",
+        "notes": "Shpjegim",
+        "headers": ["Kolona 1", "Kolona 2"],
+        "rows": [
+          { "cells": ["Vlera 1", "Vlera 2"], "status": "none" }
+        ]
+      }
+    ]
+  },
   "actions": [
+    {
+       "type": "GENERATE_PDF_REPORT",
+       "title": "Gjenero & Shkarko Raportin PDF",
+       "pdfReport": {}
+    },
     {
        "type": "CREATE_DOCUMENT",
        "title": "Titulli i bllokut të ri",
@@ -348,127 +514,129 @@ TI GJITHMONË DUHET TË KTHESH PËRGJIGJEN TËNDE NË FORMATIN JSON SI MË POSHT
      }
   ]
 }
-Kthe VETËM JSON të vlefshëm pa koodblock markdown!`;
+Kthe VETËM JSON të vlefshëm pa koodblock markdown! (Mos vendos veprime tek "actions" ose "pdfReport" nëse përdoruesi nuk i ka kërkuar, por përfshi "pdfReport" dhe "GENERATE_PDF_REPORT" sa herë përdoruesi kërkon PDF, raport të detajuar, llogaritje për arkivim ose eksport dokumenti).`;
 
-      // Prioritize modern, high-performance models as recommended in gemini-api guidelines
-      const candidateModels = [
-        'gemini-3.6-flash',
-        'gemini-3.1-flash-lite',
-        'gemini-3.1-pro-preview',
-        'gemini-flash-latest',
-        'gemini-2.5-flash',
-        'gemini-2.5-pro'
-      ];
+      // Use only valid active Gemini models per @google/genai guidelines.
+      // Route background autopilot checks to flash-lite so interactive chat preserves 20 RPD quota on gemini-4-hydrogen.
+      const baseCandidates = isBackgroundAutopilot
+        ? ['gemini-3.1-flash-lite']
+        : ['gemini-4-hydrogen', 'gemini-3.1-flash-lite'];
+      const keyTag = apiKey.slice(-8);
+      const nowMs = Date.now();
+      const activeCandidates = baseCandidates.filter(m => (modelCooldownUntil.get(`${keyTag}:${m}`) || 0) <= nowMs);
+      const candidateModels = activeCandidates.length > 0 ? activeCandidates : ['gemini-3.1-flash-lite'];
       let lastError: any = null;
+
+      const buildParts = () => {
+        const parts: any[] = [{ text: prompt || 'Analizo bllokun tim' }];
+        if (image && typeof image === 'string' && image.includes(',')) {
+          const b = image.split(',')[1];
+          const m = image.split(';')[0].split(':')[1];
+          parts.push({ inlineData: { data: b, mimeType: m } });
+        }
+        if (audio && typeof audio === 'string' && audio.includes(',')) {
+          const b = audio.split(',')[1];
+          const m = audio.split(';')[0].split(':')[1];
+          parts.push({ inlineData: { data: b, mimeType: m } });
+        }
+        return parts;
+      };
+
+      const buildConfig = (modelName: string) => {
+        const cfg: any = {
+          systemInstruction,
+          responseMimeType: 'application/json'
+        };
+        if (modelName === 'gemini-4-hydrogen') {
+          cfg.thinkingConfig = { thinkingLevel: ThinkingLevel.LOW };
+        } else if (!modelName.startsWith('gemini-4-')) {
+          cfg.temperature = 0.2;
+        }
+        return cfg;
+      };
+
+      const tryCallWithClient = async (client: GoogleGenAI, modelName: string) => {
+        const response = await client.models.generateContent({
+          model: modelName,
+          contents: buildParts(),
+          config: buildConfig(modelName)
+        });
+        let rawText = (response.text || '{}').trim();
+        if (rawText.startsWith('```')) {
+          rawText = rawText.replace(/^```[a-z]*\n?/i, '').replace(/```$/i, '').trim();
+        }
+        try {
+          return JSON.parse(rawText);
+        } catch {
+          return { text: response.text || 'Analiza u krye me sukses.' };
+        }
+      };
 
       for (const modelName of candidateModels) {
         try {
-          const response = await ai.models.generateContent({
-            model: modelName,
-            contents: (() => { 
-              const parts: any[] = [{ text: prompt || 'Analizo bllokun mun' }]; 
-              if (image) { 
-                const b = image.split(',')[1]; 
-                const m = image.split(';')[0].split(':')[1]; 
-                parts.push({ inlineData: { data: b, mimeType: m } }); 
-              } 
-              if (audio) { 
-                const b = audio.split(',')[1]; 
-                const m = audio.split(';')[0].split(':')[1]; 
-                parts.push({ inlineData: { data: b, mimeType: m } }); 
-              } 
-              return parts; 
-            })(),
-            config: {
-              systemInstruction,
-              temperature: 0.2,
-              responseMimeType: 'application/json'
-            }
-          });
-
-          let rawText = response.text || '{}';
-          rawText = rawText.trim();
-          if (rawText.startsWith('```')) {
-            rawText = rawText.replace(/^```[a-z]*\n?/i, '').replace(/```$/i, '').trim();
-          }
-
-          let parsedResponse: any = {};
-          try {
-            parsedResponse = JSON.parse(rawText);
-          } catch(pe) {
-            parsedResponse = { text: response.text || 'Analiza u krye me sukses.' };
-          }
+          const parsedResponse = await tryCallWithClient(ai, modelName);
           return res.json(parsedResponse);
         } catch (err: any) {
           const errMsg = (err.message || '').toLowerCase();
-          const isApiKeyError = errMsg.includes('api key not valid') || 
-                               errMsg.includes('api_key_invalid') || 
-                               errMsg.includes('api key') || 
-                               errMsg.includes('unauthenticated') || 
-                               errMsg.includes('invalid key');
+          const isApiKeyError =
+            errMsg.includes('api key not valid') ||
+            errMsg.includes('api_key_invalid') ||
+            errMsg.includes('unauthenticated') ||
+            errMsg.includes('invalid key') ||
+            (errMsg.includes('api key') && !errMsg.includes('quota'));
+          const isQuotaErr =
+            err?.status === 429 ||
+            errMsg.includes('resource_exhausted') ||
+            errMsg.includes('quota') ||
+            errMsg.includes('rate limit');
 
           if (isApiKeyError) {
             const fallbackKey = (process.env.GEMINI_API_KEY || '').trim();
-            if (fallbackKey && apiKey !== fallbackKey) {
-              console.log(`[AI Chat Info] API Key was invalid. Swapping to fallback GEMINI_API_KEY for model ${modelName}`);
+            if (!isPlaceholderKey(fallbackKey) && apiKey !== fallbackKey) {
               apiKey = fallbackKey;
-              ai = new GoogleGenAI({ 
+              ai = new GoogleGenAI({
                 apiKey,
-                httpOptions: {
-                  headers: {
-                    'User-Agent': 'aistudio-build'
-                  }
-                }
+                httpOptions: { headers: { 'User-Agent': 'aistudio-build' } }
               });
-
               try {
-                const response = await ai.models.generateContent({
-                  model: modelName,
-                  contents: (() => { 
-                    const parts: any[] = [{ text: prompt || 'Analizo bllokun mun' }]; 
-                    if (image) { 
-                      const b = image.split(',')[1]; 
-                      const m = image.split(';')[0].split(':')[1]; 
-                      parts.push({ inlineData: { data: b, mimeType: m } }); 
-                    } 
-                    if (audio) { 
-                      const b = audio.split(',')[1]; 
-                      const m = audio.split(';')[0].split(':')[1]; 
-                      parts.push({ inlineData: { data: b, mimeType: m } }); 
-                    } 
-                    return parts; 
-                  })(),
-                  config: {
-                    systemInstruction,
-                    temperature: 0.2,
-                    responseMimeType: 'application/json'
-                  }
-                });
-
-                let rawText = response.text || '{}';
-                rawText = rawText.trim();
-                if (rawText.startsWith('```')) {
-                  rawText = rawText.replace(/^```[a-z]*\n?/i, '').replace(/```$/i, '').trim();
-                }
-
-                let parsedResponse: any = {};
-                try {
-                  parsedResponse = JSON.parse(rawText);
-                } catch(pe) {
-                  parsedResponse = { text: response.text || 'Analiza u krye me sukses.' };
-                }
+                const parsedResponse = await tryCallWithClient(ai, modelName);
                 return res.json(parsedResponse);
               } catch (retryErr: any) {
                 lastError = retryErr;
-                break; // Break the candidate loop immediately because the fallback key is also invalid
+                break;
               }
             } else {
               lastError = err;
-              break; // Break the candidate loop immediately because the key is invalid and we have no different fallback
+              break;
             }
-          } else {
-            console.log(`[AI Chat Info] Model ${modelName} returned status:`, err.message || err);
+          } else if (isQuotaErr) {
+            const isDaily = errMsg.includes('per_day') || errMsg.includes('perday') || errMsg.includes('per day');
+            const cooldownMs = isDaily ? 30 * 60 * 1000 : 60 * 1000;
+            modelCooldownUntil.set(`${apiKey.slice(-8)}:${modelName}`, Date.now() + cooldownMs);
             lastError = err;
+            // Silently proceed to next model (e.g. gemini-3.1-flash-lite)
+          } else {
+            console.warn(`[AI Chat] Model ${modelName} fallback triggered:`, err?.status || errMsg.slice(0, 140));
+            lastError = err;
+          }
+        }
+      }
+
+      // If all candidates hit quota on a custom key, try fallback server GEMINI_API_KEY once if different
+      const lastErrMsg = String(lastError?.message || '').toLowerCase();
+      const hitQuota = lastError?.status === 429 || lastErrMsg.includes('resource_exhausted') || lastErrMsg.includes('quota');
+      const fallbackEnvKey = (process.env.GEMINI_API_KEY || '').trim();
+      if (hitQuota && !isPlaceholderKey(fallbackEnvKey) && apiKey !== fallbackEnvKey) {
+        const fallbackAi = new GoogleGenAI({
+          apiKey: fallbackEnvKey,
+          httpOptions: { headers: { 'User-Agent': 'aistudio-build' } }
+        });
+        for (const modelName of ['gemini-4-hydrogen', 'gemini-3.1-flash-lite']) {
+          try {
+            const parsedResponse = await tryCallWithClient(fallbackAi, modelName);
+            return res.json(parsedResponse);
+          } catch (fbErr: any) {
+            lastError = fbErr;
           }
         }
       }
@@ -476,27 +644,36 @@ Kthe VETËM JSON të vlefshëm pa koodblock markdown!`;
       throw lastError || new Error("Asnjë nga modelet e AI nuk u përgjigj.");
     } catch (err: any) {
       const errMsg = (err.message || '').toLowerCase();
-      const isApiKeyError = errMsg.includes('api key not valid') || 
-                           errMsg.includes('api_key_invalid') || 
-                           errMsg.includes('api key') || 
-                           errMsg.includes('unauthenticated') || 
-                           errMsg.includes('invalid key');
+      const isApiKeyError =
+        errMsg.includes('api key not valid') ||
+        errMsg.includes('api_key_invalid') ||
+        errMsg.includes('unauthenticated') ||
+        errMsg.includes('invalid key') ||
+        (errMsg.includes('api key') && !errMsg.includes('quota'));
+      const isQuotaError =
+        err?.status === 429 ||
+        errMsg.includes('resource_exhausted') ||
+        errMsg.includes('quota') ||
+        errMsg.includes('rate limit');
 
       let friendlyMessage = err.message || 'Ndodhi një gabim gjatë komunikimit me AI.';
       if (isApiKeyError) {
         console.log('[AI Chat Info] Gemini API Key is missing or invalid.');
-        friendlyMessage = 'Çelësi juaj API i Gemini nuk është i vlefshëm ose mungon. Ju lutem kontrolloni dhe rregulloni konfigurimin e çelësit tuaj në panelin "Settings > Secrets" të AI Studio, ose klikoni ikonën e konfigurimit të çelësit (🔑) lart në këtë dritare chat-i për të vendosur një çelës API personal.';
+        friendlyMessage = 'Çelësi juaj API i Gemini nuk është i vlefshëm ose mungon. Ju lutem kontrolloni çelësin tuaj në panelin "Settings > Secrets" të AI Studio, ose klikoni ikonën e konfigurimit të çelësit (🔑) lart në këtë dritare chat-i për të vendosur një çelës API personal (AIza... ose AQ...).';
+      } else if (isQuotaError) {
+        console.log('[AI Chat Info] Gemini API quota exhausted (429).');
+        friendlyMessage = 'Kuota (limiti i përdorimit) për këtë çelës Gemini API është tejkaluar (429 RESOURCE_EXHAUSTED). Provoni përsëri pas pak çastesh ose vendosni një çelës me plan të aktivizuar.';
       } else {
         console.log('[AI Chat Info] Unhandled AI request:', err.message || err);
       }
 
       return res.status(200).json({
-        text: `⚠️ **${friendlyMessage}**\n\n_Ju mund të krijoni një çelës API të ri plotësisht falas te Google AI Studio duke vizituar [aistudio.google.com](https://aistudio.google.com/)._`
+        text: isApiKeyError
+          ? `⚠️ **${friendlyMessage}**\n\n_Ju mund të krijoni një çelës API të ri plotësisht falas te Google AI Studio duke vizituar [aistudio.google.com](https://aistudio.google.com/)._`
+          : `⚠️ **${friendlyMessage}**`
       });
     }
   });
-
-
 
   // JSON 404 Handler for any unhandled /api/ requests
   app.all('/api/*', (req, res) => {

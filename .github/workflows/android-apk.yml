@@ -1,4 +1,4 @@
-name: Build Android APK
+name: Build Android APK & Play Store AAB
 
 on:
   push:
@@ -10,17 +10,21 @@ on:
       build_type:
         description: 'Lloji i ndërtimit (debug, release, both)'
         required: true
-        default: 'debug'
+        default: 'both'
         type: choice
         options:
           - 'debug'
           - 'release'
           - 'both'
       build_bundle:
-        description: 'Gjenero edhe Android App Bundle (.aab) për Google Play'
+        description: 'Gjenero edhe Android App Bundle (.aab) për Google Play Store'
         required: false
-        default: false
+        default: true
         type: boolean
+      version_name:
+        description: 'Version Name opsional (psh 1.3.0)'
+        required: false
+        type: string
       gemini_api_key:
         description: 'Gemini API Key (Opsionale: nëse nuk është vendosur te Repository Secrets)'
         required: false
@@ -28,7 +32,7 @@ on:
 
 jobs:
   build:
-    name: Build Android App
+    name: Build NoteBook3 Android App
     runs-on: ubuntu-latest
     permissions:
       contents: write
@@ -48,6 +52,7 @@ jobs:
 
       - name: Build Web App
         env:
+          CAPACITOR_BUILD: 'true'
           VITE_GEMINI_API_KEY: ${{ github.event.inputs.gemini_api_key || secrets.VITE_GEMINI_API_KEY || secrets.GEMINI_API_KEY || vars.VITE_GEMINI_API_KEY || '' }}
           GEMINI_API_KEY: ${{ github.event.inputs.gemini_api_key || secrets.GEMINI_API_KEY || secrets.VITE_GEMINI_API_KEY || vars.GEMINI_API_KEY || '' }}
         run: npm run build
@@ -59,51 +64,73 @@ jobs:
           elif [ ! -f "android/gradlew" ]; then
             echo "Drejtoria android ekziston por mungon gradlew. Po gjenerojmë wrapper-in e Gradle..."
             cd android
-            gradle wrapper --gradle-version 8.5 || gradle wrapper || echo "Dështoi krijimi i gradle wrapper!"
+            gradle wrapper --gradle-version 8.11.1 || gradle wrapper || echo "Dështoi krijimi i gradle wrapper!"
             cd ..
           fi
 
       - name: Sync Capacitor
         run: npx cap sync android
 
+      - name: Decode Release Keystore (if configured in Secrets)
+        env:
+          ANDROID_KEYSTORE_BASE64: ${{ secrets.ANDROID_KEYSTORE_BASE64 }}
+        run: |
+          if [ -n "$ANDROID_KEYSTORE_BASE64" ]; then
+            mkdir -p android/app
+            echo "$ANDROID_KEYSTORE_BASE64" | base64 --decode > android/app/release-keystore.jks
+            echo "Release keystore decoded successfully!"
+          else
+            echo "No ANDROID_KEYSTORE_BASE64 secret found; release APK will use debug signing fallback for direct phone install."
+          fi
+
+      - name: Configure Android Manifest, Permissions & Dynamic Version
+        env:
+          ANDROID_VERSION_NAME: ${{ github.event.inputs.version_name || '' }}
+          ANDROID_KEYSTORE_PASS: ${{ secrets.ANDROID_KEYSTORE_PASS }}
+          ANDROID_KEY_ALIAS: ${{ secrets.ANDROID_KEY_ALIAS }}
+          ANDROID_KEY_PASS: ${{ secrets.ANDROID_KEY_PASS }}
+        run: node .github/scripts/configure-android.mjs
+
       - name: Generate google-services.json if missing
         run: |
           mkdir -p android/app
           if [ ! -f "android/app/google-services.json" ]; then
-            echo '{
-              "project_info": {
-                "project_number": "763941768009",
-                "project_id": "gen-lang-client-0285886461",
-                "storage_bucket": "gen-lang-client-0285886461.firebasestorage.app"
-              },
-              "client": [
-                {
-                  "client_info": {
-                    "mobilesdk_app_id": "1:763941768009:android:a9f760da30e951bae1e898",
-                    "android_client_info": {
-                      "package_name": "com.notebook3.app"
-                    }
-                  },
-                  "oauth_client": [
-                    {
-                      "client_id": "763941768009-56j7cf164lf54kabjjin37nj7d4cmp98.apps.googleusercontent.com",
-                      "client_type": 3
-                    }
-                  ],
-                  "api_key": [
-                    {
-                      "current_key": "AIzaSyCADU2_rCXNhN4sDUjZAYgXbG8v_bQpRCI"
-                    }
-                  ],
-                  "services": {
-                    "appinvite_service": {
-                      "status": 1
-                    }
+            cat <<'EOF' > android/app/google-services.json
+          {
+            "project_info": {
+              "project_number": "763941768009",
+              "project_id": "gen-lang-client-0285886461",
+              "storage_bucket": "gen-lang-client-0285886461.firebasestorage.app"
+            },
+            "client": [
+              {
+                "client_info": {
+                  "mobilesdk_app_id": "1:763941768009:android:a9f760da30e951bae1e898",
+                  "android_client_info": {
+                    "package_name": "com.notebook3.app"
+                  }
+                },
+                "oauth_client": [
+                  {
+                    "client_id": "763941768009-56j7cf164lf54kabjjin37nj7d4cmp98.apps.googleusercontent.com",
+                    "client_type": 3
+                  }
+                ],
+                "api_key": [
+                  {
+                    "current_key": "AIzaSyCADU2_rCXNhN4sDUjZAYgXbG8v_bQpRCI"
+                  }
+                ],
+                "services": {
+                  "appinvite_service": {
+                    "status": 1
                   }
                 }
-              ],
-              "configuration_version": "1"
-            }' > android/app/google-services.json
+              }
+            ],
+            "configuration_version": "1"
+          }
+          EOF
             echo "Successfully generated google-services.json for Firebase compilation!"
           else
             echo "google-services.json already exists!"
@@ -118,16 +145,18 @@ jobs:
       - name: Setup Gradle
         uses: gradle/actions/setup-gradle@v3
 
-      - name: Build Android App (APK/AAB)
+      - name: Build Android App (APK / Play Store AAB)
         working-directory: ./android
+        env:
+          ANDROID_KEYSTORE_PASS: ${{ secrets.ANDROID_KEYSTORE_PASS }}
+          ANDROID_KEY_ALIAS: ${{ secrets.ANDROID_KEY_ALIAS }}
+          ANDROID_KEY_PASS: ${{ secrets.ANDROID_KEY_PASS }}
         run: |
           chmod +x gradlew
-          
-          # Përcakto vlerat e paracaktura
-          BUILD_TYPE="debug"
-          BUILD_BUNDLE="false"
-          
-          # Ndrysho vlerat nëse thirret në mënyrë manuale (workflow_dispatch)
+
+          BUILD_TYPE="both"
+          BUILD_BUNDLE="true"
+
           if [ "${{ github.event_name }}" = "workflow_dispatch" ]; then
             if [ -n "${{ github.event.inputs.build_type }}" ] && [ "${{ github.event.inputs.build_type }}" != "null" ]; then
               BUILD_TYPE="${{ github.event.inputs.build_type }}"
@@ -136,25 +165,52 @@ jobs:
               BUILD_BUNDLE="${{ github.event.inputs.build_bundle }}"
             fi
           fi
-          
+
           echo "========================================="
           echo " Ngjarja nxitëse: ${{ github.event_name }}"
           echo " Lloji i ndërtimit: $BUILD_TYPE"
           echo " Android App Bundle (AAB): $BUILD_BUNDLE"
           echo "========================================="
-          
+
           if [ "$BUILD_TYPE" = "debug" ] || [ "$BUILD_TYPE" = "both" ]; then
-            echo "--- Po ndërtohet Debug APK ---"
+            echo "--- Po ndërtohet Debug APK (gati për instalim në telefon) ---"
             ./gradlew assembleDebug --no-daemon --stacktrace
           fi
-          
+
           if [ "$BUILD_TYPE" = "release" ] || [ "$BUILD_TYPE" = "both" ]; then
             echo "--- Po ndërtohet Release APK ---"
             ./gradlew assembleRelease --no-daemon --stacktrace
-            
+
             if [ "$BUILD_BUNDLE" = "true" ]; then
-              echo "--- Po ndërtohet Release AAB Bundle ---"
+              echo "--- Po ndërtohet Release AAB Bundle për Play Store ---"
               ./gradlew bundleRelease --no-daemon --stacktrace
+            fi
+          fi
+
+      - name: Ensure Direct-Installable Signed Release APK
+        run: |
+          UNSIGNED_APK="android/app/build/outputs/apk/release/app-release-unsigned.apk"
+          SIGNED_RELEASE_APK="android/app/build/outputs/apk/release/app-release.apk"
+          SIGNED_OUT="android/app/build/outputs/apk/release/NoteBook3-release-installable.apk"
+          if [ -f "$SIGNED_RELEASE_APK" ]; then
+            cp -f "$SIGNED_RELEASE_APK" "$SIGNED_OUT"
+            echo "Copied keystore-signed Release APK to: $SIGNED_OUT"
+          elif [ -f "$UNSIGNED_APK" ]; then
+            if [ ! -f "$HOME/.android/debug.keystore" ]; then
+              mkdir -p "$HOME/.android"
+              keytool -genkey -v -keystore "$HOME/.android/debug.keystore" -alias androiddebugkey -keyalg RSA -keysize 2048 -validity 10000 -storepass android -keypass android -dname "CN=Android Debug,O=Android,C=US"
+            fi
+            APKSIGNER=$(find "$ANDROID_HOME/build-tools" -name "apksigner" 2>/dev/null | sort -V | tail -n 1)
+            ZIPALIGN=$(find "$ANDROID_HOME/build-tools" -name "zipalign" 2>/dev/null | sort -V | tail -n 1)
+            if [ -n "$APKSIGNER" ] && [ -f "$HOME/.android/debug.keystore" ]; then
+              if [ -n "$ZIPALIGN" ]; then
+                "$ZIPALIGN" -f -p 4 "$UNSIGNED_APK" "${UNSIGNED_APK}.aligned"
+                "$APKSIGNER" sign --ks "$HOME/.android/debug.keystore" --ks-pass pass:android --key-pass pass:android --out "$SIGNED_OUT" "${UNSIGNED_APK}.aligned"
+                rm -f "${UNSIGNED_APK}.aligned"
+              else
+                "$APKSIGNER" sign --ks "$HOME/.android/debug.keystore" --ks-pass pass:android --key-pass pass:android --out "$SIGNED_OUT" "$UNSIGNED_APK"
+              fi
+              echo "Created direct-installable Release APK: $SIGNED_OUT"
             fi
           fi
 
@@ -163,8 +219,13 @@ jobs:
           echo "=== PO GRUMBULLOJMË SKEDARËT APK DHE AAB ==="
           mkdir -p artifacts
           find android/app/build/outputs/ -type f \( -name "*.apk" -o -name "*.aab" \) -exec cp -v {} artifacts/ \; || echo "Nuk u gjet asnjë skedar ose pati gabim gjatë kopjimit!"
+          if [ -f "artifacts/app-debug.apk" ]; then
+            cp -f "artifacts/app-debug.apk" "artifacts/NoteBook3-debug.apk"
+          fi
           echo "=== PËRMBAJTJA E DIREKTORISË ARTIFACTS ==="
-          ls -la artifacts/ || echo "Direktoria artifacts është bosh!"
+          ls -lh artifacts/ || echo "Direktoria artifacts është bosh!"
+          echo "## NoteBook3 Android Build Artifacts" >> "$GITHUB_STEP_SUMMARY"
+          ls -lh artifacts/ >> "$GITHUB_STEP_SUMMARY" || true
           echo "========================================"
 
       - name: Upload Built Artifacts
@@ -179,17 +240,13 @@ jobs:
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
-          echo "Po përgatitet publikimi i APK-së në GitHub Releases..."
-          
-          # Delete existing 'latest-apk' release and tag locally and remotely if they exist
+          echo "Po përgatitet publikimi i APK-së & AAB-së në GitHub Releases..."
+
           gh release delete latest-apk --yes || true
           git push --delete origin latest-apk || true
           git tag -d latest-apk || true
-          
-          # Sleep briefly to ensure GitHub API processes the deletion
           sleep 3
-          
-          # Find existing files to attach from flat artifacts directory
+
           FILES_TO_UPLOAD=""
           for f in artifacts/*; do
             if [ -f "$f" ]; then
@@ -201,13 +258,10 @@ jobs:
 
           if [ -n "$FILES_TO_UPLOAD" ]; then
             gh release create latest-apk \
-              --title "NoteBook3 - Android App APK (Latest Build)" \
-              --notes "Ky është versioni më i fundit i aplikacionit NoteBook3 për Android (APK) i ndërtuar automatikisht nga GitHub Actions. Shkarkoni 'app-debug.apk' ose skedarët e tjerë më poshtë për ta instaluar direkt në telefonin tuaj." \
+              --title "NoteBook3 - Android APK & Play Store AAB (Latest Build)" \
+              --notes "Versioni më i fundit i NoteBook3 (com.notebook3.app) i ndërtuar automatikisht nga GitHub Actions. Për instalim direkt në telefon shkarkoni 'NoteBook3-debug.apk' ose 'NoteBook3-release-installable.apk'. Për Google Play Console përdorni skedarin '.aab'." \
               --prerelease \
               $FILES_TO_UPLOAD || echo "Gabim gjatë krijimit të release, po vazhdojmë..."
           else
             echo "Nuk u gjet asnjë skedar për të ngarkuar në Release!"
           fi
-
-
-
