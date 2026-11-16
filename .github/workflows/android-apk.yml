@@ -22,7 +22,7 @@ on:
         default: true
         type: boolean
       version_name:
-        description: 'Version Name opsional (psh 1.3.0)'
+        description: 'Version Name opsional (psh 1.4.0)'
         required: false
         type: string
       gemini_api_key:
@@ -258,8 +258,8 @@ jobs:
 
           if [ -n "$FILES_TO_UPLOAD" ]; then
             gh release create latest-apk \
-              --title "NoteBook3 - Android APK & Play Store AAB (Latest Build)" \
-              --notes "Versioni më i fundit i NoteBook3 (com.notebook3.app) i ndërtuar automatikisht nga GitHub Actions. Për instalim direkt në telefon shkarkoni 'NoteBook3-debug.apk' ose 'NoteBook3-release-installable.apk'. Për Google Play Console përdorni skedarin '.aab'." \
+              --title "NoteBook3 v1.4.0 - Android APK & Play Store AAB (Latest Build)" \
+              --notes "Versioni më i fundit v1.4.0 i NoteBook3 (com.notebook3.app, versionCode 200+) i ndërtuar automatikisht nga GitHub Actions — i pajtueshëm me Update direkt mbi versionin e mëparshëm në telefon. Për instalim direkt shkarkoni 'NoteBook3-debug.apk' ose 'NoteBook3-release-installable.apk'. Për Google Play Console përdorni skedarin '.aab'." \
               --prerelease \
               $FILES_TO_UPLOAD || echo "Gabim gjatë krijimit të release, po vazhdojmë..."
           else

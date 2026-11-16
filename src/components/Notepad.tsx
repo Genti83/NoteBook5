@@ -542,7 +542,6 @@ const verifyPermission = async (fileHandle: any, readWrite: boolean) => {
 export function Notepad() {
   const { 
     user, loading, 
-    loginWithGoogle: hookGoogleLogin, 
     loginWithEmail: hookEmailLogin, 
     registerWithEmail: hookEmailRegister, 
     loginAnonymously: hookAnonymousLogin, 
@@ -5740,32 +5739,6 @@ const exportChatResponseToPdf = async () => {
       }));
       showToast(t('🔓 Verifikimi i sigurisë u krye! Show View është hapur.', '🔓 Security verification passed! Show View is open.'));
   };
-  const loginWithGoogle = async () => {
-      try {
-         const googleUser = await hookGoogleLogin(); if (googleUser && googleUser.email) { localStorage.setItem("grid_notepad_saved_email", googleUser.email); }
-         if (googleUser === null) {
-            // This means a redirect was started! So we wait.
-            showToast(t("Po ju ridrejtojmë tek Google për hyrje...", "Redirecting to Google for sign-in..."));
-            return;
-         }
-         localStorage.setItem('grid_cloud_sync_freq', '500');
-         setCloudSyncFrequency(500);
-         localStorage.removeItem('grid_notepad_custom_uid'); 
-         setAuthModal(false);
-         showToast(t("Hyrje e suksesshme me Google! Sinkronizimi Cloud u aktivizua.", "Google sign-in successful! Cloud sync activated."));
-         if (documents.length === 0 || (documents.length === 1 && documents[0].rows.length === 0)) {
-            setTimeout(() => handleFullCloudRestore(), 1000);
-         } else {
-            setTimeout(() => forceCloudBackup(), 1500);
-         }
-      } catch (err: any) {
-         console.error("Google auth err:", err);
-         setAuthError({ code: err.code || 'unknown', message: err.message, provider: 'google' });
-         if (err.code === 'auth/popup-closed-by-user' || err.code === 'auth/cancelled-popup-request') {
-             showToast(t("Dritarja u mbyll! Provoni përsëri ose përdorni hyrjen me Email/Password.", "Popup closed! Try again or sign in with Email/Password."));
-         }
-      }
-  };
   const handleAnonymousAuth = async () => {
       try {
           showToast(t("Po lidhemi me Cloud...", "Connecting to Cloud..."));
@@ -9517,61 +9490,77 @@ const exportChatResponseToPdf = async () => {
      return (
         <div className={`w-full max-w-[1200px] mx-auto flex flex-col sm:border sm:rounded-xl shadow-2xl font-sans relative overflow-hidden h-[100dvh] sm:min-h-[600px] sm:h-[90vh] ${baseBg} ${borderColor} ${textColor} z-10`}>
            {/* HEADER */}
-           <div className={`flex border-b py-3 px-4 gap-4 items-center justify-between shadow-sm sticky top-0 ${toolbarBg} ${borderColor} z-20`}>
-              <div className="flex items-center gap-3">
+           <div className={`flex flex-wrap border-b py-2.5 px-2.5 sm:px-4 gap-2 items-center justify-between shadow-sm sticky top-0 ${toolbarBg} ${borderColor} z-20`}>
+              <div className="flex items-center gap-2 min-w-0 flex-1">
                  <button 
                     onClick={() => { setOnlineView(null); setSelectedOnlineDoc(null); setIsOnlineEditing(false); setOnlineSelectedRowIdx(null); }}
-                    className="p-2 rounded-lg transition-colors flex items-center gap-1.5 text-xs font-bold bg-red-600 hover:bg-red-500 text-white shadow-sm"
+                    className="h-9 px-2.5 sm:px-3 rounded-xl transition-colors flex items-center gap-1.5 text-xs font-bold bg-blue-600 hover:bg-blue-500 text-white shadow-sm shrink-0"
                  >
-                    <ArrowLeft className="w-4 h-4" /> {t('Kthehu', 'Back')}
+                    <ArrowLeft className="w-4 h-4 shrink-0" />
+                    <span>{t('Kthehu', 'Back')}</span>
                  </button>
-                 <div className="flex flex-col">
-                    <span className="text-sm font-extrabold flex items-center gap-1.5 uppercase tracking-wide">
-                       {isGist ? <Github className="w-4 h-4 text-zinc-900 dark:text-white" /> : <Cloud className="w-4 h-4 text-emerald-500" />}
-                       {titleText}
+                 <div className="flex flex-col min-w-0 flex-1">
+                    <span className="text-xs sm:text-sm font-extrabold flex items-center gap-1.5 uppercase tracking-wide truncate">
+                       {isGist ? <Github className="w-4 h-4 shrink-0 text-zinc-900 dark:text-white" /> : <Cloud className="w-4 h-4 shrink-0 text-emerald-500" />}
+                       <span className="truncate">{titleText}</span>
                     </span>
-                    <span className={`text-[10px] font-medium leading-tight ${isDark ? "text-zinc-500" : "text-zinc-400"} flex items-center gap-1.5`}>
-                       {isGist ? (
-                          githubUser ? (
-                             <>
-                                <img src={githubUser.avatar_url} alt="avatar" className="w-3.5 h-3.5 rounded-full border border-zinc-500/20" referrerPolicy="no-referrer" />
-                                <span>{t('Lidhur si:', 'Signed in as:')} <b className={isDark ? "text-zinc-300" : "text-zinc-700"}>{githubUser.login}</b> (Gist: {gistId ? gistId.substring(0, 8) + '...' : t('Pa caktuar', 'Unassigned')})</span>
-                             </>
+                    <div className="flex items-center gap-1.5 min-w-0 mt-0.5">
+                       <span className={`inline-flex items-center gap-1 px-1.5 py-0.5 rounded-md text-[10px] font-bold border shrink-0 ${
+                          (isGist ? Boolean(githubUser || gistId) : Boolean(user))
+                             ? "bg-emerald-500/15 text-emerald-500 border-emerald-500/30"
+                             : "bg-amber-500/15 text-amber-500 border-amber-500/30"
+                       }`}>
+                          {t('Lidhur', 'Connected')}
+                       </span>
+                       <span className={`text-[10px] font-medium leading-tight truncate ${isDark ? "text-zinc-400" : "text-zinc-500"} flex items-center gap-1 min-w-0`}>
+                          {isGist ? (
+                             githubUser ? (
+                                <>
+                                   <img src={githubUser.avatar_url} alt="avatar" className="w-3.5 h-3.5 rounded-full border border-zinc-500/20 shrink-0" referrerPolicy="no-referrer" />
+                                   <b className={`truncate ${isDark ? "text-zinc-200" : "text-zinc-700"}`}>{githubUser.login}</b>
+                                </>
+                             ) : (
+                                <span className="truncate">{gistId ? gistId.substring(0, 10) + '...' : t('Pa caktuar', 'Unassigned')}</span>
+                             )
                           ) : (
-                             `Gist Stream: ${gistId ? gistId.substring(0, 12) + '...' : t('Pa caktuar', 'Unassigned')}`
-                          )
-                       ) : (
-                          `${t('Lidhur si:', 'Signed in as:')} ${user?.email || localStorage.getItem('grid_notepad_saved_email') || t('Vizitor (Pa kyçur)', 'Visitor (Not logged in)')}`
-                       )}
-                    </span>
+                             <span className="truncate">{user?.email || localStorage.getItem('grid_notepad_saved_email') || t('Pa kyçur', 'Not logged in')}</span>
+                          )}
+                       </span>
+                    </div>
                  </div>
               </div>
-              {/* SEGMENTED PLATFORM TOGGLE */}
-              <div className="flex bg-zinc-500/10 p-0.5 rounded-lg border border-zinc-500/10 shrink-0">
+              {/* UNIFORM PLATFORM & REFRESH ACTIONS */}
+              <div className="flex items-center gap-1.5 shrink-0 max-w-full">
+                 {isOnlineAutoSyncing && (
+                    <span className="hidden md:flex items-center gap-1 h-9 px-2.5 rounded-xl bg-emerald-500/15 text-emerald-500 border border-emerald-500/30 text-[11px] font-bold animate-pulse shrink-0">
+                       <Loader2 className="w-3.5 h-3.5 animate-spin" /> {t('Duke ruajtur...', 'Saving...')}
+                    </span>
+                 )}
                  <button 
                     onClick={async () => { 
                        setOnlineView('cloud'); 
                        setSelectedOnlineDoc(null); 
-                       setOnlineSelectedLabel(null);
-                       setIsOnlineEditing(false);
-                       setOnlineSelectedRowIdx(null);
+                       setOnlineSelectedLabel(null); 
+                       setIsOnlineEditing(false); 
+                       setOnlineSelectedRowIdx(null); 
                        await fetchCloudDocsOnly(false);
                     }}
-                    className={`px-3 py-1.5 text-[11px] font-bold rounded-md transition-all flex items-center gap-1.5 ${
+                    className={`h-9 px-2.5 sm:px-3 text-[11px] font-bold rounded-xl border transition-all flex items-center gap-1.5 shrink-0 ${
                        !isGist 
-                          ? "bg-emerald-500 text-white shadow-sm" 
-                          : "text-zinc-500 hover:text-zinc-800 dark:hover:text-zinc-200"
+                          ? "bg-emerald-600 border-emerald-500 text-white shadow-sm" 
+                          : (isDark ? "bg-zinc-800 border-zinc-700 text-zinc-200 hover:bg-zinc-700" : "bg-white border-zinc-200 text-zinc-700 hover:bg-zinc-50")
                     }`}
                  >
-                    <Cloud className="w-3.5 h-3.5" /> Cloud
+                    <Cloud className="w-3.5 h-3.5 shrink-0" />
+                    <span>Cloud Firebase</span>
                  </button>
                  <button 
                     onClick={async () => { 
                        setOnlineView('gist'); 
                        setSelectedOnlineDoc(null); 
-                       setOnlineSelectedLabel(null);
-                       setIsOnlineEditing(false);
-                       setOnlineSelectedRowIdx(null);
+                       setOnlineSelectedLabel(null); 
+                       setIsOnlineEditing(false); 
+                       setOnlineSelectedRowIdx(null); 
                        if (gistId) { 
                           await viewGistContent(undefined, false); 
                        } else {
@@ -9582,22 +9571,15 @@ const exportChatResponseToPdf = async () => {
                           setOnlineNotesColor(latestNotesColorRef.current);
                        }
                     }}
-                    className={`px-3 py-1.5 text-[11px] font-bold rounded-md transition-all flex items-center gap-1.5 ${
+                    className={`h-9 px-2.5 sm:px-3 text-[11px] font-bold rounded-xl border transition-all flex items-center gap-1.5 shrink-0 ${
                        isGist 
-                          ? "bg-blue-500 text-white shadow-sm" 
-                          : "text-zinc-500 hover:text-zinc-800 dark:hover:text-zinc-200"
+                          ? "bg-blue-600 border-blue-500 text-white shadow-sm" 
+                          : (isDark ? "bg-zinc-800 border-zinc-700 text-zinc-200 hover:bg-zinc-700" : "bg-white border-zinc-200 text-zinc-700 hover:bg-zinc-50")
                     }`}
                  >
-                    <Github className="w-3.5 h-3.5" /> Gist
+                    <Github className="w-3.5 h-3.5 shrink-0" />
+                    <span>Gist</span>
                  </button>
-              </div>
-              
-              <div className="flex items-center gap-2">
-                 {isOnlineAutoSyncing && (
-                    <span className="hidden sm:flex items-center gap-1 px-2 py-1 rounded-lg bg-emerald-500/15 text-emerald-500 border border-emerald-500/30 text-[10px] font-bold animate-pulse">
-                       <Loader2 className="w-3 h-3 animate-spin" /> {t('Duke ruajtur...', 'Saving...')}
-                    </span>
-                 )}
                  <button 
                     onClick={async () => {
                        if (isGist) {
@@ -9606,74 +9588,80 @@ const exportChatResponseToPdf = async () => {
                           await fetchCloudDocsOnly(false);
                        }
                     }} 
-                    className={`p-2 rounded-lg transition-colors border ${isDark ? "bg-zinc-800 border-zinc-700 hover:bg-zinc-700 text-zinc-200" : "bg-white border-zinc-200 hover:bg-zinc-50 text-zinc-700"}`}
+                    className={`h-9 px-2.5 sm:px-3 text-[11px] font-bold rounded-xl transition-colors border flex items-center gap-1.5 shrink-0 ${isDark ? "bg-zinc-800 border-zinc-700 hover:bg-zinc-700 text-zinc-200" : "bg-white border-zinc-200 hover:bg-zinc-50 text-zinc-700"}`}
                     title={t('Rifresko të dhënat', 'Refresh data')}
                  >
-                    <RefreshCw className={`w-4 h-4 ${isFetchingCloud ? "animate-spin text-accent-500" : ""}`} />
+                    <RefreshCw className={`w-3.5 h-3.5 shrink-0 ${isFetchingCloud ? "animate-spin text-accent-500" : ""}`} />
+                    <span className="hidden xs:inline sm:inline">{t('Refresh', 'Refresh')}</span>
                  </button>
               </div>
            </div>
-           {/* SEGMENTED TAB SELECTOR */}
-           <div className={`flex border-b px-4 py-2.5 gap-2 overflow-x-auto shrink-0 ${isDark ? "bg-zinc-950 border-zinc-800" : "bg-zinc-50 border-zinc-200"}`}>
+           {/* UNIFORM 5-TAB BAR */}
+           <div className={`grid grid-cols-5 border-b px-2 sm:px-4 py-2 gap-1.5 shrink-0 ${isDark ? "bg-zinc-950 border-zinc-800" : "bg-zinc-50 border-zinc-200"}`}>
               <button 
                  id="tab-btn-lists"
                  onClick={() => { setOnlineDashboardTab('lists'); setIsOnlineEditing(false); }}
-                 className={`flex items-center gap-1.5 px-3.5 py-2 text-xs font-bold rounded-xl transition-all whitespace-nowrap active:scale-95 ${
+                 title={`${t('Listat e Notebook', 'Notebook Lists')} (${docsList.length})`}
+                 className={`h-12 sm:h-10 flex flex-col sm:flex-row items-center justify-center gap-0.5 sm:gap-1.5 px-1 sm:px-2 min-w-0 text-[10px] sm:text-xs font-bold rounded-xl transition-all active:scale-95 ${
                     onlineDashboardTab === 'lists' 
                        ? "bg-accent-500 text-white shadow-md shadow-accent-500/10" 
                        : (isDark ? "bg-zinc-900 border border-zinc-800 hover:bg-zinc-800 text-zinc-400 hover:text-zinc-200" : "bg-white border border-zinc-200 hover:bg-zinc-100 text-zinc-600 hover:text-zinc-800")
                  }`}
               >
-                 <FileSpreadsheet className="w-4 h-4 text-amber-500" />
-                 {t('Listat e Notebook', 'Notebook Lists')} ({docsList.length})
+                 <FileSpreadsheet className={`w-4 h-4 shrink-0 ${onlineDashboardTab === 'lists' ? "text-white" : "text-amber-500"}`} />
+                 <span className="truncate max-w-full leading-none text-[9px] sm:text-xs">{t('Lista', 'Lists')} ({docsList.length})</span>
               </button>
               <button 
                  id="tab-btn-labels"
                  onClick={() => { setOnlineDashboardTab('labels'); setIsOnlineEditing(false); }}
-                 className={`flex items-center gap-1.5 px-3.5 py-2 text-xs font-bold rounded-xl transition-all whitespace-nowrap active:scale-95 ${
+                 title={`${t('Etiketat', 'Labels')} (${mergeAllLabels(onlineCustomLabels, [], docsList).length})`}
+                 className={`h-12 sm:h-10 flex flex-col sm:flex-row items-center justify-center gap-0.5 sm:gap-1.5 px-1 sm:px-2 min-w-0 text-[10px] sm:text-xs font-bold rounded-xl transition-all active:scale-95 ${
                     onlineDashboardTab === 'labels' 
                        ? "bg-accent-500 text-white shadow-md shadow-accent-500/10" 
                        : (isDark ? "bg-zinc-900 border border-zinc-800 hover:bg-zinc-800 text-zinc-400 hover:text-zinc-200" : "bg-white border border-zinc-200 hover:bg-zinc-100 text-zinc-600 hover:text-zinc-800")
                  }`}
               >
-                 <Tag className="w-4 h-4 text-indigo-500" />
-                 {t('Etiketat', 'Labels')} ({mergeAllLabels(onlineCustomLabels, [], docsList).length})
+                 <Tag className={`w-4 h-4 shrink-0 ${onlineDashboardTab === 'labels' ? "text-white" : "text-indigo-500"}`} />
+                 <span className="truncate max-w-full leading-none text-[9px] sm:text-xs">{t('Etiketa', 'Labels')} ({mergeAllLabels(onlineCustomLabels, [], docsList).length})</span>
               </button>
               <button 
                  id="tab-btn-notes"
                  onClick={() => { setOnlineDashboardTab('notes'); setIsOnlineEditing(false); }}
-                 className={`flex items-center gap-1.5 px-3.5 py-2 text-xs font-bold rounded-xl transition-all whitespace-nowrap active:scale-95 ${
+                 title={t('Shënimet me Tekst', 'Text Notes')}
+                 className={`h-12 sm:h-10 flex flex-col sm:flex-row items-center justify-center gap-0.5 sm:gap-1.5 px-1 sm:px-2 min-w-0 text-[10px] sm:text-xs font-bold rounded-xl transition-all active:scale-95 ${
                     onlineDashboardTab === 'notes' 
                        ? "bg-accent-500 text-white shadow-md shadow-accent-500/10" 
                        : (isDark ? "bg-zinc-900 border border-zinc-800 hover:bg-zinc-800 text-zinc-400 hover:text-zinc-200" : "bg-white border border-zinc-200 hover:bg-zinc-100 text-zinc-600 hover:text-zinc-800")
                  }`}
               >
-                 <FileText className="w-4 h-4 text-blue-500" />
-                 {t('Shënimet me Tekst', 'Text Notes')}
+                 <FileText className={`w-4 h-4 shrink-0 ${onlineDashboardTab === 'notes' ? "text-white" : "text-blue-500"}`} />
+                 <span className="truncate max-w-full leading-none text-[9px] sm:text-xs">{t('Shënime', 'Notes')}</span>
               </button>
               <button 
                  id="tab-btn-secrets"
                  onClick={() => { setOnlineDashboardTab('secrets'); setIsOnlineEditing(false); }}
-                 className={`flex items-center gap-1.5 px-3.5 py-2 text-xs font-bold rounded-xl transition-all whitespace-nowrap active:scale-95 ${
+                 title={`${t('Lista Sekrete', 'Secrets')} (${onlineSecretList.length})`}
+                 className={`h-12 sm:h-10 flex flex-col sm:flex-row items-center justify-center gap-0.5 sm:gap-1.5 px-1 sm:px-2 min-w-0 text-[10px] sm:text-xs font-bold rounded-xl transition-all active:scale-95 ${
                     onlineDashboardTab === 'secrets' 
                        ? "bg-accent-500 text-white shadow-md shadow-accent-500/10" 
                        : (isDark ? "bg-zinc-900 border border-zinc-800 hover:bg-zinc-800 text-zinc-400 hover:text-zinc-200" : "bg-white border border-zinc-200 hover:bg-zinc-100 text-zinc-600 hover:text-zinc-800")
                  }`}
               >
-                 <Lock className="w-4 h-4 text-emerald-500" />
-                 {t('Lista e Sekreteve', 'Secrets')} ({onlineSecretList.length})
+                 <Lock className={`w-4 h-4 shrink-0 ${onlineDashboardTab === 'secrets' ? "text-white" : "text-emerald-500"}`} />
+                 <span className="truncate max-w-full leading-none text-[9px] sm:text-xs">{t('Sekrete', 'Secrets')} ({onlineSecretList.length})</span>
               </button>
               <button 
                  id="tab-btn-trash"
                  onClick={() => { setOnlineDashboardTab('trash'); setIsOnlineEditing(false); setSelectedTrashIds([]); }}
-                 className={`flex items-center gap-1.5 px-3.5 py-2 text-xs font-bold rounded-xl transition-all whitespace-nowrap active:scale-95 border ${
+                 title={`${t('Listat në Kosh', 'Trash')} (${onlineTrashItems.length})`}
+                 className={`h-12 sm:h-10 flex flex-col sm:flex-row items-center justify-center gap-0.5 sm:gap-1.5 px-1 sm:px-2 min-w-0 text-[10px] sm:text-xs font-bold rounded-xl transition-all active:scale-95 border ${
                     onlineDashboardTab === 'trash' 
                        ? "bg-red-600 border-red-500 text-white shadow-md shadow-red-600/25" 
                        : (isDark ? "bg-red-950/30 border-red-500/40 hover:bg-red-950/60 text-red-400 hover:text-red-300" : "bg-red-50 border-red-300 hover:bg-red-100 text-red-600 hover:text-red-700")
                  }`}
               >
-                 <Trash2 className={`w-4 h-4 ${onlineDashboardTab === 'trash' ? "text-white" : "text-red-500"}`} />
-                 {t('Listat në Kosh', 'Trash')} ({onlineTrashItems.length})
+                 <Trash2 className={`w-4 h-4 shrink-0 ${onlineDashboardTab === 'trash' ? "text-white" : "text-red-500"}`} />
+                 <span className="truncate max-w-full leading-none text-[9px] sm:text-xs">{t('Kosh', 'Trash')} ({onlineTrashItems.length})</span>
               </button>
            </div>
            {/* MAIN CONTAINER (SPLIT SCREEN OR ACTIVE TAB VIEW) */}
@@ -9748,24 +9736,6 @@ const exportChatResponseToPdf = async () => {
                              {t('Regjistrohu', 'Sign Up')}
                           </button>
                        </div>
-                       <div className="relative flex py-1 items-center">
-                          <div className="flex-grow border-t border-zinc-200 dark:border-zinc-800"></div>
-                          <span className="flex-shrink mx-2 text-[9px] text-zinc-400 uppercase font-bold">{t('ose vazhdo me', 'or continue with')}</span>
-                          <div className="flex-grow border-t border-zinc-200 dark:border-zinc-800"></div>
-                       </div>
-                       <button
-                          onClick={async () => {
-                             try {
-                                await hookGoogleLogin();
-                                showToast(t("U kyçët me sukses me Google!", "Signed in with Google successfully!"));
-                             } catch (e: any) {
-                                showToast(t("Gabim gjatë kyçjes me Google.", "Error signing in with Google."));
-                             }
-                          }}
-                          className="w-full py-2 bg-red-600 hover:bg-red-500 text-white text-xs font-bold rounded-lg transition-colors flex items-center justify-center gap-1.5"
-                       >
-                          Google Sign-In
-                       </button>
                     </div>
                  </div>
               ) : (
@@ -9962,12 +9932,12 @@ const exportChatResponseToPdf = async () => {
                                    <div className="flex items-center gap-2 sm:hidden mb-0.5">
                                       <button
                                          onClick={() => { setSelectedOnlineDoc(null); setIsOnlineEditing(false); }}
-                                         className="p-1.5 rounded-lg bg-red-600 hover:bg-red-500 text-white transition-colors"
+                                         className="p-1.5 rounded-lg bg-blue-600 hover:bg-blue-500 text-white transition-colors"
                                          title={t('Kthehu', 'Back')}
                                       >
                                          <ArrowLeft className="w-3.5 h-3.5" />
                                       </button>
-                                      <span className="text-[10px] font-bold text-red-500">{t('Kthehu', 'Back')}</span>
+                                      <span className="text-[10px] font-bold text-blue-500">{t('Kthehu', 'Back')}</span>
                                    </div>
                                    <div className="flex gap-2">
                                       <div className="flex-1 min-w-[120px]">
@@ -10000,7 +9970,7 @@ const exportChatResponseToPdf = async () => {
                                       <div className="flex items-center gap-1.5 md:hidden">
                                          <button
                                             onClick={() => setSelectedOnlineDoc(null)}
-                                            className="p-1.5 rounded-lg bg-red-600 hover:bg-red-500 text-white transition-colors"
+                                            className="p-1.5 rounded-lg bg-blue-600 hover:bg-blue-500 text-white transition-colors"
                                             title={t('Kthehu tek listat', 'Back to lists')}
                                          >
                                             <ArrowLeft className="w-3.5 h-3.5" />
@@ -10822,7 +10792,7 @@ const exportChatResponseToPdf = async () => {
                               {onlineSelectedLabel ? (
                                  <button
                                     onClick={() => setOnlineSelectedLabel(null)}
-                                    className="p-1.5 rounded-lg bg-red-600 hover:bg-red-500 text-white transition-colors shadow-sm"
+                                    className="p-1.5 rounded-lg bg-blue-600 hover:bg-blue-500 text-white transition-colors shadow-sm"
                                  >
                                     <ArrowLeft className="w-4 h-4" />
                                  </button>
@@ -11681,10 +11651,10 @@ const exportChatResponseToPdf = async () => {
                     {currentPath.length > 0 && (
                       <div
                         onClick={() => setCurrentPath(currentPath.slice(0, -1))}
-                        className="p-3 rounded-xl border border-red-500/35 bg-red-500/10 hover:bg-red-600/20 flex items-center gap-2.5 cursor-pointer transition-all active:scale-98"
+                        className="p-3 rounded-xl border border-blue-500 bg-blue-600 hover:bg-blue-500 text-white shadow-sm flex items-center gap-2.5 cursor-pointer transition-all active:scale-98"
                       >
-                        <ArrowLeft className="w-4 h-4 text-red-500" />
-                        <span className="text-xs font-bold text-red-500">
+                        <ArrowLeft className="w-4 h-4 text-white" />
+                        <span className="text-xs font-bold text-white">
                           ... ({t('Kthehu mbrapa', 'Go up')})
                         </span>
                       </div>
@@ -13142,7 +13112,7 @@ const exportChatResponseToPdf = async () => {
                                   <div className="flex items-center gap-2 flex-1 min-w-0">
                                      <button 
                                         onClick={() => setActiveSecretId(null)}
-                                        className="md:hidden p-1.5 bg-red-600 hover:bg-red-500 text-white rounded-lg shrink-0 transition-colors"
+                                        className="md:hidden p-1.5 bg-blue-600 hover:bg-blue-500 text-white rounded-lg shrink-0 transition-colors"
                                         title={t("Kthehu te lista", "Back to list")}
                                      >
                                         <ArrowLeft className="w-4 h-4 text-white font-bold" />
@@ -13520,18 +13490,6 @@ const exportChatResponseToPdf = async () => {
                                            </ol>
                                         </div>
                                      )}
-                                     {authError.code === 'auth/operation-not-allowed' && authError.provider === 'google' && (
-                                        <div className="space-y-1.5">
-                                           <p className="font-medium text-zinc-200">
-                                              {t('Lidhja me Google nuk është e aktivizuar në Firebase për projektin tuaj.', 'Google sign-in is not enabled in your Firebase project.')}
-                                           </p>
-                                           <ol className="list-decimal pl-4.5 space-y-1 text-[11px] text-zinc-400">
-                                              <li>{t('Hapni Firebase Console duke përdorur butonin më poshtë.', 'Open the Firebase Console using the button below.')}</li>
-                                              <li>{t('Shkoni tek seksioni "Authentication" (majtas) dhe klikoni tab-in "Sign-in method".', 'Go to the "Authentication" section (left sidebar) and click the "Sign-in method" tab.')}</li>
-                                              <li>{t('Aktivizoni ofruesin "Google", vendosni email-in tuaj mbështetës të projektit dhe klikoni "Save".', 'Enable the "Google" provider, select your project support email, and click "Save".')}</li>
-                                           </ol>
-                                        </div>
-                                     )}
                                      {authError.code === 'auth/admin-restricted-operation' && authError.provider === 'anonymous' && (
                                         <div className="space-y-1.5">
                                            <p className="font-medium text-zinc-200">
@@ -13727,25 +13685,8 @@ const exportChatResponseToPdf = async () => {
                                <span className="flex-shrink mx-4 text-zinc-500 text-[10px] font-bold uppercase tracking-widest">OSE / OR</span>
                                <div className="flex-grow border-t border-zinc-800/40"></div>
                             </div>
-                            {/* Alternative Login buttons */}
-                            <div className="grid grid-cols-1 sm:grid-cols-2 gap-2">
-                               <button
-                                  type="button"
-                                  onClick={loginWithGoogle}
-                                  className={`py-2.5 px-4 rounded-xl border text-xs font-bold flex items-center justify-center gap-2 transition-all ${
-                                     isDark 
-                                        ? "bg-zinc-900 border-zinc-800 text-zinc-200 hover:bg-zinc-800" 
-                                        : "bg-white border-zinc-200 text-zinc-700 hover:bg-zinc-50 shadow-sm"
-                                  }`}
-                               >
-                                  <svg className="w-4 h-4 shrink-0" viewBox="0 0 24 24">
-                                     <path fill="#EA4335" d="M12 5.04c1.61 0 3.05.56 4.19 1.65l3.12-3.12C17.43 1.84 14.9 1 12 1 7.35 1 3.4 3.65 1.5 7.5l3.6 2.8C6.01 7.15 8.79 5.04 12 5.04z" />
-                                     <path fill="#4285F4" d="M23.49 12.27c0-.81-.07-1.59-.2-2.27H12v4.51h6.46c-.29 1.48-1.14 2.73-2.4 3.58l3.6 2.8c2.11-1.95 3.83-4.82 3.83-8.62z" />
-                                     <path fill="#FBBC05" d="M5.1 14.7c-.24-.73-.38-1.5-.38-2.3s.14-1.57.38-2.3L1.5 7.3C.54 9.12 0 11.16 0 13.3c0 2.14.54 4.18 1.5 6l3.6-2.6z" />
-                                     <path fill="#34A853" d="M12 23c3.24 0 5.97-1.07 7.96-2.91l-3.6-2.8c-1.11.75-2.53 1.21-4.36 1.21-3.21 0-5.99-2.11-6.9-5.26l-3.6 2.8C3.4 20.35 7.35 23 12 23z" />
-                                  </svg>
-                                  {t('Vazhdo me Google', 'Continue with Google')}
-                               </button>
+                            {/* Alternative Login button */}
+                            <div className="grid grid-cols-1 gap-2">
                                <button
                                   type="button"
                                   onClick={handleAnonymousAuth}
@@ -14424,34 +14365,39 @@ const exportChatResponseToPdf = async () => {
       {aiChatModal && (
           <div className="fixed top-0 right-0 z-[95] w-full max-w-[100vw] sm:w-[400px] flex flex-col shadow-2xl border-l animate-in slide-in-from-right transition-colors"
                style={{ backgroundColor: isDark ? '#18181b' : '#ffffff', borderColor: isDark ? '#3f3f46' : '#e4e4e7', height: '100dvh' }}>
-             <div className={`flex justify-between items-center p-4 border-b shrink-0 ${isDark ? "border-zinc-800" : "border-zinc-200"}`}>
-                <div className="flex items-center gap-2">
-                   <h3 className={`text-lg font-bold flex items-center gap-2 ${textColor}`}>
-                      <Sparkles className="w-5 h-5 text-accent-500" /> {t('Asistenti AI', 'AI Assistant')}
-                   </h3>
-                </div>
-                <div className="flex items-center gap-2">
+             <div className={`flex justify-between items-center gap-2 px-3 py-2.5 border-b shrink-0 ${isDark ? "border-zinc-800 bg-zinc-950/60" : "border-zinc-200 bg-zinc-50"}`}>
+                <div className="flex items-center gap-2 min-w-0 flex-1">
                    <button
                       id="ai-chat-back-btn"
                       onClick={() => setAiChatModal(false)}
-                      className="text-[11px] px-2.5 py-1.5 rounded-lg font-bold flex items-center gap-1.5 active:scale-95 transition-all bg-red-600 hover:bg-red-500 text-white shadow-sm"
+                      className="h-9 px-2.5 rounded-xl font-bold text-xs flex items-center gap-1 active:scale-95 transition-all bg-blue-600 hover:bg-blue-500 text-white shadow-sm shrink-0"
                       title={t("Kthehu te Notebook", "Back to Notebook")}
                    >
-                      <ArrowLeft className="w-3.5 h-3.5" /> {t('Kthehu', 'Back')}
+                      <ArrowLeft className="w-3.5 h-3.5 shrink-0" />
+                      <span>{t('Kthehu', 'Back')}</span>
                    </button>
-
+                   <h3 className={`text-sm sm:text-base font-extrabold flex items-center gap-1.5 min-w-0 truncate ${textColor}`}>
+                      <Sparkles className="w-4 h-4 text-accent-500 shrink-0" />
+                      <span className="truncate">{t('Asistenti AI', 'AI Assistant')}</span>
+                   </h3>
+                </div>
+                <div className="flex items-center gap-1.5 shrink-0">
                    <button
                       onClick={() => setShowKeyConfig(!showKeyConfig)}
-                      className={`text-[11px] px-2.5 py-1 rounded-lg border font-semibold flex items-center gap-1.5 transition-all ${
+                      className={`h-9 px-2.5 rounded-xl border text-xs font-bold flex items-center gap-1 transition-all shrink-0 ${
                          userGeminiKey ? 'bg-emerald-500/10 text-emerald-500 border-emerald-500/30' : 'bg-amber-500/10 text-amber-500 border-amber-500/30 hover:bg-amber-500/20'
                       }`}
                       title={t("Konfiguro Gemini API Key për APK / Offline", "Configure Gemini API Key for APK / Offline")}
                    >
-                      <Key className="w-3.5 h-3.5" />
-                      {userGeminiKey ? t('API Key Personale', 'Personal API Key') : t('Cilëso API Key', 'Set API Key')}
+                      <Key className="w-3.5 h-3.5 shrink-0" />
+                      <span>{userGeminiKey ? t('API Key', 'API Key') : t('API Key', 'API Key')}</span>
                    </button>
-                   <button onClick={() => setAiChatModal(false)} className="p-1.5 rounded-lg bg-red-500/15 hover:bg-red-600 text-red-500 hover:text-white transition-colors">
-                      <X className="w-5 h-5"/>
+                   <button
+                      onClick={() => setAiChatModal(false)}
+                      className="h-9 w-9 rounded-xl bg-red-600 hover:bg-red-500 text-white flex items-center justify-center transition-colors shrink-0 shadow-sm"
+                      title={t('Mbyll', 'Close')}
+                   >
+                      <X className="w-4 h-4 shrink-0" />
                    </button>
                 </div>
              </div>
@@ -14940,38 +14886,6 @@ const exportChatResponseToPdf = async () => {
                                       {t('Regjistrohu', 'Register')}
                                    </button>
                                 </div>
-                                <div className="relative flex py-1 items-center">
-                                    <div className="flex-grow border-t border-zinc-300 dark:border-zinc-700"></div>
-                                    <span className="flex-shrink mx-3 text-zinc-400 text-[9px] font-bold uppercase">{t('Ose', 'Or')}</span>
-                                    <div className="flex-grow border-t border-zinc-300 dark:border-zinc-700"></div>
-                                </div>
-                                <button
-                                   type="button"
-                                   onClick={loginWithGoogle}
-                                   className={`w-full py-2 rounded-lg border font-bold text-xs flex items-center justify-center gap-2 transition-all shadow-sm ${
-                                      isDark ? "bg-zinc-800 border-zinc-700 text-white hover:bg-zinc-700" : "bg-white border-zinc-300 text-zinc-700 hover:bg-zinc-50"
-                                   }`}
-                                >
-                                   <svg className="w-4 h-4 shrink-0" viewBox="0 0 24 24">
-                                      <path
-                                         fill="#4285F4"
-                                         d="M22.56 12.25c0-.78-.07-1.53-.2-2.25H12v4.26h5.92c-.26 1.37-1.04 2.53-2.21 3.31v2.77h3.57c2.08-1.92 3.28-4.74 3.28-8.09z"
-                                      />
-                                      <path
-                                         fill="#34A853"
-                                         d="M12 23c2.97 0 5.46-.98 7.28-2.66l-3.57-2.77c-.98.66-2.23 1.06-3.71 1.06-2.86 0-5.29-1.93-6.16-4.53H2.18v2.84C3.99 20.53 7.7 23 12 23z"
-                                      />
-                                      <path
-                                         fill="#FBBC05"
-                                         d="M5.84 14.09c-.22-.66-.35-1.36-.35-2.09s.13-1.43.35-2.09V7.06H2.18C1.43 8.55 1 10.22 1 12s.43 3.45 1.18 4.94l2.85-2.22.81-.63z"
-                                      />
-                                      <path
-                                         fill="#EA4335"
-                                         d="M12 5.38c1.62 0 3.06.56 4.21 1.64l3.15-3.15C17.45 2.09 14.97 1 12 1 7.7 1 3.99 3.47 2.18 7.06l3.66 2.84c.87-2.6 3.3-4.53 6.16-4.53z"
-                                      />
-                                   </svg>
-                                   {t('Hyr me Google', 'Sign in with Google')}
-                                </button>
                              </div>
                          </div>
                       )}
@@ -16775,13 +16689,16 @@ const exportChatResponseToPdf = async () => {
           <div className="fixed inset-0 z-[100] flex items-center justify-center bg-black/60 p-3 sm:p-4 animate-in fade-in overflow-y-auto">
              <div className={`max-w-2xl w-full max-w-[calc(100vw-24px)] max-h-[88dvh] flex flex-col rounded-2xl shadow-2xl border ${isDark ? "bg-zinc-900 border-zinc-700" : "bg-white border-zinc-300"}`}>
                 <div className={`flex justify-between items-center p-4 sm:p-5 border-b ${isDark ? "border-zinc-800" : "border-zinc-200"}`}>
-                   <h3 className={`text-lg font-bold flex items-center gap-2 ${textColor}`}>
-                      <button onClick={() => setCloudModal(false)} className="mr-1 p-1.5 bg-red-600 hover:bg-red-500 text-white rounded-xl transition-colors">
-                         <svg xmlns="http://www.w3.org/2000/svg" width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" className="w-5 h-5"><path d="m15 18-6-6 6-6"/></svg>
+                   <div className="flex items-center gap-2 min-w-0">
+                      <button onClick={() => setCloudModal(false)} className="h-9 px-2.5 bg-blue-600 hover:bg-blue-500 text-white rounded-xl transition-colors flex items-center gap-1 text-xs font-bold shrink-0" title={t('Kthehu', 'Back')}>
+                         <ArrowLeft className="w-4 h-4 shrink-0" />
+                         <span>{t('Kthehu', 'Back')}</span>
                       </button>
-                      <Cloud className="w-5 h-5 text-emerald-500" /> Firebase Cloud
-                   </h3>
-                   <button onClick={() => setCloudModal(false)} className="p-1.5 rounded-lg bg-red-500/15 text-red-500 hover:text-white hover:bg-red-600 transition-colors">
+                      <h3 className={`text-base sm:text-lg font-bold flex items-center gap-2 truncate ${textColor}`}>
+                         <Cloud className="w-5 h-5 text-emerald-500 shrink-0" /> Firebase Cloud
+                      </h3>
+                   </div>
+                   <button onClick={() => setCloudModal(false)} className="h-9 w-9 rounded-xl bg-red-600 text-white hover:bg-red-500 flex items-center justify-center transition-colors shrink-0">
                       <X className="w-5 h-5"/>
                    </button>
                 </div>
@@ -17310,7 +17227,7 @@ const exportChatResponseToPdf = async () => {
                      <div className="min-w-0">
                         <h3 className="text-sm sm:text-base font-extrabold truncate flex items-center gap-2">
                            {t('Rreth NoteBook3 & Privatësia', 'About NoteBook3 & Privacy')}
-                           <span className="px-2 py-0.5 rounded-full text-[10px] font-mono font-black bg-emerald-500/15 text-emerald-500 border border-emerald-500/30">v1.3.0</span>
+                           <span className="px-2 py-0.5 rounded-full text-[10px] font-mono font-black bg-emerald-500/15 text-emerald-500 border border-emerald-500/30">v1.4.0</span>
                         </h3>
                         <p className={`text-[11px] truncate ${isDark ? 'text-zinc-400' : 'text-zinc-500'}`}>
                            com.notebook3.app · {t('Gati për Google Play & GitHub APK', 'Google Play & GitHub APK Ready')}
@@ -17396,7 +17313,7 @@ const exportChatResponseToPdf = async () => {
                         <div className="grid grid-cols-2 gap-2.5">
                            <div className={`p-3 rounded-xl border ${isDark ? 'bg-zinc-950/60 border-zinc-800' : 'bg-white border-zinc-200'}`}>
                               <div className="text-[10px] font-bold uppercase text-zinc-500">{t('Versioni', 'Version')}</div>
-                              <div className="text-sm font-black mt-0.5">1.3.0</div>
+                              <div className="text-sm font-black mt-0.5">1.4.0</div>
                            </div>
                            <div className={`p-3 rounded-xl border ${isDark ? 'bg-zinc-950/60 border-zinc-800' : 'bg-white border-zinc-200'}`}>
                               <div className="text-[10px] font-bold uppercase text-zinc-500">{t('ID e Paketës', 'Package ID')}</div>
@@ -17432,8 +17349,8 @@ const exportChatResponseToPdf = async () => {
                            type="button"
                            onClick={() => {
                               const policyText = t(
-                                 'NoteBook3 (com.notebook3.app) v1.3.0 — Publikues: Genti83 (në bashkëpunim me Gemini Studio). Politikë Privatësie: Offline-First, zero reklama/gjurmues, zero READ_CALENDAR ose MANAGE_EXTERNAL_STORAGE. Sinkronizimi Firebase/GitHub Gist dhe funksionet AI përdoren vetëm me kërkesë të përdoruesit, me të drejtë të plotë për fshirje të dhënash (Settings -> App Reset).',
-                                 'NoteBook3 (com.notebook3.app) v1.3.0 — Publisher: Genti83 (in collaboration with Gemini Studio). Privacy Policy: Offline-First, zero ads/trackers, no READ_CALENDAR or MANAGE_EXTERNAL_STORAGE. Optional cloud sync and AI features require explicit user action, with full user data deletion via Settings -> App Reset.'
+                                 'NoteBook3 (com.notebook3.app) v1.4.0 — Publikues: Genti83 (në bashkëpunim me Gemini Studio). Politikë Privatësie: Offline-First, zero reklama/gjurmues, zero READ_CALENDAR ose MANAGE_EXTERNAL_STORAGE. Sinkronizimi Firebase/GitHub Gist dhe funksionet AI përdoren vetëm me kërkesë të përdoruesit, me të drejtë të plotë për fshirje të dhënash (Settings -> App Reset).',
+                                 'NoteBook3 (com.notebook3.app) v1.4.0 — Publisher: Genti83 (in collaboration with Gemini Studio). Privacy Policy: Offline-First, zero ads/trackers, no READ_CALENDAR or MANAGE_EXTERNAL_STORAGE. Optional cloud sync and AI features require explicit user action, with full user data deletion via Settings -> App Reset.'
                               );
                               navigator.clipboard.writeText(policyText);
                               showToast(t('✓ Politika e Privatësisë u kopjua!', '✓ Privacy Policy copied!'));
@@ -18000,7 +17917,7 @@ const exportChatResponseToPdf = async () => {
                            <span className="flex items-center gap-3">
                               <ShieldCheck className="w-4 h-4 shrink-0" /> {t('Rreth App, Privatësia & Lejet', 'About App, Privacy & Permissions')}
                            </span>
-                           <span className="text-[10px] font-mono opacity-80">v1.3.0</span>
+                           <span className="text-[10px] font-mono opacity-80">v1.4.0</span>
                        </button>
                        <button
                           onClick={() => {
@@ -18432,7 +18349,7 @@ const exportChatResponseToPdf = async () => {
                               <div className="flex items-center gap-2.5">
                                  <button
                                     onClick={() => { setSelectedLabelFolder(null); setCatalogSearch(''); }}
-                                    className="p-2 rounded-xl bg-red-600 hover:bg-red-500 text-white transition-all shadow-sm active:scale-95"
+                                    className="p-2 rounded-xl bg-blue-600 hover:bg-blue-500 text-white transition-all shadow-sm active:scale-95"
                                     title={t("Kthehu mbrapa", "Go back")}
                                  >
                                     <ArrowLeft className="w-4 h-4" />
@@ -18805,7 +18722,7 @@ const exportChatResponseToPdf = async () => {
               {/* 1. BACK */}
               <button 
                  onClick={() => setShowConfirmClose(true)} 
-                 className="h-9 w-9 rounded-xl flex items-center justify-center transition-all shadow-md hover:scale-[1.03] active:scale-95 shrink-0 bg-red-600 hover:bg-red-500 text-white shadow-red-500/20" 
+                 className="h-9 w-9 rounded-xl flex items-center justify-center transition-all shadow-md hover:scale-[1.03] active:scale-95 shrink-0 bg-blue-600 hover:bg-blue-500 text-white shadow-blue-500/20" 
                  title={t("Kthehu", "Back")}
               >
                  <ArrowLeft className="w-4 h-4 text-white font-bold" />
@@ -19058,14 +18975,18 @@ const exportChatResponseToPdf = async () => {
                  onContextMenu={(e) => e.preventDefault()}
                  style={{ touchAction: 'none', userSelect: 'none', WebkitUserSelect: 'none' }}
                  title={t("Kliko për Kalendarin Personal • Mbaje shtypur 3 sekonda për Axhendën lokale të Pajisjes", "Click for Personal Calendar • Hold 3s for Phone Calendar Agenda")}
-                 className={`relative overflow-hidden text-[11px] font-bold tracking-tight flex items-center gap-1.5 px-2.5 py-1.5 rounded-xl border whitespace-nowrap shrink-0 h-9 cursor-pointer select-none transition-all ${
+                 className={`relative overflow-hidden text-[11px] font-bold tracking-tight flex items-center gap-1.5 px-2.5 py-1.5 rounded-xl border whitespace-nowrap shrink-0 h-9 cursor-pointer select-none transition-all animate-pulse ${
                     isHoldingDate
                        ? (isDark ? "bg-emerald-900/60 border-emerald-400 text-emerald-300 scale-[0.98]" : "bg-emerald-100 border-emerald-500 text-emerald-800 scale-[0.98]")
                        : calendarSettings.alarmsMuted
-                          ? (isDark ? "bg-zinc-900 border-amber-500/40 text-amber-400 hover:border-amber-500" : "bg-amber-50 border-amber-300 text-amber-700 hover:border-amber-500")
-                          : (isDark ? "bg-zinc-900 border-zinc-700/80 text-emerald-400 hover:border-emerald-500/60" : "bg-emerald-50 border-emerald-200 text-emerald-700 hover:border-emerald-400")
+                          ? (isDark ? "bg-zinc-900 border-amber-500/50 text-amber-400 hover:border-amber-500 ring-2 ring-amber-500/25 shadow-[0_0_12px_rgba(245,158,11,0.2)]" : "bg-amber-50 border-amber-300 text-amber-700 hover:border-amber-500 ring-2 ring-amber-500/25 shadow-[0_0_12px_rgba(245,158,11,0.2)]")
+                          : (isDark ? "bg-zinc-900 border-emerald-500/60 text-emerald-400 hover:border-emerald-400 ring-2 ring-emerald-500/30 shadow-[0_0_14px_rgba(16,185,129,0.28)]" : "bg-emerald-50 border-emerald-300 text-emerald-700 hover:border-emerald-500 ring-2 ring-emerald-500/25 shadow-[0_0_14px_rgba(16,185,129,0.22)]")
                  }`}
               >
+                 <span className="relative flex h-2 w-2 shrink-0">
+                    <span className={`animate-ping absolute inline-flex h-full w-full rounded-full opacity-75 ${calendarSettings.alarmsMuted ? 'bg-amber-400' : 'bg-emerald-400'}`} />
+                    <span className={`relative inline-flex rounded-full h-2 w-2 ${calendarSettings.alarmsMuted ? 'bg-amber-500' : 'bg-emerald-500'}`} />
+                 </span>
                  <Calendar className="w-3.5 h-3.5 shrink-0" />
                  <span className="tabular-nums">{renderAlbanianDateTime()}</span>
                  {calendarEvents.filter(ev => ev.alarmEnabled && !ev.completed).length > 0 && (
@@ -19425,12 +19346,13 @@ const exportChatResponseToPdf = async () => {
             <div className={`max-w-md w-full max-w-[calc(100vw-24px)] max-h-[90dvh] overflow-y-auto p-5 sm:p-6 rounded-2xl shadow-2xl border ${isDark ? "bg-zinc-900 border-zinc-700" : "bg-white border-zinc-300"}`}>
                <h3 className={`text-xl font-bold mb-3 ${textColor}`}>{t('Kthehu në Katalog', 'Return to Catalog')}</h3>
                <p className={`mb-6 text-sm ${isDark ? "text-zinc-400" : "text-zinc-600"}`}>{t('A i keni ruajtur ndryshimet tuaja? Nëse dilni pa ruajtur, ndryshimet e fundit nuk do të ruhen.', 'Have you saved your changes? If you exit without saving, recent changes will not be saved.')}</p>
-               <div className="flex justify-end gap-3">
+               <div className="flex justify-between items-center gap-3">
+                  <button onClick={() => { setShowConfirmClose(false); setActiveDocId(null); }} className="px-4 py-2 bg-blue-600 hover:bg-blue-500 text-white font-semibold text-sm rounded-xl transition-colors flex items-center gap-1.5">
+                     <ArrowLeft className="w-4 h-4 shrink-0" />
+                     {t('Kthehu', 'Return')}
+                  </button>
                   <button onClick={() => setShowConfirmClose(false)} className="px-4 py-2 font-semibold text-sm rounded-xl bg-red-600 hover:bg-red-500 text-white transition-colors">
                      {t('Anulo', 'Cancel')}
-                  </button>
-                  <button onClick={() => { setShowConfirmClose(false); setActiveDocId(null); }} className="px-4 py-2 bg-red-700 hover:bg-red-600 text-white font-semibold text-sm rounded-xl transition-colors">
-                     {t('Kthehu', 'Return')}
                   </button>
                </div>
             </div>

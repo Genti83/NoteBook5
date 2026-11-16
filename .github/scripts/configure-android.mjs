@@ -11,13 +11,13 @@ const variablesGradlePath = path.join(androidDir, 'variables.gradle');
 
 const runNumber = Number(process.env.GITHUB_RUN_NUMBER || '1') || 1;
 const explicitVersionCode = process.env.ANDROID_VERSION_CODE ? Number(process.env.ANDROID_VERSION_CODE) : null;
-const versionCode = explicitVersionCode && explicitVersionCode > 0 ? explicitVersionCode : 100 + runNumber;
+const versionCode = explicitVersionCode && explicitVersionCode > 0 ? explicitVersionCode : 200 + runNumber;
 const pkgVersion = (() => {
   try {
     const pkg = JSON.parse(fs.readFileSync(path.join(root, 'package.json'), 'utf8'));
-    return pkg.version || '1.3.0';
+    return pkg.version || '1.4.0';
   } catch {
-    return '1.3.0';
+    return '1.4.0';
   }
 })();
 const versionName = (process.env.ANDROID_VERSION_NAME || '').trim() || `${pkgVersion}.${runNumber}`;
