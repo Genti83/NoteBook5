@@ -11,7 +11,7 @@ import {
   Smartphone, Sparkles, Sun, Tag, Terminal, Type, UploadCloud, User,
   RemoveFormatting, Database, ImageMinus, ImagePlus, HardDrive, Menu, MoreVertical,
   ZoomIn, ZoomOut, AlignLeft, AlignCenter, AlignRight, Italic,
-  Undo2, Redo2, Pin, Filter, ArrowUp, ArrowDown, CopyPlus, SlidersHorizontal,  Shield, ShieldCheck, Replace,
+  Undo2, Redo2, Pin, Filter, ArrowUp, ArrowDown, ArrowUpDown, CopyPlus, SlidersHorizontal, Shield, ShieldCheck, Replace,
   Bell, BellRing, Fingerprint, Clock, AlarmClock, Volume2, VolumeX, ChevronLeft, CheckCircle2, Circle, Repeat, ExternalLink, ShieldAlert, Info, Music
 } from 'lucide-react';
 import { db, auth, pauseFirestoreNetwork, resumeFirestoreNetwork, subscribeFirestoreQuotaTrip } from '../lib/firebase';
@@ -275,53 +275,99 @@ interface HeaderInputProps {
 }
 function HeaderInput({ initialValue, onChange, className, placeholder, readOnly }: HeaderInputProps) {
   const [val, setVal] = React.useState(initialValue);
-  
+  const isFocusedRef = React.useRef(false);
+  const isComposingRef = React.useRef(false);
+  const lastEmittedRef = React.useRef(initialValue);
+
   React.useEffect(() => {
-    setVal(initialValue);
+    const incoming = initialValue || "";
+    if (!isFocusedRef.current && !isComposingRef.current && incoming !== lastEmittedRef.current) {
+      setVal(incoming);
+      lastEmittedRef.current = incoming;
+    }
   }, [initialValue]);
+
+  const emitVal = (nextVal: string) => {
+    if (readOnly) return;
+    if (nextVal !== lastEmittedRef.current) {
+      lastEmittedRef.current = nextVal;
+      onChange(nextVal);
+    }
+  };
+
   return (
     <input
       type="text"
       value={val}
       readOnly={readOnly}
+      onFocus={() => { isFocusedRef.current = true; }}
       onChange={(e) => {
         if (readOnly) return;
-        setVal(e.target.value);
+        const newVal = e.target.value;
+        setVal(newVal);
+        if (!isComposingRef.current) {
+          emitVal(newVal);
+        }
       }}
-      onBlur={() => {
-        if (!readOnly) onChange(val);
+      onCompositionStart={() => { isComposingRef.current = true; }}
+      onCompositionEnd={(e) => {
+        isComposingRef.current = false;
+        const finalVal = (e.target as HTMLInputElement).value;
+        setVal(finalVal);
+        emitVal(finalVal);
+      }}
+      onBlur={(e) => {
+        isFocusedRef.current = false;
+        isComposingRef.current = false;
+        emitVal(e.currentTarget.value);
       }}
       onKeyDown={(e) => {
         if (e.key === "Enter") {
-          if (!readOnly) onChange(val);
+          isComposingRef.current = false;
+          emitVal(e.currentTarget.value);
           (e.target as HTMLInputElement).blur();
         }
       }}
       className={className}
       placeholder={placeholder}
+      spellCheck={false}
     />
   );
 }
 interface CellInputProps {
   initialValue: string;
   onChange: (val: string) => void;
+  onFocus?: (e: React.FocusEvent<HTMLTextAreaElement>) => void;
+  onBlur?: (e: React.FocusEvent<HTMLTextAreaElement>) => void;
+  dataRowIndex?: number;
+  dataColKey?: string;
   readOnly?: boolean;
   startHold?: () => void;
   stopHold?: () => void;
   className?: string;
   style?: React.CSSProperties;
 }
-function CellInput({ initialValue, onChange, readOnly, startHold, stopHold, className, style }: CellInputProps) {
+function CellInput({ initialValue, onChange, onFocus, onBlur, dataRowIndex, dataColKey, readOnly, startHold, stopHold, className, style }: CellInputProps) {
   const [val, setVal] = React.useState(initialValue || "");
+  const isFocusedRef = React.useRef(false);
+  const isComposingRef = React.useRef(false);
+  const lastEmittedRef = React.useRef(initialValue || "");
   React.useEffect(() => {
-    setVal(initialValue || "");
+    const incoming = initialValue || "";
+    if (!isFocusedRef.current && !isComposingRef.current && incoming !== lastEmittedRef.current) {
+      setVal(incoming);
+      lastEmittedRef.current = incoming;
+    }
   }, [initialValue]);
   const handleChange = (e: React.ChangeEvent<HTMLTextAreaElement>) => {
     const newVal = e.target.value;
     setVal(newVal);
-    onChange(newVal);
+    if (!isComposingRef.current) {
+      lastEmittedRef.current = newVal;
+      onChange(newVal);
+    }
   };
-  const handlePointerDown = (e: React.PointerEvent) => {
+  const handlePointerDown = () => {
     if (startHold) startHold();
   };
   const handlePointerUp = () => {
@@ -330,8 +376,33 @@ function CellInput({ initialValue, onChange, readOnly, startHold, stopHold, clas
   return (
     <textarea
       value={val}
+      data-row-index={dataRowIndex}
+      data-col-key={dataColKey}
       onChange={handleChange}
+      onFocus={(e) => {
+        isFocusedRef.current = true;
+        if (onFocus) onFocus(e);
+      }}
+      onBlur={(e) => {
+        isFocusedRef.current = false;
+        isComposingRef.current = false;
+        const finalVal = e.currentTarget.value;
+        if (finalVal !== lastEmittedRef.current) {
+          lastEmittedRef.current = finalVal;
+          onChange(finalVal);
+        }
+        if (onBlur) onBlur(e);
+      }}
+      onCompositionStart={() => { isComposingRef.current = true; }}
+      onCompositionEnd={(e) => {
+        isComposingRef.current = false;
+        const finalVal = (e.target as HTMLTextAreaElement).value;
+        setVal(finalVal);
+        lastEmittedRef.current = finalVal;
+        onChange(finalVal);
+      }}
       readOnly={readOnly}
+      spellCheck={false}
       onPointerDown={handlePointerDown}
       onPointerUp={handlePointerUp}
       onPointerLeave={handlePointerUp}
@@ -1763,7 +1834,31 @@ export function Notepad() {
   const [headers, setHeaders] = useState<string[]>(['Kolona 1', 'Kolona 2', 'Kolona 3', 'Kolona 4']);
   const [columnWidths, setColumnWidths] = useState<number[]>([150, 150, 150, 150]);
   const [rows, setRows] = useState<GridRow[]>([]);
+  const latestRowsRef = useRef<GridRow[]>([]);
+  latestRowsRef.current = rows;
+  const latestSelectedRowsRef = useRef<Set<number>>(new Set());
+  latestSelectedRowsRef.current = selectedRows;
+  const [isRowMoveMode, setIsRowMoveMode] = useState<boolean>(false);
+  const moveDraftSnapshotRef = useRef<{ rows: GridRow[]; selectedRows: number[] } | null>(null);
+  const dragMoveStateRef = useRef<{ active: boolean; lastY: number; stepPx: number; didDrag: boolean; pointerId: number | null }>({
+    active: false,
+    lastY: 0,
+    stepPx: 28,
+    didDrag: false,
+    pointerId: null,
+  });
+  const rowHadContentOnFocusRef = useRef<Record<number, boolean>>({});
+  const modalHadContentOnOpenRef = useRef<boolean>(false);
+  const lastFocusedCellRef = useRef<{ rIndex: number; colKey: string } | null>(null);
   const [activeCell, setActiveCell] = useState<{ rIndex: number; colKey: string } | null>(null);
+  useEffect(() => {
+    setIsRowMoveMode(false);
+    moveDraftSnapshotRef.current = null;
+    dragMoveStateRef.current.active = false;
+    dragMoveStateRef.current.didDrag = false;
+    rowHadContentOnFocusRef.current = {};
+    lastFocusedCellRef.current = null;
+  }, [activeDocId]);
   const [modalText, setModalText] = useState<string>('');
   const [toastMessage, setToastMessage] = useState<string | null>(null);
   const [previewImage, setPreviewImage] = useState<string | null>(null);
@@ -3732,7 +3827,7 @@ Kthe VETËM JSON të vlefshëm pa koodblock markdown!`;
       }).join(',');
     });
     const csvContent = [headerLine, ...rowLines].join('\n');
-    const blob = new Blob([csvContent], { type: 'text/csv;charset=utf-8;' });
+    const blob = new Blob(['\uFEFF' + csvContent], { type: 'text/csv;charset=utf-8;' });
     const url = URL.createObjectURL(blob);
     const link = document.createElement('a');
     link.href = url;
@@ -3874,7 +3969,7 @@ Kthe VETËM JSON të vlefshëm pa koodblock markdown!`;
       .replace(/[\u2013\u2014]/g, '-')
       .replace(/[\u2018\u2019]/g, "'")
       .replace(/[\u201C\u201D]/g, '"')
-      .replace(/[^\x0A\x0D\x20-\x7E\xA0-\xFF]/g, '')
+      .replace(/[^\x0A\x0D\x20-\x7E\xA0-\xFF\u20AC]/g, '')
       .trim();
   };
 
@@ -5760,13 +5855,13 @@ const exportChatResponseToPdf = async () => {
       }
   };
   
-  const executeProtectedAction = (action: () => void) => {
+  const executeProtectedAction = (action: () => void, onCancel?: () => void) => {
       setPasswordModalError('');
       const savedPassword = localStorage.getItem('grid_notepad_pin');
       if (!savedPassword) {
-          setPasswordModal({ isOpen: true, action, type: 'setup' });
+          setPasswordModal({ isOpen: true, action, onCancel: onCancel || null, type: 'setup' });
       } else {
-          setPasswordModal({ isOpen: true, action, type: 'verify' });
+          setPasswordModal({ isOpen: true, action, onCancel: onCancel || null, type: 'verify' });
       }
   };
   const handlePinSubmit = () => {
@@ -6653,6 +6748,9 @@ const exportChatResponseToPdf = async () => {
      }, 3000);
   };
   const resetToMainHome = () => {
+     if (moveDraftSnapshotRef.current) {
+        cancelRowMoveMode();
+     }
      setActiveDocId(null);
      setOnlineView(null);
      setMainTab('lista');
@@ -7199,8 +7297,10 @@ const exportChatResponseToPdf = async () => {
        pushUndoSnapshot();
        lastCellTypingSnapshotTsRef.current = now;
      }
-     const newRows = [...rows];
+     const baseRows = latestRowsRef.current.length === rows.length ? latestRowsRef.current : rows;
+     const newRows = [...baseRows];
      newRows[rIndex] = { ...newRows[rIndex], [colKey]: value };
+     latestRowsRef.current = newRows;
      setRows(newRows);
      updateActiveDocumentState(title, newRows, headers);
   };
@@ -7341,8 +7441,8 @@ const exportChatResponseToPdf = async () => {
        colIdx,
        header: headers[colIdx] || `${t('Kolona', 'Col')} ${colIdx + 1}`,
        count: res.count,
-       total: res.total,
-       avg: avgVal,
+       total: `${res.total}${res.hasEuro ? ' €' : ''}`,
+       avg: `${avgVal}${res.hasEuro ? ' €' : ''}`,
      });
   };
   const handleInsertColumnTotalRow = (colIdx: number, totalStr: string) => {
@@ -7506,35 +7606,238 @@ const exportChatResponseToPdf = async () => {
      updateActiveDocumentState(title, nextRows, headers, columnWidths, activeTags, undefined, true);
      showToast(t(`U duplikuan ${clones.length} rrjeshta!`, `Duplicated ${clones.length} rows!`));
   };
-  const handleMoveSelectedRows = (direction: 'up' | 'down') => {
-     if (selectedRows.size === 0) return;
-     const sorted: number[] = (Array.from(selectedRows) as number[]).sort((a, b) => a - b);
-     if (direction === 'up' && sorted[0] <= 1) {
-       showToast(t("Rrjeshti 1 mbahet bosh për hyrje të reja.", "Row 1 stays empty for quick entry."));
+  const isGridRowCompletelyEmpty = (r: GridRow | undefined, colCount: number): boolean => {
+     if (!r) return true;
+     const hasText = Array.from({ length: colCount }, (_, c) => String(r[`col${c + 1}`] || '').trim()).some(Boolean);
+     if (hasText || r.image) return false;
+     if (r.status && r.status !== 'none') return false;
+     return true;
+  };
+  const compactClearedRowIfEmpty = (rIndex: number) => {
+     // Never remove Row 1 (index 0)
+     if (rIndex <= 0) return;
+     const currentDoc = documents.find(d => d.id === activeDocId);
+     if (currentDoc?.isReadOnly) return;
+     const currRows = latestRowsRef.current;
+     if (!currRows || rIndex >= currRows.length) return;
+     const targetRow = currRows[rIndex];
+     if (!isGridRowCompletelyEmpty(targetRow, headers.length)) return;
+     // Only compact if at least one row below or above has data/status, avoiding churn on completely empty sheets
+     const hasRemainingAfter = currRows.slice(rIndex + 1).some(r => !isGridRowCompletelyEmpty(r, headers.length));
+     if (!hasRemainingAfter) return;
+     const nextRows = currRows.filter((_, idx) => idx !== rIndex);
+     const minCap = Math.max(defaultNewDocRows || 90, currRows.length);
+     while (nextRows.length < minCap) {
+       nextRows.push({
+         id: `row-${Date.now()}-${Math.random().toString(36).slice(2, 7)}`,
+         status: 'none',
+         image: '',
+       });
+     }
+     latestRowsRef.current = nextRows;
+     setRows(nextRows);
+     setSelectedRows((prev) => {
+       if (prev.size === 0) return prev;
+       const shifted = new Set<number>();
+       prev.forEach((idx) => {
+         if (idx < rIndex) shifted.add(idx);
+         else if (idx > rIndex) shifted.add(idx - 1);
+       });
+       return shifted;
+     });
+     updateActiveDocumentState(title, nextRows, headers, columnWidths, activeTags, undefined, true);
+  };
+  const startRowMoveMode = () => {
+     const currentDoc = documents.find(d => d.id === activeDocId);
+     if (currentDoc?.isReadOnly) {
+       showToast(t("Dokumenti është Read-Only!", "Document is Read-Only!"));
        return;
      }
-     if (direction === 'down' && sorted[sorted.length - 1] >= rows.length - 1) return;
-     pushUndoSnapshot();
-     const nextRows = [...rows];
-     const nextSelection = new Set<number>();
-     if (direction === 'up') {
+     const currRows = latestRowsRef.current.length > 0 ? latestRowsRef.current : rows;
+     let movable = (Array.from(latestSelectedRowsRef.current) as number[]).filter(idx => idx > 0 && idx < currRows.length).sort((a, b) => a - b);
+     if (movable.length === 0 && lastFocusedCellRef.current && lastFocusedCellRef.current.rIndex > 0 && lastFocusedCellRef.current.rIndex < currRows.length) {
+       movable = [lastFocusedCellRef.current.rIndex];
+     }
+     if (movable.length === 0) {
+       if (latestSelectedRowsRef.current.has(0) || lastFocusedCellRef.current?.rIndex === 0) {
+         showToast(t("Rrjeshti 1 mbetet gjithmonë i fiksuar në krye. Zgjidhni rrjesht nga nr. 2 e lart.", "Row 1 stays fixed at the top. Select row #2 or below."));
+       } else {
+         showToast(t("Zgjidhni rrjeshtin aktual (nga nr. 2 e lart) dhe klikoni Move!", "Select a row (#2+) and tap Move!"));
+       }
+       return;
+     }
+     moveDraftSnapshotRef.current = {
+       rows: cloneRowsSnapshot(currRows),
+       selectedRows: Array.from(latestSelectedRowsRef.current),
+     };
+     const nextSel = new Set(movable);
+     latestSelectedRowsRef.current = nextSel;
+     setSelectedRows(nextSel);
+     setIsRowMoveMode(true);
+     showToast(t("Move aktiv: rrëshqitni me gisht rrjeshtin lart/poshtë dhe klikoni sërish Move për ruajtje me PIN.", "Move active: drag row up/down with your finger, then tap Move again to save with PIN."));
+  };
+  const moveSelectedRowsInDraft = (action: 'up' | 'down' | 'top' | 'bottom' | 'jump', targetOneBased?: number) => {
+     const currRows = latestRowsRef.current.length > 0 ? latestRowsRef.current : rows;
+     const movableSet = new Set((Array.from(latestSelectedRowsRef.current) as number[]).filter(idx => idx > 0 && idx < currRows.length));
+     if (movableSet.size === 0) return;
+     const sorted = Array.from(movableSet).sort((a, b) => a - b);
+     if (action === 'up') {
+       if (sorted[0] <= 1) return;
+       const nextRows = [...currRows];
+       const nextSelection = new Set<number>();
        sorted.forEach(idx => {
          const tmp = nextRows[idx - 1];
          nextRows[idx - 1] = nextRows[idx];
          nextRows[idx] = tmp;
          nextSelection.add(idx - 1);
        });
-     } else {
+       latestRowsRef.current = nextRows;
+       latestSelectedRowsRef.current = nextSelection;
+       setRows(nextRows);
+       setSelectedRows(nextSelection);
+       return;
+     }
+     if (action === 'down') {
+       if (sorted[sorted.length - 1] >= currRows.length - 1) return;
+       const nextRows = [...currRows];
+       const nextSelection = new Set<number>();
        [...sorted].reverse().forEach(idx => {
          const tmp = nextRows[idx + 1];
          nextRows[idx + 1] = nextRows[idx];
          nextRows[idx] = tmp;
          nextSelection.add(idx + 1);
        });
+       latestRowsRef.current = nextRows;
+       latestSelectedRowsRef.current = nextSelection;
+       setRows(nextRows);
+       setSelectedRows(nextSelection);
+       return;
      }
+     const row0 = currRows[0];
+     const rest = currRows.slice(1);
+     const selectedItems: GridRow[] = [];
+     const unselectedItems: GridRow[] = [];
+     rest.forEach((r, offsetIdx) => {
+       if (movableSet.has(offsetIdx + 1)) {
+         selectedItems.push(r);
+       } else {
+         unselectedItems.push(r);
+       }
+     });
+     let insertOffset = 0;
+     if (action === 'top') {
+       insertOffset = 0;
+     } else if (action === 'bottom') {
+       let lastNonEmptyUnselected = -1;
+       unselectedItems.forEach((r, idx) => {
+         if (!isGridRowCompletelyEmpty(r, headers.length)) {
+           lastNonEmptyUnselected = idx;
+         }
+       });
+       insertOffset = Math.min(unselectedItems.length, lastNonEmptyUnselected + 1);
+     } else if (action === 'jump') {
+       const rawTarget = Math.max(2, Math.min(currRows.length, Number(targetOneBased) || 2));
+       insertOffset = Math.max(0, Math.min(unselectedItems.length, rawTarget - 2));
+     }
+     const reorderedRest = [
+       ...unselectedItems.slice(0, insertOffset),
+       ...selectedItems,
+       ...unselectedItems.slice(insertOffset),
+     ];
+     const nextRows = row0 ? [row0, ...reorderedRest] : reorderedRest;
+     const nextSelection = new Set<number>();
+     for (let k = 0; k < selectedItems.length; k++) {
+       nextSelection.add(1 + insertOffset + k);
+     }
+     latestRowsRef.current = nextRows;
+     latestSelectedRowsRef.current = nextSelection;
      setRows(nextRows);
      setSelectedRows(nextSelection);
-     updateActiveDocumentState(title, nextRows, headers, columnWidths, activeTags, undefined, true);
+  };
+  const cancelRowMoveMode = () => {
+     const snap = moveDraftSnapshotRef.current;
+     if (snap) {
+       latestRowsRef.current = snap.rows;
+       const prevSel = new Set(snap.selectedRows);
+       latestSelectedRowsRef.current = prevSel;
+       setRows(snap.rows);
+       setSelectedRows(prevSel);
+     }
+     moveDraftSnapshotRef.current = null;
+     dragMoveStateRef.current.active = false;
+     dragMoveStateRef.current.didDrag = false;
+     setIsRowMoveMode(false);
+  };
+  const confirmRowMoveWithPin = () => {
+     const snap = moveDraftSnapshotRef.current;
+     const finalRows = cloneRowsSnapshot(latestRowsRef.current);
+     const didOrderChange = !snap || snap.rows.some((r, idx) => r.id !== finalRows[idx]?.id);
+     if (!didOrderChange) {
+       moveDraftSnapshotRef.current = null;
+       dragMoveStateRef.current.active = false;
+       setIsRowMoveMode(false);
+       showToast(t("Modaliteti Move u mbyll (asnjë ndryshim).", "Move mode closed (no changes)."));
+       return;
+     }
+     executeProtectedAction(
+       () => {
+         if (snap) {
+           redoStackRef.current = [];
+           undoStackRef.current = [
+             ...undoStackRef.current.slice(-34),
+             {
+               title,
+               headers: [...headers],
+               columnWidths: [...columnWidths],
+               rows: snap.rows,
+             },
+           ];
+           syncHistoryFlags();
+         } else {
+           pushUndoSnapshot();
+         }
+         latestRowsRef.current = finalRows;
+         latestSelectedRowsRef.current = new Set();
+         setRows(finalRows);
+         updateActiveDocumentState(title, finalRows, headers, columnWidths, activeTags, undefined, true);
+         moveDraftSnapshotRef.current = null;
+         dragMoveStateRef.current.active = false;
+         setIsRowMoveMode(false);
+         setSelectedRows(new Set());
+         showToast(t("✓ Lëvizja e rrjeshtave (Move) u ruajt me PIN/Password!", "✓ Row move saved with PIN/Password!"));
+       },
+       () => {
+         cancelRowMoveMode();
+         showToast(t("Lëvizja e rrjeshtave u anulua (kërkohet PIN/Password).", "Row move cancelled (PIN/Password required)."));
+       }
+     );
+  };
+  const handleToggleMoveButton = () => {
+     if (isRowMoveMode) {
+       confirmRowMoveWithPin();
+     } else {
+       startRowMoveMode();
+     }
+  };
+  const handleMoveSelectedRows = (direction: 'up' | 'down') => {
+     if (latestSelectedRowsRef.current.size === 0) return;
+     if (!isRowMoveMode) {
+       const currRows = latestRowsRef.current.length > 0 ? latestRowsRef.current : rows;
+       const movable = (Array.from(latestSelectedRowsRef.current) as number[]).filter(idx => idx > 0 && idx < currRows.length).sort((a, b) => a - b);
+       if (movable.length === 0) {
+         showToast(t("Rrjeshti 1 mbahet bosh për hyrje të reja.", "Row 1 stays empty for quick entry."));
+         return;
+       }
+       moveDraftSnapshotRef.current = {
+         rows: cloneRowsSnapshot(currRows),
+         selectedRows: Array.from(latestSelectedRowsRef.current),
+       };
+       const nextSel = new Set(movable);
+       latestSelectedRowsRef.current = nextSel;
+       setSelectedRows(nextSel);
+       setIsRowMoveMode(true);
+     }
+     moveSelectedRowsInDraft(direction);
   };
   const handleImageUpload = (rIndex: number, file: File) => {
      const reader = new FileReader();
@@ -7647,18 +7950,37 @@ const exportChatResponseToPdf = async () => {
   };
   const handleDeleteSelected = () => {
      pushUndoSnapshot();
-     const newRows = rows.map((r, index) => {
+     const nextRows: GridRow[] = [];
+     let removedCount = 0;
+     rows.forEach((r, index) => {
          if (selectedRows.has(index)) {
-             return { id: r.id, status: 'none' as const, image: '' };
+             if (index === 0) {
+                 // Row 1 (index 0) is never removed from grid structure; clear its content cleanly
+                 nextRows.push({ id: r.id, status: 'none' as const, image: '' });
+             } else {
+                 removedCount++;
+             }
+         } else {
+             nextRows.push(r);
          }
-         return r;
      });
-     
-     setRows(newRows);
+     const targetLen = Math.max(defaultNewDocRows || 90, rows.length);
+     while (nextRows.length < targetLen) {
+         nextRows.push({
+             id: `row-${Date.now()}-${Math.random().toString(36).slice(2, 7)}`,
+             status: 'none' as const,
+             image: ''
+         });
+     }
+     setRows(nextRows);
      setSelectedRows(new Set());
      setShowConfirmDeleteSelected(false);
-     updateActiveDocumentState(title, newRows, headers, columnWidths, activeTags, undefined, true);
-     showToast(t("Rrjeshtat u boshatisën (struktura u ruajt)!", "Selected rows cleared (structure preserved)!"));
+     updateActiveDocumentState(title, nextRows, headers, columnWidths, activeTags, undefined, true);
+     showToast(
+       removedCount > 0
+         ? t(`✓ U hoqën ${removedCount} rrjeshta bosh dhe u ngjitën rrjeshtat (Rrjeshti 1 ruhet)!`, `✓ Removed ${removedCount} empty row(s) cleanly (Row 1 kept)!`)
+         : t("Rrjeshti 1 u pastrua (struktura u ruajt)!", "Row 1 cleared (structure preserved)!")
+     );
   };
   const handleDownload = async (blob: Blob, filename: string, mimeType: string, shareTitle: string) => {
       // Shto skedarin në sistemin e simuluar të skedarëve që të shfaqet në "Zgjedhësin e Dosjeve"
@@ -7797,7 +8119,7 @@ const exportChatResponseToPdf = async () => {
           txt += "\n";
        }
     });
-    const blob = new Blob([txt], { type: 'text/plain' });
+    const blob = new Blob(['\uFEFF' + txt], { type: 'text/plain;charset=utf-8;' });
     const filename = `${title.replace(/\s+/g, '_')}.txt`;
     
     await handleDownload(blob, filename, 'text/plain', 'Eksport TXT');
@@ -7822,7 +8144,7 @@ const exportChatResponseToPdf = async () => {
     const csvContent = csvRows.join("\n");
     const filename = `${title.replace(/\s+/g, '_')}.csv`;
     
-    const blob = new Blob([csvContent], { type: 'text/csv;charset=utf-8;' });
+    const blob = new Blob(['\uFEFF' + csvContent], { type: 'text/csv;charset=utf-8;' });
     await handleDownload(blob, filename, 'text/csv', t('Eksport CSV', 'Export CSV'));
   };
   const exportPdf = () => {
@@ -8023,11 +8345,20 @@ const exportChatResponseToPdf = async () => {
     performSave(doc, `${title.replace(/\s+/g, '_')}.pdf`);
   };
   const openModal = (rIndex: number, colKey: string) => {
+     modalHadContentOnOpenRef.current = Boolean(
+       headers.some((_, c) => String(rows[rIndex]?.[`col${c + 1}`] || '').trim()) || rows[rIndex]?.image
+     );
+     lastFocusedCellRef.current = { rIndex, colKey };
      setActiveCell({ rIndex, colKey });
-     setModalText(rows[rIndex][colKey as keyof GridRow] as string);
+     setModalText((rows[rIndex]?.[colKey as keyof GridRow] as string) || '');
   };
   const closeModal = () => {
+     const closing = activeCell;
      setActiveCell(null);
+     if (closing && closing.rIndex > 0 && modalHadContentOnOpenRef.current) {
+       modalHadContentOnOpenRef.current = false;
+       setTimeout(() => compactClearedRowIfEmpty(closing.rIndex), 40);
+     }
   };
   const saveModal = () => {
      if (activeCell) {
@@ -8117,7 +8448,7 @@ const exportChatResponseToPdf = async () => {
               }
          });
      });
-     const dataBlob = new Blob([txtContent], { type: 'text/plain' });
+     const dataBlob = new Blob(['\uFEFF' + txtContent], { type: 'text/plain;charset=utf-8;' });
      const filename = `${t('Bllok_Arkiva_Plote', 'NoteBook3_Full_Archive')}_${format(new Date(), 'yyyy-MM-dd')}.txt`;
      
      await handleDownload(dataBlob, filename, 'text/plain', t('Arkiva TXT', 'Archive TXT'));
@@ -8143,7 +8474,7 @@ const exportChatResponseToPdf = async () => {
              }
          });
      });
-     const dataBlob = new Blob([csvContent], { type: 'text/csv' });
+     const dataBlob = new Blob(['\uFEFF' + csvContent], { type: 'text/csv;charset=utf-8;' });
      const filename = `${t('Bllok_Arkiva_Plote', 'NoteBook3_Full_Archive')}_${format(new Date(), 'yyyy-MM-dd')}.csv`;
      
      await handleDownload(dataBlob, filename, 'text/csv', t('Arkiva CSV', 'Archive CSV'));
@@ -9490,52 +9821,68 @@ const exportChatResponseToPdf = async () => {
      return (
         <div className={`w-full max-w-[1200px] mx-auto flex flex-col sm:border sm:rounded-xl shadow-2xl font-sans relative overflow-hidden h-[100dvh] sm:min-h-[600px] sm:h-[90vh] ${baseBg} ${borderColor} ${textColor} z-10`}>
            {/* HEADER */}
-           <div className={`flex flex-wrap border-b py-2.5 px-2.5 sm:px-4 gap-2 items-center justify-between shadow-sm sticky top-0 ${toolbarBg} ${borderColor} z-20`}>
+           {(() => {
+              const isConnected = isGist ? Boolean(githubUser || gistId) : Boolean(user);
+              return (
+           <div className={`flex flex-wrap border-b py-2 px-2 sm:px-3.5 gap-1.5 items-center justify-between shadow-sm sticky top-0 ${toolbarBg} ${borderColor} z-20`}>
               <div className="flex items-center gap-2 min-w-0 flex-1">
                  <button 
                     onClick={() => { setOnlineView(null); setSelectedOnlineDoc(null); setIsOnlineEditing(false); setOnlineSelectedRowIdx(null); }}
-                    className="h-9 px-2.5 sm:px-3 rounded-xl transition-colors flex items-center gap-1.5 text-xs font-bold bg-blue-600 hover:bg-blue-500 text-white shadow-sm shrink-0"
+                    className="h-9 px-2.5 rounded-xl transition-colors flex items-center justify-center gap-1 text-xs font-bold bg-blue-600 hover:bg-blue-500 text-white shadow-sm shrink-0"
+                    title={t('Kthehu', 'Back')}
                  >
                     <ArrowLeft className="w-4 h-4 shrink-0" />
-                    <span>{t('Kthehu', 'Back')}</span>
+                    <span className="hidden sm:inline">{t('Kthehu', 'Back')}</span>
                  </button>
                  <div className="flex flex-col min-w-0 flex-1">
                     <span className="text-xs sm:text-sm font-extrabold flex items-center gap-1.5 uppercase tracking-wide truncate">
-                       {isGist ? <Github className="w-4 h-4 shrink-0 text-zinc-900 dark:text-white" /> : <Cloud className="w-4 h-4 shrink-0 text-emerald-500" />}
-                       <span className="truncate">{titleText}</span>
+                       {isGist ? <Github className="w-3.5 h-3.5 shrink-0 text-zinc-900 dark:text-white" /> : <Cloud className="w-3.5 h-3.5 shrink-0 text-emerald-500" />}
+                       <span className="truncate">{isGist ? 'GitHub Gist' : 'Firebase'}</span>
                     </span>
-                    <div className="flex items-center gap-1.5 min-w-0 mt-0.5">
-                       <span className={`inline-flex items-center gap-1 px-1.5 py-0.5 rounded-md text-[10px] font-bold border shrink-0 ${
-                          (isGist ? Boolean(githubUser || gistId) : Boolean(user))
-                             ? "bg-emerald-500/15 text-emerald-500 border-emerald-500/30"
-                             : "bg-amber-500/15 text-amber-500 border-amber-500/30"
-                       }`}>
-                          {t('Lidhur', 'Connected')}
-                       </span>
-                       <span className={`text-[10px] font-medium leading-tight truncate ${isDark ? "text-zinc-400" : "text-zinc-500"} flex items-center gap-1 min-w-0`}>
-                          {isGist ? (
-                             githubUser ? (
-                                <>
-                                   <img src={githubUser.avatar_url} alt="avatar" className="w-3.5 h-3.5 rounded-full border border-zinc-500/20 shrink-0" referrerPolicy="no-referrer" />
-                                   <b className={`truncate ${isDark ? "text-zinc-200" : "text-zinc-700"}`}>{githubUser.login}</b>
-                                </>
-                             ) : (
-                                <span className="truncate">{gistId ? gistId.substring(0, 10) + '...' : t('Pa caktuar', 'Unassigned')}</span>
-                             )
+                    <span className={`text-[10px] font-medium leading-tight truncate ${isDark ? "text-zinc-400" : "text-zinc-500"} flex items-center gap-1 min-w-0`}>
+                       {isGist ? (
+                          githubUser ? (
+                             <>
+                                <img src={githubUser.avatar_url} alt="avatar" className="w-3.5 h-3.5 rounded-full border border-zinc-500/20 shrink-0" referrerPolicy="no-referrer" />
+                                <b className={`truncate ${isDark ? "text-zinc-200" : "text-zinc-700"}`}>{githubUser.login}</b>
+                             </>
                           ) : (
-                             <span className="truncate">{user?.email || localStorage.getItem('grid_notepad_saved_email') || t('Pa kyçur', 'Not logged in')}</span>
-                          )}
-                       </span>
-                    </div>
+                             <span className="truncate">{gistId ? gistId.substring(0, 10) + '...' : 'Gist'}</span>
+                          )
+                       ) : (
+                          <span className="truncate">{user?.email || localStorage.getItem('grid_notepad_saved_email') || 'Offline'}</span>
+                       )}
+                    </span>
                  </div>
               </div>
-              {/* UNIFORM PLATFORM & REFRESH ACTIONS */}
+              {/* UNIFORM ONLINE STATUS, PLATFORM & REFRESH ACTIONS */}
               <div className="flex items-center gap-1.5 shrink-0 max-w-full">
-                 {isOnlineAutoSyncing && (
-                    <span className="hidden md:flex items-center gap-1 h-9 px-2.5 rounded-xl bg-emerald-500/15 text-emerald-500 border border-emerald-500/30 text-[11px] font-bold animate-pulse shrink-0">
-                       <Loader2 className="w-3.5 h-3.5 animate-spin" /> {t('Duke ruajtur...', 'Saving...')}
+                 <button
+                    type="button"
+                    onClick={async () => {
+                       if (isGist) {
+                          await viewGistContent(undefined, false);
+                       } else {
+                          await fetchCloudDocsOnly(false);
+                       }
+                    }}
+                    title={
+                       isConnected
+                          ? (isGist ? t('Online · Lidhur me GitHub Gist', 'Online · Connected to GitHub Gist') : t('Online · Lidhur me Firebase', 'Online · Connected to Firebase'))
+                          : t('Pa lidhje aktive online', 'Not connected online')
+                    }
+                    className={`h-9 w-9 rounded-xl border flex items-center justify-center relative shrink-0 transition-all ${
+                       isConnected
+                          ? (isDark ? "bg-emerald-500/15 border-emerald-500/40 text-emerald-400" : "bg-emerald-50 border-emerald-300 text-emerald-600")
+                          : (isDark ? "bg-amber-500/15 border-amber-500/40 text-amber-400" : "bg-amber-50 border-amber-300 text-amber-600")
+                    }`}
+                 >
+                    <Cloud className="w-4 h-4 shrink-0" />
+                    <span className="absolute top-1.5 right-1.5 flex h-2 w-2">
+                       {isConnected && <span className="animate-ping absolute inline-flex h-full w-full rounded-full bg-emerald-400 opacity-75" />}
+                       <span className={`relative inline-flex rounded-full h-2 w-2 ${isConnected ? 'bg-emerald-500' : 'bg-amber-500'}`} />
                     </span>
-                 )}
+                 </button>
                  <button 
                     onClick={async () => { 
                        setOnlineView('cloud'); 
@@ -9545,14 +9892,15 @@ const exportChatResponseToPdf = async () => {
                        setOnlineSelectedRowIdx(null); 
                        await fetchCloudDocsOnly(false);
                     }}
-                    className={`h-9 px-2.5 sm:px-3 text-[11px] font-bold rounded-xl border transition-all flex items-center gap-1.5 shrink-0 ${
+                    className={`h-9 px-2.5 text-[11px] font-bold rounded-xl border transition-all flex items-center justify-center gap-1 shrink-0 ${
                        !isGist 
                           ? "bg-emerald-600 border-emerald-500 text-white shadow-sm" 
                           : (isDark ? "bg-zinc-800 border-zinc-700 text-zinc-200 hover:bg-zinc-700" : "bg-white border-zinc-200 text-zinc-700 hover:bg-zinc-50")
                     }`}
+                    title="Firebase"
                  >
                     <Cloud className="w-3.5 h-3.5 shrink-0" />
-                    <span>Cloud Firebase</span>
+                    <span>Firebase</span>
                  </button>
                  <button 
                     onClick={async () => { 
@@ -9571,14 +9919,16 @@ const exportChatResponseToPdf = async () => {
                           setOnlineNotesColor(latestNotesColorRef.current);
                        }
                     }}
-                    className={`h-9 px-2.5 sm:px-3 text-[11px] font-bold rounded-xl border transition-all flex items-center gap-1.5 shrink-0 ${
+                    className={`h-9 px-2.5 text-[11px] font-bold rounded-xl border transition-all flex items-center justify-center gap-1 shrink-0 ${
                        isGist 
                           ? "bg-blue-600 border-blue-500 text-white shadow-sm" 
                           : (isDark ? "bg-zinc-800 border-zinc-700 text-zinc-200 hover:bg-zinc-700" : "bg-white border-zinc-200 text-zinc-700 hover:bg-zinc-50")
                     }`}
+                    title="GitHub Gist"
                  >
                     <Github className="w-3.5 h-3.5 shrink-0" />
-                    <span>Gist</span>
+                    <span className="sm:hidden">Gist</span>
+                    <span className="hidden sm:inline">GitHub Gist</span>
                  </button>
                  <button 
                     onClick={async () => {
@@ -9588,14 +9938,16 @@ const exportChatResponseToPdf = async () => {
                           await fetchCloudDocsOnly(false);
                        }
                     }} 
-                    className={`h-9 px-2.5 sm:px-3 text-[11px] font-bold rounded-xl transition-colors border flex items-center gap-1.5 shrink-0 ${isDark ? "bg-zinc-800 border-zinc-700 hover:bg-zinc-700 text-zinc-200" : "bg-white border-zinc-200 hover:bg-zinc-50 text-zinc-700"}`}
+                    className={`h-9 px-2.5 text-[11px] font-bold rounded-xl transition-colors border flex items-center justify-center gap-1 shrink-0 ${isDark ? "bg-zinc-800 border-zinc-700 hover:bg-zinc-700 text-zinc-200" : "bg-white border-zinc-200 hover:bg-zinc-50 text-zinc-700"}`}
                     title={t('Rifresko të dhënat', 'Refresh data')}
                  >
-                    <RefreshCw className={`w-3.5 h-3.5 shrink-0 ${isFetchingCloud ? "animate-spin text-accent-500" : ""}`} />
-                    <span className="hidden xs:inline sm:inline">{t('Refresh', 'Refresh')}</span>
+                    <RefreshCw className={`w-3.5 h-3.5 shrink-0 ${isOnlineAutoSyncing || isFetchingCloud ? "animate-spin text-accent-500" : ""}`} />
+                    <span className="hidden sm:inline">{t('Refresh', 'Refresh')}</span>
                  </button>
               </div>
            </div>
+              );
+           })()}
            {/* UNIFORM 5-TAB BAR */}
            <div className={`grid grid-cols-5 border-b px-2 sm:px-4 py-2 gap-1.5 shrink-0 ${isDark ? "bg-zinc-950 border-zinc-800" : "bg-zinc-50 border-zinc-200"}`}>
               <button 
@@ -12551,16 +12903,26 @@ const exportChatResponseToPdf = async () => {
                                   <CopyPlus className="w-3.5 h-3.5" /> {t('Dupliko', 'Duplicate')}
                                </button>
                                <button
-                                  onClick={() => handleMoveSelectedRows('up')}
+                                  onClick={() => {
+                                     setShowTagColorMenu(false);
+                                     startRowMoveMode();
+                                  }}
+                                  className="px-2.5 py-1.5 rounded-lg text-xs font-bold border border-indigo-500/40 bg-indigo-600 hover:bg-indigo-500 text-white flex items-center gap-1"
+                                  title={t('Lëviz Rrjeshtat (Move me PIN OK)', 'Move Rows (Confirm with PIN OK)')}
+                               >
+                                  <ArrowUpDown className="w-3.5 h-3.5" /> {t('Move', 'Move')}
+                               </button>
+                               <button
+                                  onClick={() => { setShowTagColorMenu(false); handleMoveSelectedRows('up'); }}
                                   className={`p-1.5 rounded-lg border ${isDark ? 'border-zinc-700 bg-zinc-800 hover:bg-zinc-700' : 'border-zinc-200 bg-white hover:bg-zinc-100'}`}
-                                  title={t('Lëviz Lart', 'Move Up')}
+                                  title={t('Lëviz Lart (konfirmo OK me PIN)', 'Move Up (confirm OK with PIN)')}
                                >
                                   <ArrowUp className="w-3.5 h-3.5" />
                                </button>
                                <button
-                                  onClick={() => handleMoveSelectedRows('down')}
+                                  onClick={() => { setShowTagColorMenu(false); handleMoveSelectedRows('down'); }}
                                   className={`p-1.5 rounded-lg border ${isDark ? 'border-zinc-700 bg-zinc-800 hover:bg-zinc-700' : 'border-zinc-200 bg-white hover:bg-zinc-100'}`}
-                                  title={t('Lëviz Poshtë', 'Move Down')}
+                                  title={t('Lëviz Poshtë (konfirmo OK me PIN)', 'Move Down (confirm OK with PIN)')}
                                >
                                   <ArrowDown className="w-3.5 h-3.5" />
                                </button>
@@ -13343,7 +13705,7 @@ const exportChatResponseToPdf = async () => {
                   </button>
                )}
                <div className="flex justify-end gap-3">
-                  <button onClick={() => { setPasswordModalError(''); setPasswordModal({ isOpen: false, action: null, type: 'verify' }); }} className="px-4 py-2.5 font-bold rounded-lg border border-red-500/40 bg-red-500/15 text-red-500 hover:bg-red-600 hover:text-white transition-colors">
+                  <button onClick={() => { const onCancelCb = passwordModal.onCancel; setPasswordModalError(''); setPasswordModal({ isOpen: false, action: null, onCancel: null, type: 'verify' }); if (onCancelCb) onCancelCb(); }} className="px-4 py-2.5 font-bold rounded-lg border border-red-500/40 bg-red-500/15 text-red-500 hover:bg-red-600 hover:text-white transition-colors">
                      {t('Anulo', 'Cancel')}
                   </button>
                   <button onClick={handlePinSubmit} className="px-4 py-2.5 bg-accent-600 hover:bg-accent-500 text-white font-medium rounded-lg transition-colors shadow-lg">
@@ -14046,10 +14408,18 @@ const exportChatResponseToPdf = async () => {
                         if (isNumericHeader) {
                            let sum = 0;
                            let count = 0;
+                           let hasEuro = false;
                            aiPreviewDoc.rows.forEach((r) => {
                               const rawVal = r[`col${idx + 1}`] || r.cells?.[idx];
                               if (rawVal !== undefined && rawVal !== null) {
-                                 const cleaned = rawVal.toString().replace(/[^\d.-]/g, '');
+                                 const s = String(rawVal);
+                                 if (/€|\beur\b/i.test(s)) hasEuro = true;
+                                 const cleaned = s
+                                    .trim()
+                                    .replace(/^(lek[eë]?|all|eur|usd|chf|gbp|€|\$|£)\s*/i, '')
+                                    .replace(/\s*(lek[eë]?|all|eur|usd|chf|gbp|kg|gr|g|mg|l|ml|m|cm|mm|km|cop[eë]?|pcs|€|\$|£)\.?$/i, '')
+                                    .replace(/[^\d.,-]/g, '')
+                                    .replace(',', '.');
                                  const val = parseFloat(cleaned);
                                  if (!isNaN(val)) {
                                     sum += val;
@@ -14058,10 +14428,11 @@ const exportChatResponseToPdf = async () => {
                               }
                            });
                            if (count > 0) {
+                              const suffix = hasEuro ? ' €' : '';
                               list.push({
                                  header: h,
-                                 sum: sum.toFixed(2).replace(/\.00$/, ''),
-                                 avg: (sum / count).toFixed(2).replace(/\.00$/, ''),
+                                 sum: `${sum.toFixed(2).replace(/\.00$/, '')}${suffix}`,
+                                 avg: `${(sum / count).toFixed(2).replace(/\.00$/, '')}${suffix}`,
                                  count
                               });
                            }
@@ -17221,13 +17592,11 @@ const exportChatResponseToPdf = async () => {
             >
                <div className={`px-4 py-3.5 border-b flex items-center justify-between gap-2 ${isDark ? 'border-zinc-800 bg-zinc-950/70' : 'border-zinc-200 bg-zinc-50'}`}>
                   <div className="flex items-center gap-2.5 min-w-0">
-                     <div className="p-2 rounded-xl bg-emerald-500/15 text-emerald-500 shrink-0">
-                        <Info className="w-5 h-5" />
-                     </div>
+                     <img src="/pwa-192x192.png" alt="NoteBook3" className="w-9 h-9 rounded-xl shadow-md border border-blue-500/30 shrink-0 object-cover" />
                      <div className="min-w-0">
                         <h3 className="text-sm sm:text-base font-extrabold truncate flex items-center gap-2">
                            {t('Rreth NoteBook3 & Privatësia', 'About NoteBook3 & Privacy')}
-                           <span className="px-2 py-0.5 rounded-full text-[10px] font-mono font-black bg-emerald-500/15 text-emerald-500 border border-emerald-500/30">v1.4.0</span>
+                           <span className="px-2 py-0.5 rounded-full text-[10px] font-mono font-black bg-emerald-500/15 text-emerald-500 border border-emerald-500/30">v1.5.1</span>
                         </h3>
                         <p className={`text-[11px] truncate ${isDark ? 'text-zinc-400' : 'text-zinc-500'}`}>
                            com.notebook3.app · {t('Gati për Google Play & GitHub APK', 'Google Play & GitHub APK Ready')}
@@ -17313,7 +17682,7 @@ const exportChatResponseToPdf = async () => {
                         <div className="grid grid-cols-2 gap-2.5">
                            <div className={`p-3 rounded-xl border ${isDark ? 'bg-zinc-950/60 border-zinc-800' : 'bg-white border-zinc-200'}`}>
                               <div className="text-[10px] font-bold uppercase text-zinc-500">{t('Versioni', 'Version')}</div>
-                              <div className="text-sm font-black mt-0.5">1.4.0</div>
+                              <div className="text-sm font-black mt-0.5">1.5.1</div>
                            </div>
                            <div className={`p-3 rounded-xl border ${isDark ? 'bg-zinc-950/60 border-zinc-800' : 'bg-white border-zinc-200'}`}>
                               <div className="text-[10px] font-bold uppercase text-zinc-500">{t('ID e Paketës', 'Package ID')}</div>
@@ -17349,8 +17718,8 @@ const exportChatResponseToPdf = async () => {
                            type="button"
                            onClick={() => {
                               const policyText = t(
-                                 'NoteBook3 (com.notebook3.app) v1.4.0 — Publikues: Genti83 (në bashkëpunim me Gemini Studio). Politikë Privatësie: Offline-First, zero reklama/gjurmues, zero READ_CALENDAR ose MANAGE_EXTERNAL_STORAGE. Sinkronizimi Firebase/GitHub Gist dhe funksionet AI përdoren vetëm me kërkesë të përdoruesit, me të drejtë të plotë për fshirje të dhënash (Settings -> App Reset).',
-                                 'NoteBook3 (com.notebook3.app) v1.4.0 — Publisher: Genti83 (in collaboration with Gemini Studio). Privacy Policy: Offline-First, zero ads/trackers, no READ_CALENDAR or MANAGE_EXTERNAL_STORAGE. Optional cloud sync and AI features require explicit user action, with full user data deletion via Settings -> App Reset.'
+                                 'NoteBook3 (com.notebook3.app) v1.5.1 — Publikues: Genti83 (në bashkëpunim me Gemini Studio). Politikë Privatësie: Offline-First, zero reklama/gjurmues, zero READ_CALENDAR ose MANAGE_EXTERNAL_STORAGE. Sinkronizimi Firebase/GitHub Gist dhe funksionet AI përdoren vetëm me kërkesë të përdoruesit, me të drejtë të plotë për fshirje të dhënash (Settings -> App Reset).',
+                                 'NoteBook3 (com.notebook3.app) v1.5.1 — Publisher: Genti83 (in collaboration with Gemini Studio). Privacy Policy: Offline-First, zero ads/trackers, no READ_CALENDAR or MANAGE_EXTERNAL_STORAGE. Optional cloud sync and AI features require explicit user action, with full user data deletion via Settings -> App Reset.'
                               );
                               navigator.clipboard.writeText(policyText);
                               showToast(t('✓ Politika e Privatësisë u kopjua!', '✓ Privacy Policy copied!'));
@@ -17530,7 +17899,7 @@ const exportChatResponseToPdf = async () => {
       >
          <div className={`flex border-b p-2.5 items-center justify-between shadow-sm sticky top-0 ${toolbarBg} ${borderColor} sm:rounded-t-2xl z-10`}>
             <div className="flex items-center gap-2 min-w-0">
-               <FileText className={`w-5 h-5 shrink-0 ${isDark ? 'text-accent-500' : 'text-accent-600'}`} />
+               <img src="/pwa-192x192.png" alt="NoteBook3" className="w-7 h-7 rounded-lg shadow-sm border border-blue-500/30 shrink-0 object-cover" />
                <h1 className={`text-[15px] sm:text-base font-black tracking-tight uppercase leading-none whitespace-nowrap ${textColor}`}>NoteBook 3</h1>
                {user && (
                  <span className="hidden sm:inline-flex items-center gap-1.5 px-2 py-0.5 rounded-full bg-green-500/10 text-green-500 text-xs font-bold ring-1 ring-green-500/20">
@@ -17917,7 +18286,7 @@ const exportChatResponseToPdf = async () => {
                            <span className="flex items-center gap-3">
                               <ShieldCheck className="w-4 h-4 shrink-0" /> {t('Rreth App, Privatësia & Lejet', 'About App, Privacy & Permissions')}
                            </span>
-                           <span className="text-[10px] font-mono opacity-80">v1.4.0</span>
+                           <span className="text-[10px] font-mono opacity-80">v1.5.1</span>
                        </button>
                        <button
                           onClick={() => {
@@ -18651,7 +19020,7 @@ const exportChatResponseToPdf = async () => {
      const vals = rows.filter(r => r.status !== 'x').map(r => String(r[colKey] || ''));
      const res = sumColumnNumericCells(vals);
      return res ? { colIndex: ci, header: hLabel || `${t('Kolona', 'Col')} ${ci + 1}`, ...res } : null;
-  }).filter((item): item is { colIndex: number; header: string; count: number; total: string } => item !== null);
+  }).filter((item): item is { colIndex: number; header: string; count: number; total: string; hasEuro: boolean } => item !== null);
 
   return (
     <>
@@ -18966,6 +19335,21 @@ const exportChatResponseToPdf = async () => {
               >
                  <Plus className="w-3.5 h-3.5" />
               </button>
+              {/* Single Move Row Button right next to + (Slide row up/down with finger, confirm with PIN when finished) */}
+              {!isDocReadOnly && (
+                 <button
+                    type="button"
+                    onClick={handleToggleMoveButton}
+                    title={isRowMoveMode ? t("Mbaro Move dhe ruaj me PIN/Password", "Finish Move & save with PIN/Password") : t("Lëviz rrjeshtin me gisht lart/poshtë (Move)", "Move selected row up/down by sliding (Move)")}
+                    className={`h-9 w-9 rounded-xl flex items-center justify-center transition-all shadow-md hover:scale-[1.03] active:scale-95 shrink-0 ${
+                       isRowMoveMode
+                          ? "bg-indigo-600 hover:bg-indigo-500 text-white border border-indigo-400 ring-2 ring-indigo-400/50 animate-pulse shadow-indigo-500/30"
+                          : isDark ? "bg-zinc-900 hover:bg-zinc-800 text-zinc-100 border border-zinc-700 hover:border-indigo-500/60 shadow-md shadow-zinc-950/20" : "bg-white hover:bg-zinc-50 text-zinc-800 border border-zinc-200 hover:border-indigo-500/60 shadow-sm font-semibold"
+                    }`}
+                 >
+                    <ArrowUpDown className="w-4 h-4" />
+                 </button>
+              )}
               <button
                  type="button"
                  onPointerDown={handleDateHoldStart}
@@ -19065,8 +19449,57 @@ const exportChatResponseToPdf = async () => {
           </div>
           {/* GRID BODY */}
           <div className="w-full pb-10">
-            {visibleRowsList.map(({r, rIndex}) => (
-                <div key={`${r.id}-${rIndex}`} className={`flex border-b ${cellDensity === 'compact' ? 'min-h-[22px]' : cellDensity === 'spacious' ? 'min-h-[42px]' : 'min-h-[28px]'} group w-full transition-colors ${
+            {visibleRowsList.map(({r, rIndex}) => {
+              const isRowSelectedForDrag = isRowMoveMode && selectedRows.has(rIndex) && rIndex > 0;
+              return (
+                <div
+                  key={r.id || `row-${rIndex}`}
+                  style={isRowSelectedForDrag ? { touchAction: 'none', userSelect: 'none', WebkitUserSelect: 'none' } : undefined}
+                  onPointerDown={(e) => {
+                    if (!isRowSelectedForDrag) return;
+                    const rect = e.currentTarget.getBoundingClientRect();
+                    const stepPx = Math.max(22, Math.min(44, Math.round((rect.height || 28) * 0.85)));
+                    dragMoveStateRef.current = {
+                      active: true,
+                      lastY: e.clientY,
+                      stepPx,
+                      didDrag: false,
+                      pointerId: e.pointerId,
+                    };
+                    try { e.currentTarget.setPointerCapture(e.pointerId); } catch {}
+                  }}
+                  onPointerMove={(e) => {
+                    if (!isRowMoveMode || !dragMoveStateRef.current.active) return;
+                    const step = dragMoveStateRef.current.stepPx;
+                    let moved = false;
+                    while (e.clientY - dragMoveStateRef.current.lastY <= -step) {
+                      moveSelectedRowsInDraft('up');
+                      dragMoveStateRef.current.lastY -= step;
+                      moved = true;
+                    }
+                    while (e.clientY - dragMoveStateRef.current.lastY >= step) {
+                      moveSelectedRowsInDraft('down');
+                      dragMoveStateRef.current.lastY += step;
+                      moved = true;
+                    }
+                    if (moved) {
+                      dragMoveStateRef.current.didDrag = true;
+                      if (typeof navigator !== 'undefined' && navigator.vibrate) {
+                        try { navigator.vibrate(10); } catch {}
+                      }
+                    }
+                  }}
+                  onPointerUp={() => {
+                    dragMoveStateRef.current.active = false;
+                    dragMoveStateRef.current.pointerId = null;
+                  }}
+                  onPointerCancel={() => {
+                    dragMoveStateRef.current.active = false;
+                    dragMoveStateRef.current.pointerId = null;
+                  }}
+                  className={`flex border-b ${cellDensity === 'compact' ? 'min-h-[22px]' : cellDensity === 'spacious' ? 'min-h-[42px]' : 'min-h-[28px]'} group w-full transition-colors ${
+                    isRowSelectedForDrag ? 'ring-2 ring-inset ring-indigo-500 shadow-md cursor-ns-resize z-10 relative ' : ''
+                  }${
                   r.status === 'ok' ? (isDark ? 'bg-green-500/25 border-green-500/40' : 'bg-green-50 border-green-200')
                   : r.status === 'blue' ? (isDark ? 'bg-blue-500/25 border-blue-500/40' : 'bg-blue-50 border-blue-200')
                   : r.status === 'yellow' ? (isDark ? 'bg-yellow-500/25 border-yellow-500/40' : 'bg-yellow-50 border-yellow-200')
@@ -19075,9 +19508,23 @@ const exportChatResponseToPdf = async () => {
                 }`}>
                   {/* Row Number (Sticky) */}
                   <div 
-                    onClick={() => toggleRowSelection(rIndex)}
-                    className={`w-12 shrink-0 border-r flex items-center justify-center text-sm font-mono tabular-nums sticky left-0 z-10 transition-all duration-200 cursor-pointer shadow-[2px_0_5px_rgba(0,0,0,0.02)] ${
-                      selectedRows.has(rIndex)
+                    onClick={() => {
+                      if (dragMoveStateRef.current.didDrag) {
+                        dragMoveStateRef.current.didDrag = false;
+                        return;
+                      }
+                      if (isRowMoveMode && rIndex > 0) {
+                        const nextSel = new Set([rIndex]);
+                        latestSelectedRowsRef.current = nextSel;
+                        setSelectedRows(nextSel);
+                        return;
+                      }
+                      toggleRowSelection(rIndex);
+                    }}
+                    className={`w-12 shrink-0 border-r flex items-center justify-center text-sm font-mono tabular-nums sticky left-0 z-10 transition-all duration-200 ${isRowSelectedForDrag ? 'cursor-ns-resize' : 'cursor-pointer'} shadow-[2px_0_5px_rgba(0,0,0,0.02)] ${
+                      isRowSelectedForDrag
+                        ? "bg-indigo-600 text-white border-r-indigo-500"
+                        : selectedRows.has(rIndex)
                         ? "bg-accent-500 text-white border-r-accent-600"
                         : r.status === 'ok' ? (isDark ? "bg-green-500/20 text-green-400 border-zinc-800" : "bg-green-100 text-green-700 border-zinc-200")
                         : r.status === 'blue' ? (isDark ? "bg-blue-500/20 text-blue-400 border-zinc-800" : "bg-blue-100 text-blue-700 border-zinc-200")
@@ -19092,7 +19539,7 @@ const exportChatResponseToPdf = async () => {
                       : {}
                     }
                   >
-                    {selectedRows.has(rIndex) ? <Check className="w-4 h-4" /> : (rIndex + 1)}
+                    {isRowSelectedForDrag ? <ArrowUpDown className="w-4 h-4" /> : selectedRows.has(rIndex) ? <Check className="w-4 h-4" /> : (rIndex + 1)}
                   </div>
                   {/* Columns */}
                   {headers.map((_, i) => `col${i+1}`).map((colKey, cIndex) => (
@@ -19101,11 +19548,29 @@ const exportChatResponseToPdf = async () => {
                     }`}>
                         <CellInput
                           initialValue={r[colKey as keyof GridRow] as string}
+                          dataRowIndex={rIndex}
+                          dataColKey={colKey}
                           onChange={(v: string) => updateCell(rIndex, colKey, v)}
-                          readOnly={isDocReadOnly || r.status === 'ok' || r.status === 'blue' || r.status === 'yellow' || r.status === 'x' || r.status === 'lock'}
-                          startHold={() => handleCellHoldStart(rIndex, colKey)}
+                          onFocus={() => {
+                            lastFocusedCellRef.current = { rIndex, colKey };
+                            rowHadContentOnFocusRef.current[rIndex] = hasRowContent(r);
+                          }}
+                          onBlur={() => {
+                            if (rIndex <= 0 || isDocReadOnly || isRowMoveMode) return;
+                            const hadBefore = Boolean(rowHadContentOnFocusRef.current[rIndex]);
+                            if (!hadBefore) return;
+                            setTimeout(() => {
+                              const nextActive = document.activeElement as HTMLElement | null;
+                              if (nextActive && nextActive.getAttribute('data-row-index') === String(rIndex)) return;
+                              if (activeCell) return;
+                              delete rowHadContentOnFocusRef.current[rIndex];
+                              compactClearedRowIfEmpty(rIndex);
+                            }, 100);
+                          }}
+                          readOnly={isDocReadOnly || isRowMoveMode || r.status === 'ok' || r.status === 'blue' || r.status === 'yellow' || r.status === 'x' || r.status === 'lock'}
+                          startHold={!isRowMoveMode ? () => handleCellHoldStart(rIndex, colKey) : undefined}
                           stopHold={handleCellHoldCancel}
-                          className={`w-full h-full resize-none focus:outline-none px-1.5 ${cellDensity === 'compact' ? 'py-0' : cellDensity === 'spacious' ? 'py-1.5' : 'py-0.5'} rounded scrollbar-hide transition-colors ${
+                          className={`w-full h-full resize-none focus:outline-none px-1.5 ${cellDensity === 'compact' ? 'py-0' : cellDensity === 'spacious' ? 'py-1.5' : 'py-0.5'} rounded scrollbar-hide transition-colors ${isRowSelectedForDrag ? 'pointer-events-none select-none ' : ''}${
                             r.status === 'x' 
                               ? `line-through decoration-red-500 placeholder-red-500/50 cursor-default bg-transparent ${isDark ? "text-red-100" : "text-red-900"}`
                               : r.status === 'blue'
@@ -19168,6 +19633,7 @@ const exportChatResponseToPdf = async () => {
                         <div 
                           className={`w-full h-full relative cursor-pointer flex items-center justify-center p-0.5 transition-all ${selectedRows.has(rIndex) ? 'ring-2 ring-blue-500 rounded bg-blue-500/20' : ''}`}
                           onPointerDown={(e) => {
+                             if (isRowMoveMode) return;
                              isLongPress.current[rIndex] = false;
                              pressTimers.current[rIndex] = setTimeout(() => {
                                  isLongPress.current[rIndex] = true;
@@ -19181,6 +19647,7 @@ const exportChatResponseToPdf = async () => {
                           }}
                           onPointerUp={(e) => {
                              if (pressTimers.current[rIndex]) clearTimeout(pressTimers.current[rIndex]);
+                             if (isRowMoveMode) return;
                              if (!isLongPress.current[rIndex]) {
                                  setPreviewImage(r.image as string);
                              }
@@ -19212,7 +19679,8 @@ const exportChatResponseToPdf = async () => {
                      ) : null}
                   </div>
                 </div>
-            ))}
+              );
+            })}
             
             {/* NO RESULTS FOR DOC SEARCH / FILTER */}
             {visibleRowsList.length === 0 && (
@@ -19611,9 +20079,9 @@ const exportChatResponseToPdf = async () => {
                              className={`px-1.5 py-0.5 rounded border text-[10px] font-mono font-bold whitespace-nowrap shrink-0 transition-colors ${
                                 isDark ? 'border-zinc-700 bg-zinc-800/90 text-emerald-400 hover:border-emerald-500/60' : 'border-zinc-200 bg-zinc-100 text-emerald-700 hover:border-emerald-500/60'
                              }`}
-                             title={`${col.header}: ${col.total}`}
+                             title={`${col.header}: ${col.total}${col.hasEuro ? ' €' : ''}`}
                           >
-                             Σ {col.header}: {col.total}
+                             Σ {col.header}: {col.total}{col.hasEuro ? ' €' : ''}
                           </button>
                        ))}
                     </div>

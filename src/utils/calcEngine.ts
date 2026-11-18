@@ -339,12 +339,14 @@ export function extractNumericFromCell(raw: string): string | null {
   return normalized;
 }
 
-export function sumColumnNumericCells(values: string[]): { count: number; total: string } | null {
+export function sumColumnNumericCells(values: string[]): { count: number; total: string; hasEuro: boolean } | null {
   let acc: BigDec = { coeff: 0n, scale: 0 };
   let count = 0;
+  let hasEuro = false;
   for (const val of values) {
     const numStr = extractNumericFromCell(val);
     if (!numStr) continue;
+    if (/€|\beur\b/i.test(val || '')) hasEuro = true;
     try {
       acc = addDec(acc, parseDec(numStr));
       count++;
@@ -353,5 +355,5 @@ export function sumColumnNumericCells(values: string[]): { count: number; total:
     }
   }
   if (count === 0) return null;
-  return { count, total: formatDec(acc) };
+  return { count, total: formatDec(acc), hasEuro };
 }

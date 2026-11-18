@@ -11,13 +11,13 @@ const variablesGradlePath = path.join(androidDir, 'variables.gradle');
 
 const runNumber = Number(process.env.GITHUB_RUN_NUMBER || '1') || 1;
 const explicitVersionCode = process.env.ANDROID_VERSION_CODE ? Number(process.env.ANDROID_VERSION_CODE) : null;
-const versionCode = explicitVersionCode && explicitVersionCode > 0 ? explicitVersionCode : 200 + runNumber;
+const versionCode = explicitVersionCode && explicitVersionCode > 0 ? explicitVersionCode : 310 + runNumber;
 const pkgVersion = (() => {
   try {
     const pkg = JSON.parse(fs.readFileSync(path.join(root, 'package.json'), 'utf8'));
-    return pkg.version || '1.4.0';
+    return pkg.version || '1.5.1';
   } catch {
-    return '1.4.0';
+    return '1.5.1';
   }
 })();
 const versionName = (process.env.ANDROID_VERSION_NAME || '').trim() || `${pkgVersion}.${runNumber}`;
@@ -558,4 +558,53 @@ public class MainActivity extends BridgeActivity {
   fs.writeFileSync(mainActivityPath, mainActivityJava, 'utf8');
   console.log('[configure-android] Updated MainActivity.java with local Calendar, Device Lock, Insets, & Notification bridge');
 }
+
+// 6. Install NoteBook3 v1.5.1 Play Store & Adaptive Launcher Icons into Android res/mipmap-*
+const iconsSrcDir = path.join(root, '.github', 'android-icons');
+const resDir = path.join(appDir, 'src', 'main', 'res');
+if (fs.existsSync(iconsSrcDir) && fs.existsSync(resDir)) {
+  const densities = ['mdpi', 'hdpi', 'xhdpi', 'xxhdpi', 'xxxhdpi'];
+  let copiedCount = 0;
+  for (const density of densities) {
+    const mipmapDir = path.join(resDir, `mipmap-${density}`);
+    fs.mkdirSync(mipmapDir, { recursive: true });
+    const launcherSrc = path.join(iconsSrcDir, `ic_launcher_${density}.png`);
+    const fgSrc = path.join(iconsSrcDir, `ic_launcher_fg_${density}.png`);
+    if (fs.existsSync(launcherSrc)) {
+      fs.copyFileSync(launcherSrc, path.join(mipmapDir, 'ic_launcher.png'));
+      fs.copyFileSync(launcherSrc, path.join(mipmapDir, 'ic_launcher_round.png'));
+      copiedCount++;
+    }
+    if (fs.existsSync(fgSrc)) {
+      fs.copyFileSync(fgSrc, path.join(mipmapDir, 'ic_launcher_foreground.png'));
+      copiedCount++;
+    }
+  }
+  const valuesDir = path.join(resDir, 'values');
+  fs.mkdirSync(valuesDir, { recursive: true });
+  const bgXmlPath = path.join(valuesDir, 'ic_launcher_background.xml');
+  fs.writeFileSync(
+    bgXmlPath,
+    `<?xml version="1.0" encoding="utf-8"?>\n<resources>\n    <color name="ic_launcher_background">#123C9D</color>\n</resources>\n`,
+    'utf8'
+  );
+  const colorsXmlPath = path.join(valuesDir, 'colors.xml');
+  if (fs.existsSync(colorsXmlPath)) {
+    let colorsXml = fs.readFileSync(colorsXmlPath, 'utf8');
+    if (colorsXml.includes('name="ic_launcher_background"')) {
+      colorsXml = colorsXml.replace(
+        /<color name="ic_launcher_background">[^<]*<\/color>/g,
+        '<color name="ic_launcher_background">#123C9D</color>'
+      );
+    } else {
+      colorsXml = colorsXml.replace(
+        '</resources>',
+        '    <color name="ic_launcher_background">#123C9D</color>\n</resources>'
+      );
+    }
+    fs.writeFileSync(colorsXmlPath, colorsXml, 'utf8');
+  }
+  console.log(`[configure-android] Installed NoteBook3 custom Play Store icons (${copiedCount} density assets + #123C9D background)`);
+}
+
 

@@ -302,11 +302,23 @@ async function startServer() {
         const sumCol = (rowsArr: any[], key: string) => {
           let sum = 0;
           let count = 0;
+          let hasEuro = false;
           for (const r of rowsArr) {
             if (r?.status === 'x') continue;
-            const raw = String(r?.[key] || '').trim().replace(/\s+/g, '');
-            if (!raw) continue;
-            const clean = raw.replace(/,/g, '.');
+            const original = String(r?.[key] || '').trim();
+            if (!original) continue;
+            if (/€|\beur\b/i.test(original)) hasEuro = true;
+            let clean = original
+              .replace(/^(lek[eë]?|all|eur|usd|chf|gbp|€|\$|£)\s*/i, '')
+              .replace(/\s*(lek[eë]?|all|eur|usd|chf|gbp|kg|gr|g|mg|l|ml|m|cm|mm|km|cop[eë]?|pcs|€|\$|£)\.?$/i, '')
+              .replace(/\s+/g, '');
+            if (/^-?\d{1,3}(,\d{3})+(\.\d+)?$/.test(clean)) {
+              clean = clean.replace(/,/g, '');
+            } else if (/^-?\d{1,3}(\.\d{3})+(,\d+)?$/.test(clean)) {
+              clean = clean.replace(/\./g, '').replace(',', '.');
+            } else {
+              clean = clean.replace(/,/g, '.');
+            }
             if (/^[+-]?(\d+(\.\d+)?|\.\d+)$/.test(clean)) {
               const n = Number(clean);
               if (Number.isFinite(n)) {
@@ -316,7 +328,8 @@ async function startServer() {
             }
           }
           if (count === 0) return null;
-          return Number.isInteger(sum) ? String(sum) : String(Number(sum.toFixed(4)));
+          const formatted = Number.isInteger(sum) ? String(sum) : String(Number(sum.toFixed(4)));
+          return hasEuro ? `${formatted} €` : formatted;
         };
 
         const compactDoc = (d: any, includeRows: boolean) => {
