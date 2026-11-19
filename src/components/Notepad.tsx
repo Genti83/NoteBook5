@@ -20,7 +20,7 @@ import {
 } from 'firebase/firestore';
 import { Capacitor } from '@capacitor/core';
 import { Share } from '@capacitor/share';
-import { Filesystem, Directory } from '@capacitor/filesystem';
+import { Filesystem, Directory, Encoding } from '@capacitor/filesystem';
 import { SaveAs } from 'capacitor-save-as';
 import { jsPDF } from 'jspdf';
 import { useFirebase } from '../hooks/useFirebase';
@@ -930,7 +930,11 @@ export function Notepad() {
     };
   });
   React.useEffect(() => {
-    localStorage.setItem('grid_simulated_fs', JSON.stringify(simulatedFilesystem));
+    try {
+      localStorage.setItem('grid_simulated_fs', JSON.stringify(simulatedFilesystem));
+    } catch (err) {
+      console.warn('grid_simulated_fs quota skip:', err);
+    }
   }, [simulatedFilesystem]);
   React.useEffect(() => {
     if (!showStoragePickerModal) return;
@@ -1006,8 +1010,18 @@ export function Notepad() {
   const [passwordInput, setPasswordInput] = React.useState<string>('');
   const [aiAutopilot, setAiAutopilot] = React.useState<boolean>(() => localStorage.getItem('grid_ai_autopilot') === 'true');
   const [isAiAutopilotRunning, setIsAiAutopilotRunning] = React.useState<boolean>(false);
-  const [githubUser, setGithubUser] = React.useState<any>(null);
+  const [githubUser, setGithubUser] = React.useState<any>(() => {
+    try {
+      const saved = localStorage.getItem('grid_notepad_github_user');
+      return saved ? JSON.parse(saved) : null;
+    } catch {
+      return null;
+    }
+  });
   const [tempGistToken, setTempGistToken] = React.useState<string>('');
+  const [isGistConnecting, setIsGistConnecting] = React.useState<boolean>(false);
+  const [isAuthSubmitting, setIsAuthSubmitting] = React.useState<boolean>(false);
+  const toastTimerRef = React.useRef<any>(null);
   const openGistDashboard = async (initialTab: 'lists' | 'labels' | 'notes' | 'secrets' | 'trash' = 'lists') => {
     setOnlineView('gist');
     setOnlineDashboardTab(initialTab);
@@ -1699,6 +1713,7 @@ export function Notepad() {
   const [tempGistId, setTempGistId] = React.useState<string>('');
   const [onlineSearch, setOnlineSearch] = React.useState<string>('');
   const addFileToSimulatedFilesystem = (fileName: string, fileSize: number, fileContent?: string) => {
+    const safeContent = fileContent && fileSize <= 65536 ? fileContent : '';
     setSimulatedFilesystem(prev => {
       const baseDir = localStorage.getItem('grid_android_base_dir') || androidBaseDir || 'documents';
       const folderStr = localStorage.getItem('grid_folder_name') !== null ? localStorage.getItem('grid_folder_name')! : folderName;
@@ -1719,7 +1734,7 @@ export function Notepad() {
         size: formatBytes(fileSize),
         date: new Date().toLocaleDateString(language === 'en' ? 'en-US' : 'sq-AL', { day: '2-digit', month: '2-digit', year: 'numeric' }) + ' ' + new Date().toLocaleTimeString(language === 'en' ? 'en-US' : 'sq-AL', { hour: '2-digit', minute: '2-digit' }),
         type: 'file',
-        content: fileContent || ''
+        content: safeContent
       };
       return {
         ...prev,
@@ -5688,18 +5703,37 @@ const exportChatResponseToPdf = async () => {
      }, 60000); // every 60 seconds
      return () => clearInterval(interval);
   }, [documents, blueText]);
-  const handleEmailAuth = async (e: React.FormEvent) => {
-      e.preventDefault();
+  const handleEmailAuth = async (e?: React.FormEvent, modeOverride?: 'login' | 'signup') => {
+      if (e && typeof e.preventDefault === 'function') {
+          e.preventDefault();
+      }
+      if (isAuthSubmitting) return;
+      const cleanEmail = email.trim();
+      const useSignUp = modeOverride ? modeOverride === 'signup' : isSignUp;
+      if (!cleanEmail || !cleanEmail.includes('@')) {
+          const msg = t("Ju lutem shkruani një adresë Email të vlefshme!", "Please enter a valid Email address!");
+          setAuthError({ code: 'auth/invalid-email', message: msg, provider: 'email' });
+          showToast(msg);
+          return;
+      }
+      if (!password || password.length < 6) {
+          const msg = t("Fjalëkalimi duhet të ketë të paktën 6 karaktere.", "Password must be at least 6 characters.");
+          setAuthError({ code: 'auth/weak-password', message: msg, provider: 'email' });
+          showToast(msg);
+          return;
+      }
+      setAuthError(null);
+      setIsAuthSubmitting(true);
       try {
-          if (isSignUp) {
-              await hookEmailRegister(email, password);
-              showToast(t("Regjistrim i suksesshëm! Sinkronizimi Cloud u aktivizua.", "Sign up successful! Cloud sync activated."));
+          if (useSignUp) {
+              await hookEmailRegister(cleanEmail, password);
+              showToast(t("Regjistrim i suksesshëm në Firebase! Sinkronizimi u aktivizua.", "Firebase Sign Up successful! Cloud sync activated."));
           } else {
-              await hookEmailLogin(email, password);
-              showToast(t("Hyrje e suksesshme! Sinkronizimi Cloud u aktivizua.", "Sign in successful! Cloud sync activated."));
+              await hookEmailLogin(cleanEmail, password);
+              showToast(t("Hyrje e suksesshme në Firebase! Sinkronizimi u aktivizua.", "Firebase Sign In successful! Cloud sync activated."));
           }
           
-          localStorage.setItem('grid_notepad_saved_email', email);
+          localStorage.setItem('grid_notepad_saved_email', cleanEmail);
           localStorage.setItem('grid_notepad_saved_pwd', password);
           localStorage.setItem('grid_notepad_logged_in_provider', 'email');
           localStorage.removeItem('grid_notepad_custom_uid'); 
@@ -5710,45 +5744,133 @@ const exportChatResponseToPdf = async () => {
           setAuthModal(false);
           setPassword('');
           
-          setTimeout(() => handleUnifiedCloudSync(), 1500);
+          setTimeout(() => handleUnifiedCloudSync(), 1200);
       } catch (err: any) {
           console.error("Email auth err:", err);
           setAuthError({ code: err.code || 'unknown', message: err.message, provider: 'email' });
-          let msg = t("Gabim: ", "Error: ") + err.message;
+          let msg = t("Gabim: ", "Error: ") + (err.message || '');
           if (err.code === 'auth/email-already-in-use') {
              try {
                  showToast(t("Kjo llogari ekziston! Po kyçeni automatikisht...", "Account already exists! Signing in automatically..."));
-                 await hookEmailLogin(email, password);
+                 await hookEmailLogin(cleanEmail, password);
                  showToast(t("Hyrje e suksesshme me llogarinë tuaj!", "Successfully signed in with your account!"));
-                 localStorage.setItem('grid_notepad_saved_email', email);
+                 localStorage.setItem('grid_notepad_saved_email', cleanEmail);
                  localStorage.setItem('grid_notepad_saved_pwd', password);
                  localStorage.setItem('grid_notepad_logged_in_provider', 'email');
                  localStorage.removeItem('grid_notepad_custom_uid'); 
                  localStorage.setItem('grid_cloud_sync_freq', '500');
                  setCloudSyncFrequency(500);
+                 setAuthError(null);
                  setAuthModal(false);
                  setPassword('');
-                 setTimeout(() => handleUnifiedCloudSync(), 1500);
+                 setTimeout(() => handleUnifiedCloudSync(), 1200);
                  return;
              } catch (loginErr: any) {
                  setIsSignUp(false);
                  setAuthError({ code: loginErr.code || 'unknown', message: loginErr.message, provider: 'email' });
+                 showToast(t("Ky email është i regjistruar. Kontrolloni fjalëkalimin ose përdorni Show View!", "Email already registered. Check your password or use Show View!"));
                  return;
              }
           }
           if (err.code === 'auth/weak-password') msg = t("Fjalëkalimi duhet të ketë të paktën 6 karaktere.", "Password must be at least 6 characters.");
           if (err.code === 'auth/invalid-email') msg = t("Formati i emailit është i pasaktë.", "Invalid email format.");
           if (err.code === 'auth/user-not-found' || err.code === 'auth/wrong-password' || err.code === 'auth/invalid-credential') {
-             msg = t("Kredenciale të gabuara! Nëse jeni regjistruar me Google, klikoni butonin Google.", "Wrong credentials! If you registered with Google, click the Google button.");
+             msg = t("Kredenciale të gabuara! Kontrolloni emailin/fjalëkalimin ose klikoni Regjistrohu.", "Wrong credentials! Check email/password or click Sign Up.");
           }
           if (err.code === 'auth/operation-not-allowed') {
-             return;
+             msg = t("Hyrja me Email/Password duhet aktivizuar në Firebase Console.", "Email/Password sign-in must be enabled in Firebase Console.");
           }
           if (err.code === 'auth/network-request-failed') {
              msg = t("Nuk ka lidhje interneti ose u bllokua kërkesa! Sigurohuni që pajisja ka akses.", "No internet connection or request blocked! Check device network access.");
           }
           
           showToast(msg);
+      } finally {
+          setIsAuthSubmitting(false);
+      }
+  };
+  const connectAndVerifyGithubToken = async (rawToken: string): Promise<boolean> => {
+      const cleanToken = rawToken.trim();
+      if (!cleanToken) {
+          showToast(t("Ju lutem vendosni GitHub Token (PAT)!", "Please enter a GitHub Token (PAT)!"));
+          return false;
+      }
+      if (!navigator.onLine) {
+          setGistToken(cleanToken);
+          localStorage.setItem('grid_notepad_gist_token', cleanToken);
+          showToast(t("Token u ruajt lokalisht (Offline). Do verifikohet kur të ketë internet.", "Token saved locally (Offline). Will verify when online."));
+          return true;
+      }
+      setIsGistConnecting(true);
+      showToast(t("Duke verifikuar llogarinë GitHub & aksesin Gist...", "Verifying GitHub account & Gist scope..."));
+      try {
+          const userRes = await fetch('https://api.github.com/user', {
+              headers: {
+                  'Authorization': `token ${cleanToken}`,
+                  'Accept': 'application/vnd.github.v3+json'
+              }
+          });
+          if (!userRes.ok) {
+              const errMsg = userRes.status === 401
+                  ? t("Token GitHub i pavlefshëm ose i skaduar! Krijoni një Token të ri me lejen gist.", "Invalid or expired GitHub Token! Please create a new Token with gist scope.")
+                  : t(`Gabim nga GitHub (${userRes.status}). Provoni përsëri.`, `GitHub API error (${userRes.status}). Please try again.`);
+              showToast(errMsg);
+              return false;
+          }
+          const ghUser = await userRes.json();
+          const oauthScopes = userRes.headers.get('x-oauth-scopes') || '';
+          if (oauthScopes && !oauthScopes.split(',').map(s => s.trim()).includes('gist')) {
+              showToast(t("Kujdes: Ky Token nuk ka fushëveprimin 'gist'! Ju lutem zgjidhni kutinë 'gist' te GitHub.", "Warning: This Token does not include the 'gist' scope! Check 'gist' on GitHub."));
+              return false;
+          }
+          setGithubUser(ghUser);
+          localStorage.setItem('grid_notepad_github_user', JSON.stringify(ghUser));
+          setGistToken(cleanToken);
+          setTempGistToken(cleanToken);
+          localStorage.setItem('grid_notepad_gist_token', cleanToken);
+
+          let activeGistId = (gistId || localStorage.getItem('grid_notepad_gist_id') || '').trim();
+          if (!activeGistId) {
+              try {
+                  const gistsRes = await fetch('https://api.github.com/gists?per_page=15', {
+                      headers: {
+                          'Authorization': `token ${cleanToken}`,
+                          'Accept': 'application/vnd.github.v3+json'
+                      }
+                  });
+                  if (gistsRes.ok) {
+                      const gistsList = await gistsRes.json();
+                      if (Array.isArray(gistsList)) {
+                          const existingNb3 = gistsList.find((g: any) => g?.files && g.files['grid_notepad_backup.json']);
+                          if (existingNb3?.id) {
+                              activeGistId = existingNb3.id;
+                              setGistId(activeGistId);
+                              localStorage.setItem('grid_notepad_gist_id', activeGistId);
+                          }
+                      }
+                  }
+              } catch {}
+          }
+          if (!activeGistId) {
+              const docsToPush = latestDocsRef.current.length > 0 ? latestDocsRef.current : documents;
+              await saveToGist(
+                  docsToPush,
+                  true,
+                  latestBlueTextRef.current,
+                  latestSecretListRef.current,
+                  mergeAllLabels(latestCustomLabelsRef.current, [], docsToPush),
+                  latestNotesColorRef.current,
+                  latestTextColorModeRef.current,
+                  latestTrashItemsRef.current
+              );
+          }
+          showToast(t(`✓ U lidh me GitHub (@${ghUser.login}) & Gist është aktiv!`, `✓ Connected to GitHub (@${ghUser.login}) & Gist is active!`));
+          return true;
+      } catch (err: any) {
+          showToast(t("Gabim rrjeti gjatë lidhjes me GitHub!", "Network error while connecting to GitHub!"));
+          return false;
+      } finally {
+          setIsGistConnecting(false);
       }
   };
   const openDeviceSecurityVault = (focusSection: 'all' | 'pin' | 'firebase' | 'gist' = 'all') => {
@@ -7087,8 +7209,59 @@ const exportChatResponseToPdf = async () => {
     }
   };
   const showToast = (msg: string) => {
+    if (toastTimerRef.current) {
+      clearTimeout(toastTimerRef.current);
+    }
     setToastMessage(msg);
-    setTimeout(() => setToastMessage(''), 3000);
+    toastTimerRef.current = setTimeout(() => {
+      setToastMessage('');
+      toastTimerRef.current = null;
+    }, 3200);
+  };
+  const renderToastBanner = () => {
+    if (!toastMessage) return null;
+    const hasCenteredOverlay =
+      appLocked ||
+      passwordModal.isOpen ||
+      backupModal ||
+      authModal ||
+      confirmDialog.isOpen ||
+      deviceVaultModal.isOpen ||
+      cloudModal ||
+      showCalendarModal ||
+      showOptionsMenu ||
+      aboutModal.isOpen ||
+      showDownloadAppModal ||
+      showCalculator ||
+      showStoragePickerModal ||
+      aiChatModal ||
+      blueModal ||
+      Boolean(activeCell) ||
+      showConfirmClear ||
+      showConfirmDeleteSelected ||
+      Boolean(docToDelete) ||
+      Boolean(pendingAiChanges) ||
+      Boolean(transferDocId);
+    if (hasCenteredOverlay) {
+      return (
+        <div
+          role="status"
+          aria-live="polite"
+          className="fixed top-[calc(env(safe-area-inset-top,0px)+8px)] left-1/2 -translate-x-1/2 max-w-[min(92vw,420px)] text-center bg-accent-600/95 backdrop-blur-md text-white px-3.5 py-1.5 rounded-full shadow-xl border border-white/15 font-semibold text-xs animate-in fade-in slide-in-from-top-2 z-[9999] pointer-events-none"
+        >
+          {toastMessage}
+        </div>
+      );
+    }
+    return (
+      <div
+        role="status"
+        aria-live="polite"
+        className="fixed bottom-3 right-3 sm:bottom-4 sm:right-4 max-w-[min(86vw,360px)] bg-accent-600/95 backdrop-blur-md text-white px-3.5 py-2 rounded-xl shadow-xl border border-white/15 font-semibold text-xs sm:text-sm animate-in fade-in slide-in-from-bottom-2 z-[9999] pointer-events-none"
+      >
+        {toastMessage}
+      </div>
+    );
   };
   const safeFormatDate = (dateVal: any, fmt: string) => {
     try {
@@ -7982,85 +8155,154 @@ const exportChatResponseToPdf = async () => {
          : t("Rrjeshti 1 u pastrua (struktura u ruajt)!", "Row 1 cleared (structure preserved)!")
      );
   };
+  const writeUtf8InChunksToFilesystem = async (path: string, directory: Directory, content: string) => {
+      const CHUNK_SIZE = 180000;
+      const firstChunk = content.slice(0, CHUNK_SIZE);
+      const res = await Filesystem.writeFile({
+          path,
+          data: firstChunk,
+          directory,
+          encoding: Encoding.UTF8,
+          recursive: true
+      });
+      for (let offset = CHUNK_SIZE; offset < content.length; offset += CHUNK_SIZE) {
+          const chunk = content.slice(offset, offset + CHUNK_SIZE);
+          await Filesystem.appendFile({
+              path,
+              data: chunk,
+              directory,
+              encoding: Encoding.UTF8
+          });
+      }
+      return res;
+  };
+  const blobToBase64 = (blob: Blob): Promise<string> =>
+      new Promise((resolve, reject) => {
+          const reader = new FileReader();
+          reader.onloadend = () => {
+              const resultStr = reader.result ? reader.result.toString() : '';
+              const b64 = resultStr.includes(',') ? resultStr.split(',')[1] : '';
+              if (b64) resolve(b64);
+              else reject(new Error('Empty base64 payload'));
+          };
+          reader.onerror = () => reject(reader.error || new Error('FileReader error'));
+          reader.readAsDataURL(blob);
+      });
   const handleDownload = async (blob: Blob, filename: string, mimeType: string, shareTitle: string) => {
-      // Shto skedarin në sistemin e simuluar të skedarëve që të shfaqet në "Zgjedhësin e Dosjeve"
-      let contentStr = "";
-      try {
-          contentStr = await blob.text();
-      } catch (err) {}
-      addFileToSimulatedFilesystem(filename, blob.size, contentStr);
-      
+      const isTextBased =
+          mimeType.includes('json') ||
+          mimeType.includes('text') ||
+          mimeType.includes('csv') ||
+          filename.endsWith('.json') ||
+          filename.endsWith('.csv') ||
+          filename.endsWith('.txt') ||
+          filename.endsWith('.ics');
+
+      // Mos ruajmë skedarë të mëdhenj (>64KB) brenda React state / localStorage që të mos ngrijë aplikacioni
+      let textContent = '';
+      if (isTextBased && (blob.size <= 65536 || Capacitor.isNativePlatform())) {
+          try {
+              textContent = await blob.text();
+          } catch {}
+      }
+      addFileToSimulatedFilesystem(filename, blob.size, blob.size <= 65536 ? textContent : '');
+
       try {
           if (Capacitor.isNativePlatform()) {
-              const reader = new FileReader();
-              reader.readAsDataURL(blob);
-              reader.onloadend = async () => {
-                  const base64data = reader.result?.toString().split(',')[1];
-                  if (base64data) {
+              externalNavUntilRef.current = Date.now() + 180000;
+              const safeTempName = `nb3_export_${Date.now()}_${filename.replace(/[^a-zA-Z0-9._-]/g, '_')}`;
+              let cacheUri = '';
+              let smallBase64 = '';
+
+              if (isTextBased && textContent) {
+                  const cacheRes = await writeUtf8InChunksToFilesystem(safeTempName, Directory.Cache, textContent);
+                  cacheUri = cacheRes.uri;
+                  if (blob.size <= 150000) {
+                      try { smallBase64 = await blobToBase64(blob); } catch {}
+                  }
+              } else {
+                  const b64 = await blobToBase64(blob);
+                  if (blob.size <= 220000) {
+                      smallBase64 = b64;
+                  }
+                  const cacheRes = await Filesystem.writeFile({
+                      path: safeTempName,
+                      data: b64,
+                      directory: Directory.Cache,
+                      recursive: true
+                  });
+                  cacheUri = cacheRes.uri;
+              }
+
+              const cleanupTempCache = () => {
+                  Filesystem.deleteFile({ path: safeTempName, directory: Directory.Cache }).catch(() => {});
+              };
+
+              try {
+                  if (nativeSaveDirectoryUri) {
+                      showToast(t("Duke ruajtur automatikisht në dosjen e zgjedhur...", "Saving to selected folder..."));
+                      await (SaveAs as any).saveFileToDirectory({
+                          filename,
+                          mimeType,
+                          sourceUri: cacheUri,
+                          ...(smallBase64 ? { data: smallBase64 } : {}),
+                          directoryUri: nativeSaveDirectoryUri
+                      });
+                      cleanupTempCache();
+                      showToast(t(`Skedari "${filename}" u ruajt me sukses në dosjen tuaj!`, `File "${filename}" saved successfully in your folder!`));
+                      return;
+                  } else {
+                      showToast(t("Duke hapur zgjedhësin e ruajtjes së skedarit...", "Opening device save picker..."));
+                      await (SaveAs as any).showSaveAsPicker({
+                          filename,
+                          mimeType,
+                          sourceUri: cacheUri,
+                          ...(smallBase64 ? { data: smallBase64 } : {})
+                      });
+                      cleanupTempCache();
+                      showToast(t("Skedari u ruajt me sukses!", "File saved successfully!"));
+                      return;
+                  }
+              } catch (e: any) {
+                  console.error("Capacitor SAF save error:", e);
+                  const msg = e && e.message ? e.message.toLowerCase() : "";
+                  if (msg.includes("cancel") || msg.includes("abort") || msg.includes("user canceled") || msg.includes("dialog canceled")) {
+                      cleanupTempCache();
+                      return;
+                  }
+
+                  try {
+                      await Share.share({
+                          title: shareTitle || filename,
+                          url: cacheUri,
+                          dialogTitle: t('Ruaj ose Ndaj Dokumentin', 'Save or Share Document')
+                      });
+                      return;
+                  } catch {
                       try {
-                          if (nativeSaveDirectoryUri) {
-                              showToast(t("Duke ruajtur automatikisht në dosjen e zgjedhur...", "Automatically saving to selected folder..."));
-                              await (SaveAs as any).saveFileToDirectory({
-                                  filename: filename,
-                                  mimeType: mimeType,
-                                  data: base64data,
-                                  directoryUri: nativeSaveDirectoryUri
-                              });
-                              showToast(t(`Skedari "${filename}" u ruajt me sukses në dosjen tuaj!`, `File "${filename}" saved successfully in your folder!`));
+                          if (isTextBased && textContent) {
+                              await writeUtf8InChunksToFilesystem(filename, getCapacitorDirectory('documents'), textContent);
                           } else {
-                              showToast(t("Duke hapur Android System File Picker (SAF)...", "Opening Android System File Picker (SAF)..."));
-                              
-                              // Përdor plugin-in tonë të fuqishëm 'capacitor-save-as' për të hapur dialogun zyrtar SAF (DocumentsUI)
-                              await SaveAs.showSaveAsPicker({
-                                  filename: filename,
-                                  mimeType: mimeType,
-                                  data: base64data
-                              });
-                              
-                              showToast(t("Skedari u ruajt me sukses!", "File saved successfully!"));
-                          }
-                      } catch (e: any) {
-                          console.error("Capacitor SAF save error:", e);
-                          
-                          // Nëse përdoruesi e anulloi (Cancelled), thjesht kthehu pa treguar gabim
-                          const msg = e && e.message ? e.message.toLowerCase() : "";
-                          if (msg.includes("cancel") || msg.includes("abort") || msg.includes("user canceled") || msg.includes("dialog canceled")) {
-                              return;
-                          }
-                          
-                          // Fallback: Ruaje skedarin në Cache përkohësisht për ta hapur me Share sheet ose standard Filesystem
-                          try {
-                              const writeResult = await Filesystem.writeFile({
+                              const fallbackB64 = smallBase64 || await blobToBase64(blob);
+                              await Filesystem.writeFile({
                                   path: filename,
-                                  data: base64data,
-                                  directory: Directory.Cache,
+                                  data: fallbackB64,
+                                  directory: getCapacitorDirectory('documents'),
                                   recursive: true
                               });
-                              
-                              await Share.share({
-                                  title: shareTitle || filename,
-                                  url: writeResult.uri,
-                                  dialogTitle: t('Ruaj Dokumentin (Android SAF Fallback)', 'Save Document (Android SAF Fallback)')
-                              });
-                          } catch (fallbackErr: any) {
-                              try {
-                                  const baseDirStr = 'documents';
-                                  await Filesystem.writeFile({
-                                      path: filename,
-                                      data: base64data,
-                                      directory: getCapacitorDirectory(baseDirStr),
-                                      recursive: true
-                                  });
-                                  showToast(t(`Skedari u ruajt në Documents/${filename}`, `File saved in Documents/${filename}`));
-                              } catch (finalErr: any) {
-                                  showToast(t("Gabim gjatë ruajtjes së dokumentit!", "Error saving document!"));
-                              }
                           }
+                          cleanupTempCache();
+                          showToast(t(`Skedari u ruajt në Documents/${filename}`, `File saved in Documents/${filename}`));
+                          return;
+                      } catch {
+                          cleanupTempCache();
+                          showToast(t("Gabim gjatë ruajtjes së dokumentit!", "Error saving document!"));
+                          return;
                       }
                   }
-              };
-              return;
+              }
           }
+
           // Për Browser / PWA: Përdor Zgjedhësin Standard të Ruajtjes së Skedarëve ose Dosjen e Ruajtur nëse ekziston
           if (!Capacitor.isNativePlatform() && saveDirectoryHandle) {
               try {
@@ -8100,9 +8342,10 @@ const exportChatResponseToPdf = async () => {
           document.body.appendChild(a);
           a.click();
           document.body.removeChild(a);
-          URL.revokeObjectURL(url);
+          setTimeout(() => URL.revokeObjectURL(url), 4000);
           showToast(t("Skedari u shkarkua në pajisje!", "File downloaded to your device!"));
       } catch (err) {
+          console.error("Download error:", err);
           showToast(t("Gabim gjatë shkarkimit të skedarit!", "Error downloading file!"));
       }
   };
@@ -8481,21 +8724,25 @@ const exportChatResponseToPdf = async () => {
   };
   const exportLocalBackup = async () => {
     try {
+       showToast(t("Duke përgatitur skedarin JSON...", "Preparing JSON backup file..."));
+       await new Promise(resolve => setTimeout(resolve, 25));
+       const docsSnapshot = latestDocsRef.current.length > 0 ? latestDocsRef.current : documents;
        const backupData = {
-          documents,
-          customLabels,
-          trashItems,
-          blueText,
-          secretList,
-          notesColor,
-          textColorMode
+          documents: docsSnapshot,
+          customLabels: latestCustomLabelsRef.current,
+          trashItems: latestTrashItemsRef.current,
+          blueText: latestBlueTextRef.current,
+          secretList: latestSecretListRef.current,
+          notesColor: latestNotesColorRef.current,
+          textColorMode: latestTextColorModeRef.current
        };
-       const dataStr = JSON.stringify(backupData, null, 2);
-       const dataBlob = new Blob([dataStr], { type: 'application/json' });
+       const dataStr = JSON.stringify(backupData);
+       const dataBlob = new Blob([dataStr], { type: 'application/json;charset=utf-8' });
        const filename = `NoteBook3_Backup_${format(new Date(), 'yyyy-MM-dd_HH-mm')}.json`;
        
        await handleDownload(dataBlob, filename, 'application/json', t('Backup për NoteBook3', 'Backup for NoteBook3'));
     } catch(err: any) {
+       console.error("exportLocalBackup err:", err);
        showToast(t("Gabim gjatë ruajtjes së kopjes rezervë.", "Error saving local backup."));
     }
   };
@@ -8743,24 +8990,32 @@ const exportChatResponseToPdf = async () => {
        setShowOptionsMenu(false);
   };
   const handleExportDataJson = () => {
-       executeProtectedAction(async () => {
-           const data = {
-               documents,
-               blueText,
-               secretList,
-               customLabels,
-               trashItems,
-               notesColor,
-               textColorMode,
-               pin: localStorage.getItem('grid_notepad_pin') || null
-           };
-           const dataStr = JSON.stringify(data, null, 2);
-           const dataBlob = new Blob([dataStr], { type: 'application/json' });
-           const filename = `app_data_backup_${format(new Date(), 'yyyyMMdd_HHmmss')}.json`;
-           
-           await handleDownload(dataBlob, filename, 'application/json', 'Backup JSON');
-       });
        setShowOptionsMenu(false);
+       executeProtectedAction(async () => {
+           try {
+               showToast(t("Duke përgatitur eksportimin JSON...", "Preparing JSON export..."));
+               await new Promise(resolve => setTimeout(resolve, 25));
+               const docsSnapshot = latestDocsRef.current.length > 0 ? latestDocsRef.current : documents;
+               const data = {
+                   documents: docsSnapshot,
+                   blueText: latestBlueTextRef.current,
+                   secretList: latestSecretListRef.current,
+                   customLabels: latestCustomLabelsRef.current,
+                   trashItems: latestTrashItemsRef.current,
+                   notesColor: latestNotesColorRef.current,
+                   textColorMode: latestTextColorModeRef.current,
+                   pin: localStorage.getItem('grid_notepad_pin') || null
+               };
+               const dataStr = JSON.stringify(data);
+               const dataBlob = new Blob([dataStr], { type: 'application/json;charset=utf-8' });
+               const filename = `NoteBook3_data_backup_${format(new Date(), 'yyyyMMdd_HHmmss')}.json`;
+               
+               await handleDownload(dataBlob, filename, 'application/json', 'Backup JSON');
+           } catch (err) {
+               console.error("handleExportDataJson err:", err);
+               showToast(t("Gabim gjatë eksportimit të JSON!", "Error exporting JSON!"));
+           }
+       });
   };
   const handleImportDataJson = (e: React.ChangeEvent<HTMLInputElement>) => {
       const file = e.target.files?.[0];
@@ -9261,17 +9516,13 @@ const exportChatResponseToPdf = async () => {
                            </button>
                         </div>
                         <button
+                           disabled={isGistConnecting}
                            onClick={async () => {
-                              if (!tempGistToken.trim()) {
-                                 showToast(t("Ju lutem plotësoni GitHub Token!", "Please enter a GitHub Token!"));
-                                 return;
-                              }
-                              showToast(t("Duke verifikuar Token-in me GitHub...", "Verifying Token with GitHub..."));
-                              setGistToken(tempGistToken);
-                              localStorage.setItem('grid_notepad_gist_token', tempGistToken);
+                              await connectAndVerifyGithubToken(tempGistToken);
                            }}
-                           className="w-full py-2 bg-blue-600 hover:bg-blue-500 text-white text-xs font-bold rounded-lg transition-colors active:scale-95 shadow-md shadow-blue-500/10"
+                           className="w-full py-2 bg-blue-600 hover:bg-blue-500 disabled:opacity-60 text-white text-xs font-bold rounded-lg transition-colors active:scale-95 shadow-md shadow-blue-500/10 flex items-center justify-center gap-1.5"
                         >
+                           {isGistConnecting && <Loader2 className="w-3.5 h-3.5 animate-spin" />}
                            {t('Vazhdo & Kontrollo Tokenin', 'Continue & Verify Token')}
                         </button>
                      </>
@@ -14035,10 +14286,11 @@ const exportChatResponseToPdf = async () => {
                                </div>
                                <button
                                   type="submit"
-                                  className="w-full py-2.5 bg-emerald-600 hover:bg-emerald-500 text-white font-bold text-xs rounded-xl transition-all shadow-md flex items-center justify-center gap-1.5 mt-2"
+                                  disabled={isAuthSubmitting}
+                                  className="w-full py-2.5 bg-emerald-600 hover:bg-emerald-500 disabled:opacity-60 text-white font-bold text-xs rounded-xl transition-all shadow-md flex items-center justify-center gap-1.5 mt-2"
                                >
-                                  <LogIn className="w-4 h-4" /> 
-                                  {isSignUp ? t('Krijo Llogari', 'Create Account') : t('Kyçu me Email', 'Log in with Email')}
+                                  {isAuthSubmitting ? <Loader2 className="w-4 h-4 animate-spin" /> : <LogIn className="w-4 h-4" />}
+                                  {isSignUp ? t('Krijo Llogari (Sign Up)', 'Create Account (Sign Up)') : t('Kyçu me Email', 'Log in with Email')}
                                </button>
                             </form>
                             {/* Divider */}
@@ -15202,6 +15454,18 @@ const exportChatResponseToPdf = async () => {
                       ) : (
                          <div className="space-y-4 w-full text-left">
                              <div className="space-y-3 p-3.5 rounded-xl border bg-zinc-100/30 dark:bg-zinc-950/30 border-zinc-200 dark:border-zinc-800">
+                                <div className="flex items-center justify-between gap-2">
+                                   <span className="text-[11px] font-extrabold uppercase tracking-wider text-emerald-500">
+                                      Firebase Auth (Email / Password)
+                                   </span>
+                                   <button
+                                      type="button"
+                                      onClick={() => { setBackupModal(false); setAuthModal(true); }}
+                                      className="text-[10px] font-bold text-blue-500 hover:underline"
+                                   >
+                                      {t('Menaxhimi i Avancuar →', 'Advanced Auth →')}
+                                   </button>
+                                </div>
                                 <div>
                                    <label className="block text-[11px] font-bold text-zinc-400 uppercase tracking-wider mb-1">
                                       {t('Adresa Email', 'Email Address')}
@@ -15210,7 +15474,7 @@ const exportChatResponseToPdf = async () => {
                                       type="email"
                                       placeholder={t("emri@shembull.com", "name@example.com")}
                                       value={email}
-                                      onChange={(e) => setEmail(e.target.value)}
+                                      onChange={(e) => { setEmail(e.target.value); if (authError) setAuthError(null); }}
                                       className={`w-full px-3 py-1.5 rounded-lg border text-xs sm:text-sm font-semibold outline-none transition-all ${
                                          isDark 
                                             ? "bg-zinc-900 border-zinc-700 text-white focus:border-emerald-500" 
@@ -15220,41 +15484,61 @@ const exportChatResponseToPdf = async () => {
                                 </div>
                                 <div>
                                    <label className="block text-[11px] font-bold text-zinc-400 uppercase tracking-wider mb-1">
-                                      {t('Fjalëkalimi (Password)', 'Password')}
+                                      {t('Fjalëkalimi (min. 6 karaktere)', 'Password (min. 6 chars)')}
                                    </label>
                                    <input
                                       type="password"
                                       placeholder="••••••••"
                                       value={password}
-                                      onChange={(e) => setPassword(e.target.value)}
+                                      onChange={(e) => { setPassword(e.target.value); if (authError) setAuthError(null); }}
+                                      onKeyDown={(e) => {
+                                         if (e.key === 'Enter') {
+                                            handleEmailAuth(e, isSignUp ? 'signup' : 'login');
+                                         }
+                                      }}
                                       className={`w-full px-3 py-1.5 rounded-lg border text-xs sm:text-sm font-semibold outline-none transition-all ${
                                          isDark 
                                             ? "bg-zinc-900 border-zinc-700 text-white focus:border-emerald-500" 
                                             : "bg-white border-zinc-300 text-zinc-900 focus:border-emerald-500"
                                       }`}
                                    />
+                                   <div className="flex justify-end mt-1">
+                                      <button
+                                         type="button"
+                                         onClick={() => openDeviceSecurityVault('firebase')}
+                                         className="text-[11px] font-bold text-emerald-500 hover:underline touch-manipulation cursor-pointer"
+                                      >
+                                         🔐 {t('Keni harruar fjalëkalimin? (Show View)', 'Forgot password? (Show View)')}
+                                      </button>
+                                   </div>
                                 </div>
                                 {authError && (
-                                   <p className="text-[11px] text-red-500 font-bold">{authError.message}</p>
+                                   <p className="text-[11px] text-red-500 font-bold break-words">{authError.message}</p>
                                 )}
-                                <div className="flex gap-2 pt-1">
+                                <div className="grid grid-cols-2 gap-2 pt-1">
                                    <button 
-                                      onClick={() => {
+                                      type="button"
+                                      disabled={isAuthSubmitting}
+                                      onClick={(e) => {
                                          setIsSignUp(false);
-                                         setTimeout(() => handleEmailAuth({ preventDefault: () => {} } as any), 50);
+                                         handleEmailAuth(e, 'login');
                                       }}
-                                      className="flex-1 py-1.5 rounded-lg font-bold text-xs bg-emerald-600 hover:bg-emerald-500 text-white transition-colors"
+                                      className="py-2 rounded-lg font-bold text-xs bg-emerald-600 hover:bg-emerald-500 disabled:opacity-60 text-white transition-colors flex items-center justify-center gap-1.5 shadow-sm"
                                    >
-                                      {t('Kyçu', 'Login')}
+                                      {isAuthSubmitting && !isSignUp && <Loader2 className="w-3.5 h-3.5 animate-spin" />}
+                                      {t('Kyçu (Login)', 'Login')}
                                    </button>
                                    <button 
-                                      onClick={() => {
+                                      type="button"
+                                      disabled={isAuthSubmitting}
+                                      onClick={(e) => {
                                          setIsSignUp(true);
-                                         setTimeout(() => handleEmailAuth({ preventDefault: () => {} } as any), 50);
+                                         handleEmailAuth(e, 'signup');
                                       }}
-                                      className="flex-1 py-1.5 rounded-lg font-bold text-xs border border-zinc-500/30 hover:bg-zinc-100 dark:hover:bg-zinc-800 transition-colors text-zinc-600 dark:text-zinc-400"
+                                      className="py-2 rounded-lg font-bold text-xs bg-blue-600 hover:bg-blue-500 disabled:opacity-60 text-white transition-colors flex items-center justify-center gap-1.5 shadow-sm"
                                    >
-                                      {t('Regjistrohu', 'Register')}
+                                      {isAuthSubmitting && isSignUp && <Loader2 className="w-3.5 h-3.5 animate-spin" />}
+                                      {t('Regjistrohu (Sign Up)', 'Sign Up')}
                                    </button>
                                 </div>
                              </div>
@@ -15375,6 +15659,30 @@ const exportChatResponseToPdf = async () => {
                         ) : (
                            <div className="space-y-4 w-full text-left">
                               <div className="space-y-3 p-3.5 rounded-xl border bg-zinc-100/30 dark:bg-zinc-950/30 border-zinc-200 dark:border-zinc-800">
+                                 <div className="grid grid-cols-1 sm:grid-cols-2 gap-2">
+                                    <a
+                                       href="https://github.com/signup"
+                                       target="_blank"
+                                       rel="noopener noreferrer"
+                                       onClick={() => { externalNavUntilRef.current = Date.now() + 180000; }}
+                                       className={`flex items-center justify-center gap-1.5 py-2 px-3 rounded-lg border text-[11px] font-bold transition-colors ${isDark ? "bg-zinc-900 border-zinc-700 text-emerald-400 hover:bg-zinc-800" : "bg-white border-zinc-300 text-emerald-700 hover:bg-zinc-50"}`}
+                                    >
+                                       <Github className="w-3.5 h-3.5 shrink-0" />
+                                       {t('Regjistrohu në GitHub (Sign Up)', 'GitHub Sign Up')}
+                                       <ExternalLink className="w-3 h-3 shrink-0 opacity-70" />
+                                    </a>
+                                    <a
+                                       href="https://github.com/settings/tokens/new?scopes=gist&description=NoteBook3+Backup"
+                                       target="_blank"
+                                       rel="noopener noreferrer"
+                                       onClick={() => { externalNavUntilRef.current = Date.now() + 180000; }}
+                                       className={`flex items-center justify-center gap-1.5 py-2 px-3 rounded-lg border text-[11px] font-bold transition-colors ${isDark ? "bg-zinc-900 border-zinc-700 text-blue-400 hover:bg-zinc-800" : "bg-white border-zinc-300 text-blue-700 hover:bg-zinc-50"}`}
+                                    >
+                                       <Key className="w-3.5 h-3.5 shrink-0" />
+                                       {t('Krijo Token (PAT me gist)', 'Create Token (PAT gist)')}
+                                       <ExternalLink className="w-3 h-3 shrink-0 opacity-70" />
+                                    </a>
+                                 </div>
                                  <div>
                                     <label className={`block text-xs font-bold uppercase tracking-wide mb-1 ${isDark ? "text-zinc-400" : "text-zinc-500"}`}>
                                        GitHub Personal Token (PAT)
@@ -15384,11 +15692,15 @@ const exportChatResponseToPdf = async () => {
                                        placeholder={t("Vendosni Token-in e GitHub (shërben si fjalëkalim)", "Enter GitHub Token (acts as password)")} 
                                        value={tempGistToken}
                                        onChange={(e) => { setTempGistToken(e.target.value); }}
+                                       onKeyDown={(e) => {
+                                          if (e.key === 'Enter') {
+                                             connectAndVerifyGithubToken(tempGistToken);
+                                          }
+                                       }}
                                        className={`w-full px-3 py-1.5 text-xs sm:text-sm font-semibold rounded-xl border focus:outline-none focus:border-blue-500 focus:ring-1 focus:ring-blue-500 transition-all ${isDark ? "bg-zinc-900/90 border-zinc-700 text-white" : "bg-white border-zinc-300 text-zinc-900 shadow-sm"}`}
                                     />
                                     <p className="text-[10px] text-zinc-400 mt-1 leading-snug">
-                                       {t('Duhet të ketë fushëveprimin', 'Must include scope')} <code className="bg-zinc-800 text-zinc-300 px-1 rounded font-mono">gist</code>. 
-                                       <a href="https://github.com/settings/tokens/new?scopes=gist&description=Notepad+Backup" target="_blank" rel="noopener noreferrer" className="text-blue-500 hover:underline font-bold ml-1">{t('Krijo një të ri këtu (Klik Këtu)', 'Create a new one here')}</a>.
+                                       {t('Hapi 1: Regjistrohuni në GitHub (Sign Up) nëse nuk keni llogari. Hapi 2: Krijoni një Token me lejen', 'Step 1: Sign up on GitHub if needed. Step 2: Create a Token with scope')} <code className="bg-zinc-800 text-zinc-300 px-1 rounded font-mono">gist</code> {t('dhe ngjiteni këtu.', 'and paste it here.')}
                                     </p>
                                     <button
                                        type="button"
@@ -15404,7 +15716,7 @@ const exportChatResponseToPdf = async () => {
                                     </label>
                                     <input 
                                        type="text" 
-                                       placeholder="Lëreni bosh herën e parë (do të krijohet automatikisht)" 
+                                       placeholder={t("Lëreni bosh herën e parë (krijohet automatikisht)", "Leave blank first time (auto-created)")} 
                                        value={gistId}
                                        onChange={(e) => { setGistId(e.target.value); localStorage.setItem('grid_notepad_gist_id', e.target.value); }}
                                        className={`w-full px-3 py-1.5 text-xs sm:text-sm font-semibold rounded-xl border focus:outline-none focus:border-blue-500 focus:ring-1 focus:ring-blue-500 transition-all ${isDark ? "bg-zinc-900/90 border-zinc-700 text-white" : "bg-white border-zinc-300 text-zinc-900 shadow-sm"}`}
@@ -15412,18 +15724,12 @@ const exportChatResponseToPdf = async () => {
                                  </div>
                                  <button
                                     type="button"
-                                    onClick={() => {
-                                       if (!tempGistToken.trim()) {
-                                          showToast(t("Ju lutem plotësoni GitHub Token!", "Please enter a GitHub Token!"));
-                                          return;
-                                       }
-                                       showToast(t("Duke u lidhur me GitHub...", "Connecting to GitHub..."));
-                                       setGistToken(tempGistToken);
-                                       localStorage.setItem('grid_notepad_gist_token', tempGistToken);
-                                    }}
-                                    className="w-full py-2 bg-blue-600 hover:bg-blue-500 text-white text-xs font-bold rounded-lg transition-colors active:scale-95 shadow-md shadow-blue-500/10 mt-2"
+                                    disabled={isGistConnecting}
+                                    onClick={() => connectAndVerifyGithubToken(tempGistToken)}
+                                    className="w-full py-2 bg-blue-600 hover:bg-blue-500 disabled:opacity-60 text-white text-xs font-bold rounded-lg transition-colors active:scale-95 shadow-md shadow-blue-500/10 mt-2 flex items-center justify-center gap-1.5"
                                  >
-                                    {t('Lidhu me GitHub', 'Connect to GitHub')}
+                                    {isGistConnecting ? <Loader2 className="w-3.5 h-3.5 animate-spin" /> : <Github className="w-3.5 h-3.5" />}
+                                    {t('Lidhu & Aktivizo Gist (Sign Up / Login)', 'Connect & Activate Gist (Sign Up / Login)')}
                                  </button>
                               </div>
                            </div>
@@ -17596,7 +17902,7 @@ const exportChatResponseToPdf = async () => {
                      <div className="min-w-0">
                         <h3 className="text-sm sm:text-base font-extrabold truncate flex items-center gap-2">
                            {t('Rreth NoteBook3 & Privatësia', 'About NoteBook3 & Privacy')}
-                           <span className="px-2 py-0.5 rounded-full text-[10px] font-mono font-black bg-emerald-500/15 text-emerald-500 border border-emerald-500/30">v1.5.1</span>
+                           <span className="px-2 py-0.5 rounded-full text-[10px] font-mono font-black bg-emerald-500/15 text-emerald-500 border border-emerald-500/30">v1.5.2</span>
                         </h3>
                         <p className={`text-[11px] truncate ${isDark ? 'text-zinc-400' : 'text-zinc-500'}`}>
                            com.notebook3.app · {t('Gati për Google Play & GitHub APK', 'Google Play & GitHub APK Ready')}
@@ -17682,7 +17988,7 @@ const exportChatResponseToPdf = async () => {
                         <div className="grid grid-cols-2 gap-2.5">
                            <div className={`p-3 rounded-xl border ${isDark ? 'bg-zinc-950/60 border-zinc-800' : 'bg-white border-zinc-200'}`}>
                               <div className="text-[10px] font-bold uppercase text-zinc-500">{t('Versioni', 'Version')}</div>
-                              <div className="text-sm font-black mt-0.5">1.5.1</div>
+                              <div className="text-sm font-black mt-0.5">1.5.2</div>
                            </div>
                            <div className={`p-3 rounded-xl border ${isDark ? 'bg-zinc-950/60 border-zinc-800' : 'bg-white border-zinc-200'}`}>
                               <div className="text-[10px] font-bold uppercase text-zinc-500">{t('ID e Paketës', 'Package ID')}</div>
@@ -17718,8 +18024,8 @@ const exportChatResponseToPdf = async () => {
                            type="button"
                            onClick={() => {
                               const policyText = t(
-                                 'NoteBook3 (com.notebook3.app) v1.5.1 — Publikues: Genti83 (në bashkëpunim me Gemini Studio). Politikë Privatësie: Offline-First, zero reklama/gjurmues, zero READ_CALENDAR ose MANAGE_EXTERNAL_STORAGE. Sinkronizimi Firebase/GitHub Gist dhe funksionet AI përdoren vetëm me kërkesë të përdoruesit, me të drejtë të plotë për fshirje të dhënash (Settings -> App Reset).',
-                                 'NoteBook3 (com.notebook3.app) v1.5.1 — Publisher: Genti83 (in collaboration with Gemini Studio). Privacy Policy: Offline-First, zero ads/trackers, no READ_CALENDAR or MANAGE_EXTERNAL_STORAGE. Optional cloud sync and AI features require explicit user action, with full user data deletion via Settings -> App Reset.'
+                                 'NoteBook3 (com.notebook3.app) v1.5.2 — Publikues: Genti83 (në bashkëpunim me Gemini Studio). Politikë Privatësie: Offline-First, zero reklama/gjurmues, zero READ_CALENDAR ose MANAGE_EXTERNAL_STORAGE. Sinkronizimi Firebase/GitHub Gist dhe funksionet AI përdoren vetëm me kërkesë të përdoruesit, me të drejtë të plotë për fshirje të dhënash (Settings -> App Reset).',
+                                 'NoteBook3 (com.notebook3.app) v1.5.2 — Publisher: Genti83 (in collaboration with Gemini Studio). Privacy Policy: Offline-First, zero ads/trackers, no READ_CALENDAR or MANAGE_EXTERNAL_STORAGE. Optional cloud sync and AI features require explicit user action, with full user data deletion via Settings -> App Reset.'
                               );
                               navigator.clipboard.writeText(policyText);
                               showToast(t('✓ Politika e Privatësisë u kopjua!', '✓ Privacy Policy copied!'));
@@ -17882,11 +18188,7 @@ const exportChatResponseToPdf = async () => {
         <>
            {renderOnlineDashboard()}
            {renderSharedModals()}
-           {toastMessage && (
-              <div className="fixed bottom-10 left-1/2 transform -translate-x-1/2 bg-accent-600 text-white px-4 py-2 rounded-lg shadow-lg font-medium text-sm animate-in fade-in slide-in-from-bottom-4 z-[300] pointer-events-none">
-                 {toastMessage}
-              </div>
-           )}
+           {renderToastBanner()}
            {pinOverlayJSX}
         </>
      );
@@ -18286,7 +18588,7 @@ const exportChatResponseToPdf = async () => {
                            <span className="flex items-center gap-3">
                               <ShieldCheck className="w-4 h-4 shrink-0" /> {t('Rreth App, Privatësia & Lejet', 'About App, Privacy & Permissions')}
                            </span>
-                           <span className="text-[10px] font-mono opacity-80">v1.5.1</span>
+                           <span className="text-[10px] font-mono opacity-80">v1.5.2</span>
                        </button>
                        <button
                           onClick={() => {
@@ -18991,11 +19293,7 @@ const exportChatResponseToPdf = async () => {
             </div>
          )}
          {/* TOAST CUSTOM */}
-         {toastMessage && (
-            <div className="fixed bottom-10 left-1/2 transform -translate-x-1/2 bg-accent-600 text-white px-4 py-2 rounded-lg shadow-lg font-medium text-sm animate-in fade-in slide-in-from-bottom-4 z-[300] pointer-events-none">
-               {toastMessage}
-            </div>
-         )}
+         {renderToastBanner()}
          {renderSharedModals()}
          {pinOverlayJSX}
       </div>
@@ -20114,11 +20412,7 @@ const exportChatResponseToPdf = async () => {
           );
       })()}
       {/* TOAST CUSTOM FOR INNER VIEW */}
-      {toastMessage && (
-         <div className="fixed bottom-10 left-1/2 transform -translate-x-1/2 bg-accent-600 text-white px-4 py-2 rounded-lg shadow-lg font-medium text-sm animate-in fade-in slide-in-from-bottom-4 z-[300] pointer-events-none">
-            {toastMessage}
-         </div>
-      )}
+      {renderToastBanner()}
       
       {pinOverlayJSX}
     </div>

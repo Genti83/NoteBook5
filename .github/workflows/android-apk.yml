@@ -22,7 +22,7 @@ on:
         default: true
         type: boolean
       version_name:
-        description: 'Version Name opsional (psh 1.5.1)'
+        description: 'Version Name opsional (psh 1.5.2)'
         required: false
         type: string
       gemini_api_key:
@@ -258,8 +258,8 @@ jobs:
 
           if [ -n "$FILES_TO_UPLOAD" ]; then
             gh release create latest-apk \
-              --title "NoteBook3 v1.5.1 - Android APK & Play Store AAB (Latest Build)" \
-              --notes "Versioni më i fundit v1.5.1 i NoteBook3 (com.notebook3.app, versionCode 310+) me sistem të thjeshtuar Move me gisht lart/poshtë direkt te butoni + (me ruajtje PIN/Password në përfundim), ruajtje të garantuar të simbolit € kudo pa butona të panevojshëm, fshirje të pastër të rrjeshtave bosh (përveç rrjeshtit 1), dhe ikonën NoteBook3 për Play Store. Për instalim direkt shkarkoni 'NoteBook3-debug.apk' ose 'NoteBook3-release-installable.apk'. Për Google Play Console përdorni skedarin '.aab'." \
+              --title "NoteBook3 v1.5.2 - Android APK & Play Store AAB (Latest Build)" \
+              --notes "Versioni më i fundit v1.5.2 i NoteBook3 (com.notebook3.app, versionCode 320+) me regjistrim & qasje direkte Sign Up / Login për Firebase dhe GitHub Gist në Mjetet Backup e Sinkronizimit, eksportim të shpejtë pa ngrirje të të gjitha të dhënave si JSON (me streaming nativ Android pa bllokuar memorien), dhe pozicionim të pastër të njoftimeve larg butonave dhe fushave PIN/Password. Për instalim direkt shkarkoni 'NoteBook3-debug.apk' ose 'NoteBook3-release-installable.apk'. Për Google Play Console përdorni skedarin '.aab'." \
               --prerelease \
               $FILES_TO_UPLOAD || echo "Gabim gjatë krijimit të release, po vazhdojmë..."
           else

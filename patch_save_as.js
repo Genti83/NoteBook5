@@ -18,11 +18,41 @@ import com.getcapacitor.annotation.CapacitorPlugin;
 import com.getcapacitor.annotation.ActivityCallback;
 import com.getcapacitor.JSObject;
 import com.getcapacitor.PluginMethod;
+import java.io.File;
+import java.io.FileInputStream;
+import java.io.InputStream;
 import java.io.OutputStream;
 import androidx.documentfile.provider.DocumentFile;
 
 @CapacitorPlugin(name = "SaveAs")
 public class SaveAs extends Plugin {
+
+    private void copySourceUriToStream(String sourceUriStr, OutputStream out) throws Exception {
+        Uri sourceUri = Uri.parse(sourceUriStr);
+        InputStream in = null;
+        try {
+            if ("file".equalsIgnoreCase(sourceUri.getScheme()) && sourceUri.getPath() != null) {
+                in = new FileInputStream(new File(sourceUri.getPath()));
+            } else if (sourceUri.getScheme() == null && sourceUriStr.startsWith("/")) {
+                in = new FileInputStream(new File(sourceUriStr));
+            } else {
+                in = getContext().getContentResolver().openInputStream(sourceUri);
+            }
+            if (in == null) {
+                throw new Exception("Unable to open sourceUri");
+            }
+            byte[] buffer = new byte[8192];
+            int len;
+            while ((len = in.read(buffer)) != -1) {
+                out.write(buffer, 0, len);
+            }
+            out.flush();
+        } finally {
+            if (in != null) {
+                try { in.close(); } catch (Exception ignored) {}
+            }
+        }
+    }
 
     @PluginMethod
     public void showSaveAsPicker(PluginCall call) {
@@ -40,14 +70,24 @@ public class SaveAs extends Plugin {
         if (call == null) return;
         if (result.getResultCode() == Activity.RESULT_OK && result.getData() != null) {
             Uri uri = result.getData().getData();
+            String sourceUri = call.getString("sourceUri");
             String data = call.getString("data");
-            if (data == null) {
+            if ((sourceUri == null || sourceUri.isEmpty()) && data == null) {
                 call.reject("Data is null");
                 return;
             }
             try (OutputStream out = getContext().getContentResolver().openOutputStream(uri)) {
-                byte[] bytes = Base64.decode(data, Base64.DEFAULT);
-                out.write(bytes);
+                if (out == null) {
+                    call.reject("Unable to open destination stream");
+                    return;
+                }
+                if (sourceUri != null && !sourceUri.isEmpty()) {
+                    copySourceUriToStream(sourceUri, out);
+                } else {
+                    byte[] bytes = Base64.decode(data, Base64.DEFAULT);
+                    out.write(bytes);
+                    out.flush();
+                }
                 JSObject ret = new JSObject();
                 ret.put("uri", uri.toString());
                 call.resolve(ret);
@@ -113,9 +153,10 @@ public class SaveAs extends Plugin {
 
         String filename = call.getString("filename");
         String mimeType = call.getString("mimeType", "application/json");
+        String sourceUri = call.getString("sourceUri");
         String data = call.getString("data");
 
-        if (filename == null || data == null) {
+        if (filename == null || ((sourceUri == null || sourceUri.isEmpty()) && data == null)) {
             call.reject("Filename and data are required");
             return;
         }
@@ -140,8 +181,17 @@ public class SaveAs extends Plugin {
             }
 
             try (OutputStream out = getContext().getContentResolver().openOutputStream(file.getUri())) {
-                byte[] bytes = Base64.decode(data, Base64.DEFAULT);
-                out.write(bytes);
+                if (out == null) {
+                    call.reject("Unable to open destination stream");
+                    return;
+                }
+                if (sourceUri != null && !sourceUri.isEmpty()) {
+                    copySourceUriToStream(sourceUri, out);
+                } else {
+                    byte[] bytes = Base64.decode(data, Base64.DEFAULT);
+                    out.write(bytes);
+                    out.flush();
+                }
                 JSObject ret = new JSObject();
                 ret.put("uri", file.getUri().toString());
                 call.resolve(ret);
