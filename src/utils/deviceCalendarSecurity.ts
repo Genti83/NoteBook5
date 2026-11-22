@@ -39,12 +39,21 @@ export const ENGLISH_MONTHS = [
   'July', 'August', 'September', 'October', 'November', 'December'
 ];
 
+export const GREEK_MONTHS = [
+  'Ιανουάριος', 'Φεβρουάριος', 'Μάρτιος', 'Απρίλιος', 'Μάιος', 'Ιούνιος',
+  'Ιούλιος', 'Αύγουστος', 'Σεπτέμβριος', 'Οκτώβριος', 'Νοέμβριος', 'Δεκέμβριος'
+];
+
 export const ALBANIAN_WEEKDAYS_FULL = [
   'E Diel', 'E Hënë', 'E Martë', 'E Mërkurë', 'E Enjte', 'E Premte', 'E Shtunë'
 ];
 
 export const ENGLISH_WEEKDAYS_FULL = [
   'Sunday', 'Monday', 'Tuesday', 'Wednesday', 'Thursday', 'Friday', 'Saturday'
+];
+
+export const GREEK_WEEKDAYS_FULL = [
+  'Κυριακή', 'Δευτέρα', 'Τρίτη', 'Τετάρτη', 'Πέμπτη', 'Παρασκευή', 'Σάββατο'
 ];
 
 export const ALBANIAN_WEEKDAYS_MON_SHORT = [
@@ -55,10 +64,18 @@ export const ENGLISH_WEEKDAYS_MON_SHORT = [
   'Mo', 'Tu', 'We', 'Th', 'Fr', 'Sa', 'Su'
 ];
 
-export function getCalendarLocale(lang: 'sq' | 'en' = 'sq') {
-  return lang === 'en'
-    ? { months: ENGLISH_MONTHS, weekdaysFull: ENGLISH_WEEKDAYS_FULL, weekdaysMonShort: ENGLISH_WEEKDAYS_MON_SHORT }
-    : { months: ALBANIAN_MONTHS, weekdaysFull: ALBANIAN_WEEKDAYS_FULL, weekdaysMonShort: ALBANIAN_WEEKDAYS_MON_SHORT };
+export const GREEK_WEEKDAYS_MON_SHORT = [
+  'Δε', 'Τρ', 'Τε', 'Πε', 'Πα', 'Σα', 'Κυ'
+];
+
+export function getCalendarLocale(lang: 'sq' | 'en' | 'el' = 'sq') {
+  if (lang === 'en') {
+    return { months: ENGLISH_MONTHS, weekdaysFull: ENGLISH_WEEKDAYS_FULL, weekdaysMonShort: ENGLISH_WEEKDAYS_MON_SHORT };
+  }
+  if (lang === 'el') {
+    return { months: GREEK_MONTHS, weekdaysFull: GREEK_WEEKDAYS_FULL, weekdaysMonShort: GREEK_WEEKDAYS_MON_SHORT };
+  }
+  return { months: ALBANIAN_MONTHS, weekdaysFull: ALBANIAN_WEEKDAYS_FULL, weekdaysMonShort: ALBANIAN_WEEKDAYS_MON_SHORT };
 }
 
 export function pad2(n: number): string {
@@ -119,14 +136,20 @@ function formatIcsLocalDateTime(ymd: string, hm: string): string {
   return `${cleanDate}T${pad2(parseInt(hh || '9', 10))}${pad2(parseInt(mm || '0', 10))}00`;
 }
 
-export function generateEventsIcs(events: CalendarEvent[], lang: 'sq' | 'en' = 'sq'): string {
+export function generateEventsIcs(events: CalendarEvent[], lang: 'sq' | 'en' | 'el' = 'sq'): string {
   const now = new Date();
   const stamp = `${now.getUTCFullYear()}${pad2(now.getUTCMonth() + 1)}${pad2(now.getUTCDate())}T${pad2(now.getUTCHours())}${pad2(now.getUTCMinutes())}${pad2(now.getUTCSeconds())}Z`;
-  const isEn = lang === 'en';
+  const prodId = lang === 'en'
+    ? 'PRODID:-//NoteBook3//Personal Calendar//EN'
+    : lang === 'el'
+      ? 'PRODID:-//NoteBook3//Prosopiko Imerologio//EL'
+      : 'PRODID:-//NoteBook3//Kalendari Personal//SQ';
+  const defaultAppointment = lang === 'en' ? 'NoteBook3 Appointment' : lang === 'el' ? 'Ραντεβού NoteBook3' : 'Takim NoteBook3';
+  const defaultReminder = lang === 'en' ? 'NoteBook3 Reminder' : lang === 'el' ? 'Υπενθύμιση NoteBook3' : 'Zile Takimi NoteBook3';
   const lines: string[] = [
     'BEGIN:VCALENDAR',
     'VERSION:2.0',
-    isEn ? 'PRODID:-//NoteBook3//Personal Calendar//EN' : 'PRODID:-//NoteBook3//Kalendari Personal//SQ',
+    prodId,
     'CALSCALE:GREGORIAN',
   ];
 
@@ -142,7 +165,7 @@ export function generateEventsIcs(events: CalendarEvent[], lang: 'sq' | 'en' = '
     lines.push(`DTSTAMP:${stamp}`);
     lines.push(`DTSTART:${dtStart}`);
     lines.push(`DTEND:${dtEnd}`);
-    lines.push(`SUMMARY:${escapeIcsText(ev.title || (isEn ? 'NoteBook3 Appointment' : 'Takim NoteBook3'))}`);
+    lines.push(`SUMMARY:${escapeIcsText(ev.title || defaultAppointment)}`);
     if (ev.notes) {
       lines.push(`DESCRIPTION:${escapeIcsText(ev.notes)}`);
     }
@@ -162,7 +185,7 @@ export function generateEventsIcs(events: CalendarEvent[], lang: 'sq' | 'en' = '
       lines.push('BEGIN:VALARM');
       lines.push(`TRIGGER:-PT${mins}M`);
       lines.push('ACTION:DISPLAY');
-      lines.push(`DESCRIPTION:${escapeIcsText(ev.title || (isEn ? 'NoteBook3 Reminder' : 'Zile Takimi NoteBook3'))}`);
+      lines.push(`DESCRIPTION:${escapeIcsText(ev.title || defaultReminder)}`);
       lines.push('END:VALARM');
     }
     lines.push('END:VEVENT');
@@ -466,8 +489,40 @@ export interface DeviceSecurityVerifyResult {
   message: string;
 }
 
-export async function requestPhoneDeviceSecurityVerification(lang: 'sq' | 'en' = 'sq'): Promise<DeviceSecurityVerifyResult> {
-  const tr = (sq: string, en: string) => (lang === 'en' ? en : sq);
+export async function requestPhoneDeviceSecurityVerification(lang: 'sq' | 'en' | 'el' = 'sq'): Promise<DeviceSecurityVerifyResult> {
+  const elMap: Record<string, string> = {
+    'Android Device Security': 'Ασφάλεια Συσκευής Android',
+    'Device security verification timed out.': 'Έληξε ο χρόνος επαλήθευσης ασφαλείας συσκευής.',
+    'Phone Security (PIN / Fingerprint / Pattern)': 'Ασφάλεια Τηλεφώνου (PIN / Αποτύπωμα / Μοτίβο)',
+    'Identity verified successfully by phone system.': 'Η ταυτότητα επαληθεύτηκε επιτυχώς από το σύστημα του τηλεφώνου.',
+    'This phone does not have a lock screen (PIN / Password / Pattern / Biometric) enabled in Android Settings.': 'Αυτό το τηλέφωνο δεν έχει ενεργό κλείδωμα οθόνης (PIN / Κωδικό / Μοτίβο / Βιομετρικό) στις Ρυθμίσεις Android.',
+    'Phone device security verification was cancelled.': 'Η επαλήθευση ασφαλείας του τηλεφώνου ακυρώθηκε.',
+    'NoteBook3 Device Security': 'Ασφάλεια Συσκευής NoteBook3',
+    'Enter phone PIN, Password, Pattern or Fingerprint to view keys': 'Εισαγάγετε PIN, Κωδικό, Μοτίβο ή Αποτύπωμα τηλεφώνου για προβολή κλειδιών',
+    'No active phone screen lock (PIN / Password / Pattern) found on Android.': 'Δεν βρέθηκε ενεργό κλείδωμα οθόνης (PIN / Κωδικός / Μοτίβο) στο Android.',
+    'Verify phone device security (PIN, Password, Fingerprint or Pattern) to reveal NoteBook3 keys': 'Επαληθεύστε την ασφάλεια τηλεφώνου (PIN, Κωδικό, Αποτύπωμα ή Μοτίβο) για προβολή κλειδιών NoteBook3',
+    'Device lock permission required': 'Απαιτείται άδεια κλειδώματος συσκευής',
+    'Native Phone Security (Biometric / PIN / Pattern)': 'Εγγενής Ασφάλεια Τηλεφώνου (Βιομετρικό / PIN / Μοτίβο)',
+    'Verify device lock to view NoteBook3 keys': 'Επαληθεύστε το κλείδωμα συσκευής για προβολή κλειδιών NoteBook3',
+    'Native Device Security': 'Εγγενής Ασφάλεια Συσκευής',
+    'Identity verified successfully.': 'Η ταυτότητα επαληθεύτηκε επιτυχώς.',
+    'Device security verification was cancelled by the user.': 'Η επαλήθευση ασφαλείας συσκευής ακυρώθηκε από τον χρήστη.',
+    'This browser or environment does not support WebAuthn device security.': 'Αυτό το πρόγραμμα περιήγησης δεν υποστηρίζει ασφάλεια συσκευής WebAuthn.',
+    'No local platform authenticator (PIN / Password / Fingerprint / Pattern) is available in this browser.': 'Δεν υπάρχει διαθέσιμος τοπικός επαληθευτής (PIN / Κωδικός / Αποτύπωμα / Μοτίβο) σε αυτό το πρόγραμμα περιήγησης.',
+    'Phone System Lock (PIN / Password / Finger / Pattern)': 'Κλείδωμα Συστήματος Τηλεφώνου (PIN / Κωδικός / Αποτύπωμα / Μοτίβο)',
+    'Phone security permission approved!': 'Η άδεια ασφαλείας τηλεφώνου εγκρίθηκε!',
+    'The current iframe/preview environment blocks the direct OS security prompt.': 'Το τρέχον πλαίσιο προεπισκόπησης μπλοκάρει το άμεσο παράθυρο ασφαλείας OS.',
+    'The preview iframe blocks the OS security dialog.': 'Το πλαίσιο προεπισκόπησης μπλοκάρει το παράθυρο ασφαλείας OS.',
+    'Phone Lock': 'Κλείδωμα Τηλεφώνου',
+    'Security request was denied or closed. Try again or use device lock type verification.': 'Το αίτημα ασφαλείας απορρίφθηκε ή έκλεισε. Δοκιμάστε ξανά ή επιλέξτε τύπο κλειδώματος.',
+    'NoteBook3 Owner': 'Κάτοχος NoteBook3',
+    'Phone security permission verified successfully!': 'Η άδεια ασφαλείας τηλεφώνου επαληθεύτηκε επιτυχώς!',
+    'Verification was not completed.': 'Η επαλήθευση δεν ολοκληρώθηκε.',
+    'Browser/iframe security restriction for OS prompt.': 'Περιορισμός ασφαλείας προγράμματος περιήγησης για ερώτηση OS.',
+    'Security request was cancelled or timed out.': 'Το αίτημα ασφαλείας ακυρώθηκε ή έληξε.',
+    'System could not open the security prompt.': 'Το σύστημα δεν μπόρεσε να ανοίξει το παράθυρο ασφαλείας.',
+  };
+  const tr = (sq: string, en: string) => (lang === 'en' ? en : lang === 'el' ? (elMap[en] || en) : sq);
   // 1. Check built-in NoteBook3 Android NB3Device bridge (BiometricPrompt + KeyguardManager PIN/Pattern/Password)
   try {
     const win: any = window;

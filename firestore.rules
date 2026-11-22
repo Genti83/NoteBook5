@@ -63,6 +63,18 @@ service cloud.firestore {
                        (resource == null || isOwner(resource.data.userId));
     }
 
+    function isValidMediaChunk(data) {
+      return data.keys().hasAll(['id', 'docId', 'userId', 'rowId', 'kind', 'chunkIndex', 'totalChunks', 'data']) &&
+             data.id is string && data.id.size() <= 128 &&
+             data.docId is string && data.docId.size() <= 128 &&
+             data.userId is string && data.userId.size() <= 128 &&
+             data.rowId is string && data.rowId.size() <= 128 &&
+             data.kind in ['image', 'audio'] &&
+             data.chunkIndex is int && data.chunkIndex >= 0 && data.chunkIndex < 150 &&
+             data.totalChunks is int && data.totalChunks >= 1 && data.totalChunks <= 150 &&
+             data.data is string && data.data.size() <= 600000;
+    }
+
     // Settings match block
     match /settings/{settingsId} {
       allow get: if isSignedIn() && (isOwner(settingsId) || (resource != null && isOwner(resource.data.userId)));
@@ -75,6 +87,28 @@ service cloud.firestore {
                                
       allow delete: if isSignedIn() && 
                        (isOwner(settingsId) || (resource != null && isOwner(resource.data.userId)));
+    }
+
+    // Chunked media (images & audio) match block
+    match /media_chunks/{chunkId} {
+      allow get: if isSignedIn() && (resource == null || isOwner(resource.data.userId));
+      allow list: if isSignedIn() && (resource.data.userId == request.auth.uid ||
+                    (request.auth.token != null && request.auth.token.email != null && resource.data.userId == request.auth.token.email));
+
+      allow create: if isSignedIn() &&
+                       isValidId(chunkId) &&
+                       isValidMediaChunk(request.resource.data) &&
+                       isOwner(request.resource.data.userId);
+
+      allow update: if isSignedIn() &&
+                       isValidId(chunkId) &&
+                       isValidMediaChunk(request.resource.data) &&
+                       isOwner(resource.data.userId) &&
+                       isOwner(request.resource.data.userId);
+
+      allow delete: if isSignedIn() &&
+                       isValidId(chunkId) &&
+                       (resource == null || isOwner(resource.data.userId));
     }
   }
 }

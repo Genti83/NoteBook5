@@ -11,13 +11,13 @@ const variablesGradlePath = path.join(androidDir, 'variables.gradle');
 
 const runNumber = Number(process.env.GITHUB_RUN_NUMBER || '1') || 1;
 const explicitVersionCode = process.env.ANDROID_VERSION_CODE ? Number(process.env.ANDROID_VERSION_CODE) : null;
-const versionCode = explicitVersionCode && explicitVersionCode > 0 ? explicitVersionCode : 320 + runNumber;
+const versionCode = explicitVersionCode && explicitVersionCode > 0 ? explicitVersionCode : 340 + runNumber;
 const pkgVersion = (() => {
   try {
     const pkg = JSON.parse(fs.readFileSync(path.join(root, 'package.json'), 'utf8'));
-    return pkg.version || '1.5.2';
+    return pkg.version || '1.5.4';
   } catch {
-    return '1.5.2';
+    return '1.5.4';
   }
 })();
 const versionName = (process.env.ANDROID_VERSION_NAME || '').trim() || `${pkgVersion}.${runNumber}`;
@@ -77,11 +77,14 @@ if (fs.existsSync(manifestPath)) {
     );
   }
 
-  // Ensure android:allowBackup="false" for privacy & Play Store security review
+  // Ensure android:allowBackup="false" and android:largeHeap="true" (for 10MB-30MB audio buffers in WebView)
   if (manifest.includes('android:allowBackup="true"')) {
     manifest = manifest.replace(/android:allowBackup="true"/g, 'android:allowBackup="false"');
   } else if (!manifest.includes('android:allowBackup=')) {
     manifest = manifest.replace(/<application\b/, '<application android:allowBackup="false"');
+  }
+  if (!manifest.includes('android:largeHeap=')) {
+    manifest = manifest.replace(/<application\b/, '<application android:largeHeap="true"');
   }
 
   // Android 11+ (API 30+) package visibility queries so local OEM calendar apps can be resolved without broad QUERY_ALL_PACKAGES
@@ -211,6 +214,8 @@ public class MainActivity extends BridgeActivity {
             WebSettings settings = webView.getSettings();
             settings.setDomStorageEnabled(true);
             settings.setDatabaseEnabled(true);
+            settings.setAllowFileAccess(true);
+            settings.setAllowContentAccess(true);
             settings.setMediaPlaybackRequiresUserGesture(false);
             webView.addJavascriptInterface(new NB3DeviceBridge(this, webView), "NB3Device");
         }

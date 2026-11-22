@@ -22,7 +22,7 @@ on:
         default: true
         type: boolean
       version_name:
-        description: 'Version Name opsional (psh 1.5.2)'
+        description: 'Version Name opsional (psh 1.5.4)'
         required: false
         type: string
       gemini_api_key:
@@ -258,8 +258,8 @@ jobs:
 
           if [ -n "$FILES_TO_UPLOAD" ]; then
             gh release create latest-apk \
-              --title "NoteBook3 v1.5.2 - Android APK & Play Store AAB (Latest Build)" \
-              --notes "Versioni më i fundit v1.5.2 i NoteBook3 (com.notebook3.app, versionCode 320+) me regjistrim & qasje direkte Sign Up / Login për Firebase dhe GitHub Gist në Mjetet Backup e Sinkronizimit, eksportim të shpejtë pa ngrirje të të gjitha të dhënave si JSON (me streaming nativ Android pa bllokuar memorien), dhe pozicionim të pastër të njoftimeve larg butonave dhe fushave PIN/Password. Për instalim direkt shkarkoni 'NoteBook3-debug.apk' ose 'NoteBook3-release-installable.apk'. Për Google Play Console përdorni skedarin '.aab'." \
+              --title "NoteBook3 v1.5.4 - Android APK & Play Store AAB (Latest Build)" \
+              --notes "Versioni më i fundit v1.5.4 i NoteBook3 (com.notebook3.app, versionCode 340+) me ngarkim të plotë dhe pa pengesa për skedarë audio mbi 10 MB deri në 30 MB (MP3, M4A, AMR) si në 90-rreshta ashtu edhe në Online Cloud, sistem të integruar Audio Player (Play/Pause, Mini-Player lundrues, Seek, -10s/+10s, shpejtësi, volum, Download, Delete), sinkronizim me copa (chunked) në Server Cloud & Firebase Firestore, mbështetje IndexedDB + android:largeHeap për performancë të lartë në telefon, ruajtje të sigurt të simbolit € dhe gjuhën Greke. Për instalim direkt shkarkoni 'NoteBook3-debug.apk' ose 'NoteBook3-release-installable.apk'. Për Google Play Console përdorni skedarin '.aab'." \
               --prerelease \
               $FILES_TO_UPLOAD || echo "Gabim gjatë krijimit të release, po vazhdojmë..."
           else

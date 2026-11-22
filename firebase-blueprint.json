@@ -38,6 +38,23 @@
         "userId": { "type": "string", "description": "The user identifier" }
       },
       "required": ["userId"]
+    },
+    "MediaChunk": {
+      "title": "Media Chunk",
+      "description": "Chunked base64 media attachment (image or audio) for grid rows exceeding inline document limits",
+      "type": "object",
+      "properties": {
+        "id": { "type": "string", "description": "Unique chunk ID" },
+        "docId": { "type": "string", "description": "Parent document ID" },
+        "userId": { "type": "string", "description": "The owner ID or registered email" },
+        "rowId": { "type": "string", "description": "Parent row ID" },
+        "kind": { "type": "string", "description": "image or audio" },
+        "chunkIndex": { "type": "number", "description": "Zero-based chunk index (0..149)" },
+        "totalChunks": { "type": "number", "description": "Total chunk count (1..150, supporting up to 30MB media)" },
+        "data": { "type": "string", "description": "Chunk string slice" },
+        "updatedAt": { "type": "string", "description": "ISO timestamp" }
+      },
+      "required": ["id", "docId", "userId", "rowId", "kind", "chunkIndex", "totalChunks", "data"]
     }
   },
   "firestore": {
@@ -48,6 +65,10 @@
     "settings/{settingsId}": {
       "schema": "Settings",
       "description": "User account settings, PINs, and secret list collection"
+    },
+    "media_chunks/{chunkId}": {
+      "schema": "MediaChunk",
+      "description": "Chunked row image and audio attachments for Firestore 1 MiB safe sync"
     }
   }
 }

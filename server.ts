@@ -1,10 +1,61 @@
 import express from 'express';
 import path from 'path';
 import fs from 'fs';
+import crypto from 'crypto';
 import { createServer as createViteServer } from 'vite';
 import { GoogleGenAI, ThinkingLevel } from '@google/genai';
 
 const STORAGE_FILE = path.join(process.cwd(), 'cloud_db.json');
+const MEDIA_DIR = path.join(process.cwd(), 'cloud_media');
+const SRV_MEDIA_PREFIX = '__srvmedia__:';
+
+function ensureMediaDir() {
+  try {
+    if (!fs.existsSync(MEDIA_DIR)) {
+      fs.mkdirSync(MEDIA_DIR, { recursive: true });
+    }
+  } catch {}
+}
+
+function userMediaHash(userKey: string): string {
+  return crypto.createHash('sha256').update(userKey.toLowerCase()).digest('hex').slice(0, 16);
+}
+
+function safeMediaFileBase(userKey: string, mediaId: string): string {
+  const uHash = userMediaHash(userKey);
+  const cleanId = String(mediaId || '').replace(/[^a-zA-Z0-9_\-\.]/g, '_').slice(0, 96);
+  return path.join(MEDIA_DIR, `${uHash}__${cleanId}`);
+}
+
+function offloadHeavyMediaOnServer(userKey: string, docs: any[]): any[] {
+  if (!Array.isArray(docs)) return [];
+  ensureMediaDir();
+  return docs.map((d: any) => {
+    if (!d || !Array.isArray(d.rows)) return d;
+    let docChanged = false;
+    const nextRows = d.rows.map((r: any, idx: number) => {
+      if (!r || typeof r !== 'object') return r;
+      let nextRow = r;
+      (['image', 'audio'] as const).forEach((kind) => {
+        const val = nextRow[kind];
+        if (typeof val === 'string' && val.length > 1500000 && !val.startsWith(SRV_MEDIA_PREFIX) && !val.startsWith('__fschunk__:')) {
+          const mediaId = `${String(d.id || 'doc').slice(0, 32)}_${String(r.id || `row-${idx}`).slice(0, 32)}_${kind}_${val.length}`;
+          const base = safeMediaFileBase(userKey, mediaId);
+          try {
+            fs.writeFileSync(`${base}.data`, val, 'utf-8');
+            if (nextRow === r) nextRow = { ...r };
+            nextRow[kind] = `${SRV_MEDIA_PREFIX}${mediaId}`;
+            docChanged = true;
+          } catch (e) {
+            console.error('Error offloading server media:', e);
+          }
+        }
+      });
+      return nextRow;
+    });
+    return docChanged ? { ...d, rows: nextRows } : d;
+  });
+}
 
 function readCloudDb(): Record<string, any> {
   try {
@@ -20,7 +71,7 @@ function readCloudDb(): Record<string, any> {
 
 function writeCloudDb(db: Record<string, any>) {
   try {
-    fs.writeFileSync(STORAGE_FILE, JSON.stringify(db, null, 2), 'utf-8');
+    fs.writeFileSync(STORAGE_FILE, JSON.stringify(db), 'utf-8');
   } catch (e) {
     console.error("Error writing cloud db:", e);
   }
@@ -95,7 +146,7 @@ async function startServer() {
   const app = express();
   const PORT = 3000;
 
-  app.use(express.json({ limit: '10mb' }));
+  app.use(express.json({ limit: '75mb' }));
   
   // CORS
   app.use((req, res, next) => {
@@ -119,12 +170,13 @@ async function startServer() {
 
       const { documents, activeDocId, blueText, secretList, pin, gistToken, gistId, customLabels, notesColor, textColorMode, textSize, textWeight, settingsUpdatedAt, trashItems } = req.body;
       const key = (verified.email || verified.uid).toLowerCase();
+      const storedDocs = offloadHeavyMediaOnServer(key, Array.isArray(documents) ? documents : []);
 
       const db = readCloudDb();
       const lastUpdated = new Date().toISOString();
       const resolvedSettingsUpdatedAt = settingsUpdatedAt || db[key]?.settingsUpdatedAt || lastUpdated;
       db[key] = {
-        documents: documents || [],
+        documents: storedDocs,
         activeDocId: activeDocId || null,
         blueText: blueText !== undefined ? blueText : db[key]?.blueText,
         secretList: secretList !== undefined ? secretList : db[key]?.secretList,
@@ -142,13 +194,22 @@ async function startServer() {
         lastUpdated
       };
       
-      // Also keep a complete snapshot history (max 5) including labels, secrets, trashItems & colors
+      // Also keep a complete snapshot history (max 3) stripping oversized >2MB media from older backups to keep disk healthy
       const backupKey = key + '_backups';
       if (!Array.isArray(db[backupKey])) db[backupKey] = [];
+      const lightDocsForHistory = (documents || []).map((d: any) => ({
+        ...d,
+        rows: Array.isArray(d?.rows)
+          ? d.rows.map((r: any) => ({
+              ...r,
+              audio: typeof r?.audio === 'string' && r.audio.length > 2 * 1024 * 1024 ? '' : r?.audio,
+            }))
+          : [],
+      }));
       db[backupKey].unshift({
         timestamp: lastUpdated,
         docCount: (documents || []).length,
-        documents: documents || [],
+        documents: lightDocsForHistory,
         customLabels: db[key].customLabels || [],
         secretList: db[key].secretList || [],
         trashItems: db[key].trashItems || [],
@@ -156,7 +217,7 @@ async function startServer() {
         notesColor: db[key].notesColor || 'default',
         textColorMode: db[key].textColorMode || 'default'
       });
-      if (db[backupKey].length > 5) db[backupKey] = db[backupKey].slice(0, 5);
+      if (db[backupKey].length > 3) db[backupKey] = db[backupKey].slice(0, 3);
 
       writeCloudDb(db);
       return res.json({
@@ -205,6 +266,82 @@ async function startServer() {
         settingsUpdatedAt: record.settingsUpdatedAt || record.lastUpdated || null,
         lastUpdated: record.lastUpdated
       });
+    } catch (err: any) {
+      return res.status(500).json({ success: false, error: err.message });
+    }
+  });
+
+  // Chunked media upload & download endpoints (bypasses Cloud Run 32 MiB HTTP/1.1 body limits for 10MB-30MB audio)
+  app.post('/api/cloud/media/chunk', (req, res) => {
+    try {
+      const verified = getVerifiedUser(req);
+      if (!verified) {
+        return res.status(401).json({ success: false, error: 'Unauthorized' });
+      }
+      const userKey = (verified.email || verified.uid).toLowerCase();
+      const { mediaId, chunkIndex, totalChunks, data } = req.body || {};
+      const cIdx = Number(chunkIndex);
+      const tChunks = Number(totalChunks);
+      if (!mediaId || !Number.isInteger(cIdx) || !Number.isInteger(tChunks) || cIdx < 0 || tChunks < 1 || tChunks > 120 || typeof data !== 'string') {
+        return res.status(400).json({ success: false, error: 'Invalid media chunk payload' });
+      }
+      ensureMediaDir();
+      const base = safeMediaFileBase(userKey, String(mediaId));
+      const finalFile = `${base}.data`;
+      if (fs.existsSync(finalFile) && cIdx === 0 && tChunks === 1) {
+        fs.writeFileSync(finalFile, data, 'utf-8');
+        return res.json({ success: true, completed: true, mediaId });
+      }
+      const partFile = `${base}.part.${cIdx}`;
+      fs.writeFileSync(partFile, data, 'utf-8');
+
+      let allPresent = true;
+      for (let i = 0; i < tChunks; i++) {
+        if (!fs.existsSync(`${base}.part.${i}`)) {
+          allPresent = false;
+          break;
+        }
+      }
+      if (allPresent) {
+        fs.writeFileSync(finalFile, '', 'utf-8');
+        for (let i = 0; i < tChunks; i++) {
+          const p = `${base}.part.${i}`;
+          fs.appendFileSync(finalFile, fs.readFileSync(p, 'utf-8'), 'utf-8');
+          try { fs.unlinkSync(p); } catch {}
+        }
+        return res.json({ success: true, completed: true, mediaId });
+      }
+      return res.json({ success: true, completed: false, chunkIndex: cIdx, mediaId });
+    } catch (err: any) {
+      return res.status(500).json({ success: false, error: err.message });
+    }
+  });
+
+  app.get('/api/cloud/media/:mediaId', (req, res) => {
+    try {
+      const verified = getVerifiedUser(req);
+      if (!verified) {
+        return res.status(401).json({ success: false, error: 'Unauthorized' });
+      }
+      const userKey = (verified.email || verified.uid).toLowerCase();
+      const mediaId = String(req.params.mediaId || '');
+      const base = safeMediaFileBase(userKey, mediaId);
+      const finalFile = `${base}.data`;
+      if (!fs.existsSync(finalFile)) {
+        return res.status(404).json({ success: false, error: 'Media not found' });
+      }
+      const fullData = fs.readFileSync(finalFile, 'utf-8');
+      const chunkSize = Math.min(4000000, Math.max(500000, Number(req.query.chunkSize) || 2500000));
+      const totalChunks = Math.max(1, Math.ceil(fullData.length / chunkSize));
+      const chunkIndex = Number(req.query.chunkIndex);
+      if (req.query.chunkIndex !== undefined && Number.isInteger(chunkIndex)) {
+        if (chunkIndex < 0 || chunkIndex >= totalChunks) {
+          return res.status(400).json({ success: false, error: 'Invalid chunkIndex' });
+        }
+        const slice = fullData.slice(chunkIndex * chunkSize, (chunkIndex + 1) * chunkSize);
+        return res.json({ success: true, mediaId, chunkIndex, totalChunks, totalLength: fullData.length, data: slice });
+      }
+      return res.json({ success: true, mediaId, totalChunks, totalLength: fullData.length, data: totalChunks === 1 ? fullData : undefined });
     } catch (err: any) {
       return res.status(500).json({ success: false, error: err.message });
     }

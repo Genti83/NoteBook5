@@ -3,7 +3,7 @@ import React, { useState, useEffect, useRef, useCallback, useMemo } from 'react'
 import { 
   X, Lock, Unlock, Trash2, Edit, Plus, Search, FolderOpen, ChevronRight, 
   Grid, List, Settings, LogOut, Cloud, Key, RefreshCw, FileText, Download, 
-  Upload, Copy, Check, Mic, MicOff, Play, Square, Save, Eye, EyeOff, Trash, 
+  Upload, Copy, Check, Mic, MicOff, Play, Pause, Square, Save, Eye, EyeOff, Trash, 
   Calculator, AlertTriangle, ArrowDownAZ, ArrowUpAZ, ArrowLeft, Calendar, 
   CalendarDays, CaseSensitive, CheckCheck, Eraser, File, FileDown, FileJson, 
   FileSpreadsheet, Folder, FolderDown, FolderUp, Github, LayoutGrid, Loader2, 
@@ -12,7 +12,8 @@ import {
   RemoveFormatting, Database, ImageMinus, ImagePlus, HardDrive, Menu, MoreVertical,
   ZoomIn, ZoomOut, AlignLeft, AlignCenter, AlignRight, Italic,
   Undo2, Redo2, Pin, Filter, ArrowUp, ArrowDown, ArrowUpDown, CopyPlus, SlidersHorizontal, Shield, ShieldCheck, Replace,
-  Bell, BellRing, Fingerprint, Clock, AlarmClock, Volume2, VolumeX, ChevronLeft, CheckCircle2, Circle, Repeat, ExternalLink, ShieldAlert, Info, Music
+  Bell, BellRing, Fingerprint, Clock, AlarmClock, Volume2, VolumeX, ChevronLeft, CheckCircle2, Circle, Repeat, ExternalLink, ShieldAlert, Info, Music,
+  SkipBack, SkipForward, Minimize2
 } from 'lucide-react';
 import { db, auth, pauseFirestoreNetwork, resumeFirestoreNetwork, subscribeFirestoreQuotaTrip } from '../lib/firebase';
 import { 
@@ -33,10 +34,13 @@ import {
   CustomAlarmAudioMeta,
   ALBANIAN_MONTHS,
   ENGLISH_MONTHS,
+  GREEK_MONTHS,
   ALBANIAN_WEEKDAYS_FULL,
   ENGLISH_WEEKDAYS_FULL,
+  GREEK_WEEKDAYS_FULL,
   ALBANIAN_WEEKDAYS_MON_SHORT,
   ENGLISH_WEEKDAYS_MON_SHORT,
+  GREEK_WEEKDAYS_MON_SHORT,
   pad2,
   getLocalYmd,
   getLocalHm,
@@ -52,6 +56,18 @@ import {
   stopCalendarAlarmTone,
   requestPhoneDeviceSecurityVerification,
 } from '../utils/deviceCalendarSecurity';
+import { EL_TRANSLATIONS, translateDynamicToGreek } from '../utils/elTranslations';
+import {
+  saveDocsLocalSafe,
+  saveDocsLocalSafeAsync,
+  clearDocsLocalSafe,
+  loadDocsFromIdb,
+  hasIdbMediaMarkers,
+  readAudioFileAsDataUrlSafe,
+  dataUrlToPlayableSrc,
+  estimateDataUrlSizeBytes,
+  formatBytesReadable,
+} from '../utils/mediaStorage';
 
 enum OperationType {
   CREATE = 'create',
@@ -152,6 +168,10 @@ export interface GridRow {
   status: string;
   textColor?: string;
   image?: string;
+  imageName?: string;
+  audio?: string;
+  audioName?: string;
+  audioMime?: string;
   col1?: string;
   col2?: string;
   col3?: string;
@@ -276,12 +296,14 @@ interface HeaderInputProps {
 function HeaderInput({ initialValue, onChange, className, placeholder, readOnly }: HeaderInputProps) {
   const [val, setVal] = React.useState(initialValue);
   const isFocusedRef = React.useRef(false);
-  const isComposingRef = React.useRef(false);
   const lastEmittedRef = React.useRef(initialValue);
+  const prevInitialRef = React.useRef(initialValue || "");
 
   React.useEffect(() => {
     const incoming = initialValue || "";
-    if (!isFocusedRef.current && !isComposingRef.current && incoming !== lastEmittedRef.current) {
+    if (incoming === prevInitialRef.current) return;
+    prevInitialRef.current = incoming;
+    if (!isFocusedRef.current && incoming !== lastEmittedRef.current) {
       setVal(incoming);
       lastEmittedRef.current = incoming;
     }
@@ -305,31 +327,28 @@ function HeaderInput({ initialValue, onChange, className, placeholder, readOnly 
         if (readOnly) return;
         const newVal = e.target.value;
         setVal(newVal);
-        if (!isComposingRef.current) {
-          emitVal(newVal);
-        }
+        emitVal(newVal);
       }}
-      onCompositionStart={() => { isComposingRef.current = true; }}
       onCompositionEnd={(e) => {
-        isComposingRef.current = false;
         const finalVal = (e.target as HTMLInputElement).value;
         setVal(finalVal);
         emitVal(finalVal);
       }}
       onBlur={(e) => {
         isFocusedRef.current = false;
-        isComposingRef.current = false;
         emitVal(e.currentTarget.value);
       }}
       onKeyDown={(e) => {
         if (e.key === "Enter") {
-          isComposingRef.current = false;
           emitVal(e.currentTarget.value);
           (e.target as HTMLInputElement).blur();
         }
       }}
       className={className}
       placeholder={placeholder}
+      autoCorrect="off"
+      autoCapitalize="off"
+      autoComplete="off"
       spellCheck={false}
     />
   );
@@ -350,19 +369,22 @@ interface CellInputProps {
 function CellInput({ initialValue, onChange, onFocus, onBlur, dataRowIndex, dataColKey, readOnly, startHold, stopHold, className, style }: CellInputProps) {
   const [val, setVal] = React.useState(initialValue || "");
   const isFocusedRef = React.useRef(false);
-  const isComposingRef = React.useRef(false);
   const lastEmittedRef = React.useRef(initialValue || "");
+  const prevInitialRef = React.useRef(initialValue || "");
   React.useEffect(() => {
     const incoming = initialValue || "";
-    if (!isFocusedRef.current && !isComposingRef.current && incoming !== lastEmittedRef.current) {
+    if (incoming === prevInitialRef.current) return;
+    prevInitialRef.current = incoming;
+    if (!isFocusedRef.current && incoming !== lastEmittedRef.current) {
       setVal(incoming);
       lastEmittedRef.current = incoming;
     }
   }, [initialValue]);
   const handleChange = (e: React.ChangeEvent<HTMLTextAreaElement>) => {
+    if (readOnly) return;
     const newVal = e.target.value;
     setVal(newVal);
-    if (!isComposingRef.current) {
+    if (newVal !== lastEmittedRef.current) {
       lastEmittedRef.current = newVal;
       onChange(newVal);
     }
@@ -385,23 +407,26 @@ function CellInput({ initialValue, onChange, onFocus, onBlur, dataRowIndex, data
       }}
       onBlur={(e) => {
         isFocusedRef.current = false;
-        isComposingRef.current = false;
         const finalVal = e.currentTarget.value;
-        if (finalVal !== lastEmittedRef.current) {
+        if (!readOnly && finalVal !== lastEmittedRef.current) {
           lastEmittedRef.current = finalVal;
           onChange(finalVal);
         }
         if (onBlur) onBlur(e);
       }}
-      onCompositionStart={() => { isComposingRef.current = true; }}
       onCompositionEnd={(e) => {
-        isComposingRef.current = false;
+        if (readOnly) return;
         const finalVal = (e.target as HTMLTextAreaElement).value;
         setVal(finalVal);
-        lastEmittedRef.current = finalVal;
-        onChange(finalVal);
+        if (finalVal !== lastEmittedRef.current) {
+          lastEmittedRef.current = finalVal;
+          onChange(finalVal);
+        }
       }}
       readOnly={readOnly}
+      autoCorrect="off"
+      autoCapitalize="off"
+      autoComplete="off"
       spellCheck={false}
       onPointerDown={handlePointerDown}
       onPointerUp={handlePointerUp}
@@ -419,7 +444,7 @@ interface TagInputProps {
   onTagCreated?: (tag: string) => void;
   allAvailableTags: string[];
   isDark?: boolean;
-  t?: (sq: string, en: string) => string;
+  t?: (sq: string, en: string, el?: string) => string;
 }
 function TagInput({ tags, onChange, onTagCreated, allAvailableTags, isDark, t }: TagInputProps) {
   const translate = t || ((sq: string, en: string) => sq);
@@ -979,7 +1004,7 @@ export function Notepad() {
                name: file.name,
                type: file.type === 'directory' ? 'folder' : 'file',
                size: sizeLabel,
-               date: new Date().toLocaleDateString(language === 'en' ? 'en-US' : 'sq-AL'),
+               date: new Date().toLocaleDateString(dateLocale),
                isRealDeviceFile: true
             };
          });
@@ -1128,8 +1153,22 @@ export function Notepad() {
           const finalTrashItems = sanitizeTrashItems(rawTrash);
           const finalNotesColor = notesColorOverride !== undefined ? notesColorOverride : (isOnlineEditor ? onlineNotesColor : latestNotesColorRef.current);
           const finalTextColorMode = textColorModeOverride !== undefined ? textColorModeOverride : latestTextColorModeRef.current;
-          const backupData = {
-            documents: docsToBackup,
+          // GitHub Gist API rejects >10MB files; preserve text/rows/images/small audio and omit oversized >1.5MB audio blobs (stored safely in IndexedDB, Server Cloud & Firestore)
+          let gistSafeDocs = (Array.isArray(docsToBackup) ? docsToBackup : []).map((d: any) => {
+            if (!d || !Array.isArray(d.rows)) return d;
+            let rowChanged = false;
+            const nextRows = d.rows.map((r: any) => {
+              if (!r || typeof r !== 'object') return r;
+              if (typeof r.audio === 'string' && r.audio.length > 1500000) {
+                rowChanged = true;
+                return { ...r, audio: '', audioGistOmitted: true };
+              }
+              return r;
+            });
+            return rowChanged ? { ...d, rows: nextRows } : d;
+          });
+          let backupData = {
+            documents: gistSafeDocs,
             blueText: finalBlueText,
             secretList: finalSecretList,
             customLabels: finalCustomLabels,
@@ -1142,7 +1181,22 @@ export function Notepad() {
             settingsUpdatedAt: getLocalSettingsUpdatedAt() || new Date().toISOString(),
             lastSyncedAt: new Date().toISOString()
           };
-          const content = JSON.stringify(backupData);
+          let content = JSON.stringify(backupData);
+          if (content.length > 7500000) {
+            gistSafeDocs = gistSafeDocs.map((d: any) => ({
+              ...d,
+              rows: Array.isArray(d.rows)
+                ? d.rows.map((r: any) => ({
+                    ...r,
+                    audio: typeof r?.audio === 'string' && r.audio.length > 100000 ? '' : r?.audio,
+                    audioGistOmitted: typeof r?.audio === 'string' && r.audio.length > 100000 ? true : r?.audioGistOmitted,
+                    image: typeof r?.image === 'string' && r.image.length > 250000 ? '' : r?.image,
+                  }))
+                : [],
+            }));
+            backupData = { ...backupData, documents: gistSafeDocs };
+            content = JSON.stringify(backupData);
+          }
           const markdownSummary = buildGistMarkdownSummary(docsToBackup, finalCustomLabels, finalSecretList, finalBlueText, finalTrashItems);
           let method = 'POST';
           let url = 'https://api.github.com/gists';
@@ -1279,21 +1333,40 @@ export function Notepad() {
               localStorage.setItem('grid_notepad_settings_updated_at', parsedData.settingsUpdatedAt);
             }
           }
+          // Preserve any local >1.5MB audio blobs if Gist backup omitted oversized audio
+          const existingLocalById = new Map<string, GridDocument>();
+          (latestDocsRef.current || []).forEach((ld) => { if (ld?.id) existingLocalById.set(ld.id, ld); });
+          parsedDocs = (Array.isArray(parsedDocs) ? parsedDocs : []).map((gd: any) => {
+            const localMatch = gd?.id ? existingLocalById.get(gd.id) : null;
+            if (!localMatch || !Array.isArray(gd?.rows)) return gd;
+            const restoredRows = gd.rows.map((gr: any, idx: number) => {
+              if (gr && !gr.audio && (gr.audioGistOmitted || gr.audioName)) {
+                const lr = localMatch.rows?.find((x) => (gr.id && x.id === gr.id) || (gr.audioName && x.audioName === gr.audioName)) || localMatch.rows?.[idx];
+                if (lr?.audio) {
+                  return { ...gr, audio: lr.audio, audioName: gr.audioName || lr.audioName, audioMime: gr.audioMime || lr.audioMime };
+                }
+              }
+              return gr;
+            });
+            return { ...gd, rows: restoredRows };
+          });
           setDocuments(parsedDocs);
           latestDocsRef.current = parsedDocs;
           setCloudDocs(parsedDocs);
-          localStorage.setItem('grid_notepad_documents_v2', JSON.stringify(parsedDocs));
+          saveDocsLocalSafe(parsedDocs);
           if (activeDocIdRef.current) {
              const curr = parsedDocs.find((d: any) => d.id === activeDocIdRef.current);
              if (curr) {
-                 setRows(curr.rows);
-                 setHeaders(curr.headers);
-                 setTitle(curr.title);
-                 setActiveTags(curr.tags || []);
-                 const nextTc = curr.textColor || restoredTextColor || 'default';
-                 setTextColorMode(nextTc);
-                 latestTextColorModeRef.current = nextTc;
-                 localStorage.setItem('grid_notepad_text_color_mode', nextTc);
+                 if (Date.now() - lastUserTypingTsRef.current >= 4500) {
+                    setRows(curr.rows);
+                    setHeaders(curr.headers);
+                    setTitle(curr.title);
+                    setActiveTags(curr.tags || []);
+                    const nextTc = curr.textColor || restoredTextColor || 'default';
+                    setTextColorMode(nextTc);
+                    latestTextColorModeRef.current = nextTc;
+                    localStorage.setItem('grid_notepad_text_color_mode', nextTc);
+                 }
              } else {
                  setActiveDocId(null);
              }
@@ -1630,14 +1703,13 @@ export function Notepad() {
     if (mode === "default") return isDark ? "#ffffff" : "#18181b";
     return mode;
   };
-  // Date & Time formatters (bilingual SQ / EN)
+  // Date & Time formatters (trilingual SQ / EN / EL)
   const getAlbanianDateTime = () => {
     const d = liveNow;
     const day = d.getDate();
     const month = d.getMonth() + 1;
     const year = d.getFullYear();
-    const weekdays = language === 'en' ? ENGLISH_WEEKDAYS_FULL : ALBANIAN_WEEKDAYS_FULL;
-    const weekday = weekdays[d.getDay()];
+    const weekday = calWeekdaysFull[d.getDay()];
     return `${getLocalHms(d)} · ${day}/${month}/${year} ${weekday}`;
   };
   const renderAlbanianDateTime = () => {
@@ -1645,8 +1717,7 @@ export function Notepad() {
     const day = d.getDate();
     const month = d.getMonth() + 1;
     const year = d.getFullYear();
-    const weekdays = language === 'en' ? ENGLISH_WEEKDAYS_FULL : ALBANIAN_WEEKDAYS_FULL;
-    const weekday = weekdays[d.getDay()];
+    const weekday = calWeekdaysFull[d.getDay()];
     return (
       <span className="flex items-center gap-1 font-bold tracking-tight tabular-nums text-emerald-700 dark:text-emerald-400">
         <span className="font-mono text-[10px] opacity-90">{getLocalHm(d)}</span>
@@ -1668,8 +1739,7 @@ export function Notepad() {
     const day = d.getDate();
     const month = d.getMonth() + 1;
     const year = d.getFullYear();
-    const weekdays = language === 'en' ? ENGLISH_WEEKDAYS_FULL : ALBANIAN_WEEKDAYS_FULL;
-    const weekday = weekdays[d.getDay()];
+    const weekday = calWeekdaysFull[d.getDay()];
     return (
       <span className="inline-flex items-center gap-0.5 font-semibold tabular-nums text-emerald-600 dark:text-emerald-400">
         <span className="font-bold">{day}</span>
@@ -1732,7 +1802,7 @@ export function Notepad() {
       const newItem = {
         name: fileName,
         size: formatBytes(fileSize),
-        date: new Date().toLocaleDateString(language === 'en' ? 'en-US' : 'sq-AL', { day: '2-digit', month: '2-digit', year: 'numeric' }) + ' ' + new Date().toLocaleTimeString(language === 'en' ? 'en-US' : 'sq-AL', { hour: '2-digit', minute: '2-digit' }),
+        date: new Date().toLocaleDateString(dateLocale, { day: '2-digit', month: '2-digit', year: 'numeric' }) + ' ' + new Date().toLocaleTimeString(dateLocale, { hour: '2-digit', minute: '2-digit' }),
         type: 'file',
         content: safeContent
       };
@@ -1797,9 +1867,19 @@ export function Notepad() {
   const [accentColor, setAccentColor] = useState<keyof typeof COLOR_THEMES>(
     (localStorage.getItem('grid_notepad_accent') as keyof typeof COLOR_THEMES) || 'blue'
   );
-  const [language, setLanguage] = useState<'sq' | 'en'>(
-    (localStorage.getItem('language') as 'sq' | 'en') || 'sq'
-  );
+  const [language, setLanguage] = useState<'sq' | 'en' | 'el'>(() => {
+    const saved = localStorage.getItem('grid_lang') || localStorage.getItem('language');
+    return saved === 'en' || saved === 'el' || saved === 'sq' ? saved : 'sq';
+  });
+  useEffect(() => {
+    try {
+      document.documentElement.lang = language;
+    } catch {}
+  }, [language]);
+  const dateLocale = language === 'en' ? 'en-US' : language === 'el' ? 'el-GR' : 'sq-AL';
+  const calMonths = language === 'en' ? ENGLISH_MONTHS : language === 'el' ? GREEK_MONTHS : ALBANIAN_MONTHS;
+  const calWeekdaysFull = language === 'en' ? ENGLISH_WEEKDAYS_FULL : language === 'el' ? GREEK_WEEKDAYS_FULL : ALBANIAN_WEEKDAYS_FULL;
+  const calWeekdaysMonShort = language === 'en' ? ENGLISH_WEEKDAYS_MON_SHORT : language === 'el' ? GREEK_WEEKDAYS_MON_SHORT : ALBANIAN_WEEKDAYS_MON_SHORT;
   // Labels states
   const [customLabels, setCustomLabels] = useState<string[]>(() => {
     try {
@@ -1873,10 +1953,71 @@ export function Notepad() {
     dragMoveStateRef.current.didDrag = false;
     rowHadContentOnFocusRef.current = {};
     lastFocusedCellRef.current = null;
+    if (rowAudioElementRef.current) {
+      try {
+        rowAudioElementRef.current.pause();
+        rowAudioElementRef.current.src = '';
+      } catch {}
+      rowAudioElementRef.current = null;
+    }
+    setPlayingRowAudioKey(null);
+    setActiveAudioTrack(null);
+    setIsAudioModalOpen(false);
+    setAudioCurrentTime(0);
+    setAudioDuration(0);
+    setAudioPlayerError(false);
   }, [activeDocId]);
   const [modalText, setModalText] = useState<string>('');
   const [toastMessage, setToastMessage] = useState<string | null>(null);
   const [previewImage, setPreviewImage] = useState<string | null>(null);
+  const [previewImageMeta, setPreviewImageMeta] = useState<{
+    fileName?: string;
+    readOnly?: boolean;
+    onDelete?: () => void;
+  } | null>(null);
+  type AudioTrackItem = {
+    rowKey: string;
+    rowId?: string;
+    rowIndex: number;
+    sourceScope: 'local' | 'online';
+    title: string;
+    dataUrl: string;
+    fileName: string;
+    mime?: string;
+    sizeBytes: number;
+    readOnly?: boolean;
+    onDelete?: () => void;
+  };
+  const [activeAudioTrack, setActiveAudioTrack] = useState<AudioTrackItem | null>(null);
+  const [audioPlaylist, setAudioPlaylist] = useState<AudioTrackItem[]>([]);
+  const [isAudioModalOpen, setIsAudioModalOpen] = useState<boolean>(false);
+  const [audioCurrentTime, setAudioCurrentTime] = useState<number>(0);
+  const [audioDuration, setAudioDuration] = useState<number>(0);
+  const [audioPlaybackRate, setAudioPlaybackRate] = useState<number>(1);
+  const [audioVolume, setAudioVolume] = useState<number>(1);
+  const [isAudioMuted, setIsAudioMuted] = useState<boolean>(false);
+  const [audioPlayerError, setAudioPlayerError] = useState<boolean>(false);
+  const [playingRowAudioKey, setPlayingRowAudioKey] = useState<string | null>(null);
+  const rowAudioElementRef = useRef<HTMLAudioElement | null>(null);
+  const activeAudioTrackRef = useRef<AudioTrackItem | null>(null);
+  activeAudioTrackRef.current = activeAudioTrack;
+  const audioPlaylistRef = useRef<AudioTrackItem[]>([]);
+  audioPlaylistRef.current = audioPlaylist;
+  const onlineRowMediaRemoveRef = useRef<((rIdx: number, kind: 'image' | 'audio') => void) | null>(null);
+  const uploadedServerMediaMapRef = useRef<Map<string, string>>(new Map());
+  const firestoreSyncQueueRef = useRef<Promise<boolean>>(Promise.resolve(true));
+  const lastUserTypingTsRef = useRef<number>(0);
+  useEffect(() => {
+    return () => {
+      if (rowAudioElementRef.current) {
+        try {
+          rowAudioElementRef.current.pause();
+          rowAudioElementRef.current.src = '';
+        } catch {}
+        rowAudioElementRef.current = null;
+      }
+    };
+  }, []);
   // Auth/Email states that might be missing
   const [authModal, setAuthModal] = useState(false);
   const [authError, setAuthError] = useState('');
@@ -1896,9 +2037,11 @@ export function Notepad() {
   const [calcIsDragging, setCalcIsDragging] = useState(false);
   const [calcDragOffset, setCalcDragOffset] = useState({ x: 0, y: 0 });
   const calcDisplayScrollRef = useRef<HTMLDivElement | null>(null);
+  const isCalcErrorToken = (s: string) =>
+    s === 'Gabim' || s === 'Error' || s === 'Σφάλμα' || s === 'Ndalohet ÷ 0' || s === 'Division by 0 not allowed' || s === 'Απαγορεύεται ÷ 0';
   const calcLiveResult = useMemo(() => {
     if (!hasCalcOperation(calcDisplay)) return null;
-    if (calcDisplay === 'Gabim' || calcDisplay === 'Ndalohet ÷ 0') return null;
+    if (isCalcErrorToken(calcDisplay)) return null;
     return evaluateCalcExpression(calcDisplay, { trimTrailingOperator: true });
   }, [calcDisplay]);
   useEffect(() => {
@@ -1992,8 +2135,18 @@ export function Notepad() {
     const rowCount = Array.isArray(docObj?.rows) ? docObj.rows.length : 0;
     const tagStr = Array.isArray(docObj?.tags) ? docObj.tags.map((tg: any) => String(tg)).join(',') : '';
     const headersStr = Array.isArray(docObj?.headers) ? docObj.headers.map((h: any) => String(h ?? '')).join('|') : '';
+    const mediaSig = Array.isArray(docObj?.rows)
+      ? docObj.rows.reduce(
+          (acc: number, r: any) =>
+            acc +
+            (typeof r?.image === 'string' ? r.image.length : 0) +
+            (typeof r?.audio === 'string' ? r.audio.length : 0) +
+            (typeof r?.audioName === 'string' ? r.audioName.length : 0),
+          0
+        )
+      : 0;
     const normTitle = String(docObj?.title || 'Pa titull').slice(0, 200);
-    return `${docObj?.updatedAt || ''}|${normTitle}|${rowCount}|${docObj?.textColor || 'default'}|${tagStr}|${headersStr}`;
+    return `${docObj?.updatedAt || ''}|${normTitle}|${rowCount}|${docObj?.textColor || 'default'}|${tagStr}|${headersStr}|${mediaSig}`;
   };
   const computeFirestoreSettingsSig = (payload: any): string => {
     try {
@@ -2134,7 +2287,7 @@ export function Notepad() {
   const buildTrashFromDoc = (docObj: GridDocument): TrashItem => {
     const cleanHeaders = Array.isArray(docObj.headers) ? docObj.headers : ['Kolona 1', 'Kolona 2', 'Kolona 3'];
     const usedRowsCount = Array.isArray(docObj.rows)
-      ? docObj.rows.filter(r => cleanHeaders.some((_, ci) => String(r?.[`col${ci + 1}`] || '').trim()) || (r?.status && r.status !== 'none') || r?.image).length
+      ? docObj.rows.filter(r => cleanHeaders.some((_, ci) => String(r?.[`col${ci + 1}`] || '').trim()) || (r?.status && r.status !== 'none') || r?.image || r?.audio).length
       : 0;
     return {
       id: `trash-list-${docObj.id}-${Date.now()}-${Math.random().toString(36).slice(2, 6)}`,
@@ -2216,8 +2369,10 @@ export function Notepad() {
   };
 
   // Translations helper
-  const t = (sq: string, en: string) => {
-    return language === 'sq' ? sq : en;
+  const t = (sq: string, en: string, el?: string) => {
+    if (language === 'sq') return sq;
+    if (language === 'en') return en;
+    return el ?? EL_TRANSLATIONS[en] ?? EL_TRANSLATIONS[sq] ?? translateDynamicToGreek(sq, en);
   };
   const getColorDisplayName = (name: string) => {
     const key = (name || '').toLowerCase();
@@ -2295,7 +2450,7 @@ export function Notepad() {
     localStorage.setItem('grid_notepad_calc_zoom', String(next));
   };
   const handleCalcInput = (btn: string) => {
-    const isErrorState = calcDisplay === 'Gabim' || calcDisplay === 'Ndalohet ÷ 0';
+    const isErrorState = isCalcErrorToken(calcDisplay);
     const isBinaryOp = (ch: string) => ch === '+' || ch === '-' || ch === '×' || ch === 'x' || ch === '*' || ch === '÷' || ch === '/';
 
     if (btn === 'C') {
@@ -2325,7 +2480,11 @@ export function Notepad() {
         setCalcDisplay(res.value);
       } else {
         setCalcLastExpr(`${calcDisplay} =`);
-        setCalcDisplay(res.error || 'Gabim');
+        setCalcDisplay(
+          res.error === 'Ndalohet ÷ 0'
+            ? t('Ndalohet ÷ 0', 'Division by 0 not allowed', 'Απαγορεύεται ÷ 0')
+            : t('Gabim', 'Error', 'Σφάλμα')
+        );
       }
       return;
     }
@@ -2444,7 +2603,7 @@ const handleSaveLabelModal = () => {
     });
     setDocuments(updatedDocs);
     latestDocsRef.current = updatedDocs;
-    localStorage.setItem('grid_notepad_documents_v2', JSON.stringify(updatedDocs));
+    saveDocsLocalSafe(updatedDocs);
     saveCustomLabels(updatedLabels, updatedDocs, true);
     
     if (selectedLabelFolder === oldName) {
@@ -2475,7 +2634,7 @@ const handleSaveLabelModal = () => {
            
            setDocuments(updatedDocs);
            latestDocsRef.current = updatedDocs;
-           localStorage.setItem('grid_notepad_documents_v2', JSON.stringify(updatedDocs));
+           saveDocsLocalSafe(updatedDocs);
            triggerAutoSave(updatedDocs, true);
            setTransferringInfo(null);
            showToast(
@@ -2511,7 +2670,7 @@ const handleSaveLabelModal = () => {
      });
      setDocuments(updatedDocs);
      latestDocsRef.current = updatedDocs;
-     localStorage.setItem('grid_notepad_documents_v2', JSON.stringify(updatedDocs));
+     saveDocsLocalSafe(updatedDocs);
      saveCustomLabels(updatedLabels, updatedDocs, true, nextTrash);
      if (selectedLabelFolder === labelName) {
         setSelectedLabelFolder(null);
@@ -2571,7 +2730,8 @@ const handleSaveLabelModal = () => {
 
      let mergedDocs = [...(latestDocsRef.current.length > 0 ? latestDocsRef.current : documents)];
      if (cloudData && Array.isArray(cloudData.documents)) {
-        const filteredCloud = cloudData.documents.filter((d: any) => d && !pendingDeletes.includes(d.id));
+        const hydratedCloudDocs = await hydrateServerMediaRefs(cloudData.documents, idToken);
+        const filteredCloud = hydratedCloudDocs.filter((d: any) => d && !pendingDeletes.includes(d.id));
         mergedDocs = mergeDocsByUpdatedAt(mergedDocs, filteredCloud);
      }
      if (fsRemote.docs.length > 0) {
@@ -2703,7 +2863,7 @@ const handleSaveLabelModal = () => {
      setDocuments(mergedDocs);
      latestDocsRef.current = mergedDocs;
      setCloudDocs(mergedDocs);
-     localStorage.setItem('grid_notepad_documents_v2', JSON.stringify(mergedDocs));
+     saveDocsLocalSafe(mergedDocs);
      setBlueText(mergedBlueText);
      latestBlueTextRef.current = mergedBlueText;
      localStorage.setItem('grid_notepad_blue', mergedBlueText);
@@ -2769,7 +2929,7 @@ const handleSaveLabelModal = () => {
      setDocuments(newDocs);
      latestDocsRef.current = newDocs;
      setSelectedCloudDocIds([]);
-     localStorage.setItem('grid_notepad_documents_v2', JSON.stringify(newDocs));
+     saveDocsLocalSafe(newDocs);
      markPendingSync(idsToDelete);
      if (activeDocId && idsToDelete.includes(activeDocId)) {
         if (newDocs.length > 0) openDocument(newDocs[0]);
@@ -2802,7 +2962,7 @@ const handleSaveLabelModal = () => {
               });
               const updated = Array.from(mergedMap.values());
               setDocuments(updated);
-              localStorage.setItem('grid_notepad_documents_v2', JSON.stringify(updated));
+              saveDocsLocalSafe(updated);
               showToast(t(`U importuan me sukses ${parsed.length} dokumente! Po sinkronizohen në Cloud...`, `Imported ${parsed.length} documents successfully! Syncing to Cloud...`));
               await syncWithGoogleCloud(updated, false);
            } else {
@@ -2874,8 +3034,12 @@ const handleSaveLabelModal = () => {
         const cleanRow: Record<string, any> = {
            id: String(r?.id || `row-${idx}`),
            status: String(r?.status || 'none'),
-           image: typeof r?.image === 'string' ? r.image : ''
+           image: typeof r?.image === 'string' ? r.image : '',
+           audio: typeof r?.audio === 'string' ? r.audio : '',
         };
+        if (typeof r?.imageName === 'string' && r.imageName) cleanRow.imageName = String(r.imageName).slice(0, 160);
+        if (typeof r?.audioName === 'string' && r.audioName) cleanRow.audioName = String(r.audioName).slice(0, 160);
+        if (typeof r?.audioMime === 'string' && r.audioMime) cleanRow.audioMime = String(r.audioMime).slice(0, 80);
         if (r?.textColor) cleanRow.textColor = String(r.textColor);
         if (r?.color) cleanRow.color = String(r.color);
         if (r && typeof r === 'object') {
@@ -2991,8 +3155,6 @@ const handleSaveLabelModal = () => {
               const d = docSnap.data();
               if (d) {
                  const fullDoc = { id: docSnap.id, ...d } as GridDocument;
-                 syncedSigs[docSnap.id] = computeFirestoreDocSig(fullDoc);
-                 sigsChanged = true;
                  const existing = docsMap.get(fullDoc.id);
                  if (!existing || new Date(fullDoc.updatedAt || 0) > new Date(existing.updatedAt || 0)) {
                     docsMap.set(fullDoc.id, fullDoc);
@@ -3032,6 +3194,57 @@ const handleSaveLabelModal = () => {
            }
         }
      }
+     const needsChunkReassembly = Array.from(docsMap.values()).some((d) =>
+        Array.isArray(d.rows) &&
+        d.rows.some((r) => (typeof r?.image === 'string' && r.image.startsWith('__fschunk__:')) || (typeof r?.audio === 'string' && r.audio.startsWith('__fschunk__:')))
+     );
+     if (needsChunkReassembly && !isFirestoreQuotaPaused()) {
+        const chunkGroups = new Map<string, Array<{ chunkIndex: number; totalChunks: number; data: string }>>();
+        for (const candidateUid of candidateUids) {
+           if (isFirestoreQuotaPaused()) break;
+           try {
+              const cq = query(collection(db, 'media_chunks'), where('userId', '==', candidateUid));
+              const cSnaps = await getDocs(cq);
+              cSnaps.forEach((cs) => {
+                 const ch = cs.data() as any;
+                 if (!ch || !ch.docId || !ch.rowId || !ch.kind || typeof ch.data !== 'string') return;
+                 const gKey = `${ch.docId}::${ch.rowId}::${ch.kind}`;
+                 const list = chunkGroups.get(gKey) || [];
+                 list.push({ chunkIndex: Number(ch.chunkIndex) || 0, totalChunks: Number(ch.totalChunks) || 1, data: ch.data });
+                 chunkGroups.set(gKey, list);
+              });
+           } catch (err) {
+              if (isFirestoreQuotaError(err)) {
+                 tripFirestoreQuotaCooldown(false);
+                 break;
+              }
+           }
+        }
+        docsMap.forEach((docItem) => {
+           if (!Array.isArray(docItem.rows)) return;
+           docItem.rows = docItem.rows.map((r) => {
+              let nextRow = r;
+              (['image', 'audio'] as const).forEach((kind) => {
+                 const val = nextRow?.[kind];
+                 if (typeof val === 'string' && val.startsWith('__fschunk__:')) {
+                    const gKey = `${docItem.id}::${nextRow.id}::${kind}`;
+                    const chunks = chunkGroups.get(gKey);
+                    if (chunks && chunks.length > 0) {
+                       const ordered = [...chunks].sort((a, b) => a.chunkIndex - b.chunkIndex);
+                       nextRow = { ...nextRow, [kind]: ordered.map((c) => c.data).join('') };
+                    } else {
+                       nextRow = { ...nextRow, [kind]: '' };
+                    }
+                 }
+              });
+              return nextRow;
+           });
+        });
+     }
+     docsMap.forEach((fullDoc) => {
+        syncedSigs[fullDoc.id] = computeFirestoreDocSig(fullDoc);
+        sigsChanged = true;
+     });
      if (sigsChanged) saveSyncedFirestoreDocSigs(syncedSigs);
      const result = { docs: Array.from(docsMap.values()), settings: settingsData };
      lastFirestoreSnapshotCacheRef.current = { ts: Date.now(), data: result };
@@ -3055,6 +3268,7 @@ const handleSaveLabelModal = () => {
      trashItemsVal: TrashItem[] = latestTrashItemsRef.current,
      silent = true
   ): Promise<boolean> => {
+     const runTask = async (): Promise<boolean> => {
      if (!auth.currentUser || !navigator.onLine) return false;
      if (isFirestoreQuotaPaused()) {
         return false;
@@ -3077,7 +3291,7 @@ const handleSaveLabelModal = () => {
                  });
                  timer = setTimeout(() => {
                     reject(new Error('firestore-write-timeout'));
-                 }, 8000);
+                 }, 35000);
               })
            ]);
         } finally {
@@ -3127,7 +3341,64 @@ const handleSaveLabelModal = () => {
            continue;
         }
         try {
-           await runFirestoreWriteWithQuotaGuard(setDoc(doc(db, 'documents', sanitized.id), sanitized, { merge: true }));
+           let docPayload = sanitized;
+           const estimatedBytes = JSON.stringify(sanitized).length;
+           if (estimatedBytes > 700000 && Array.isArray(sanitized.rows)) {
+              const CHUNK_CHAR_LIMIT = 500000;
+              const chunkOps: Array<{ chunkId: string; payload: any }> = [];
+              const docSlug = sanitized.id.replace(/[^a-zA-Z0-9_\-\.:@]/g, '_').slice(0, 44);
+              const offloadedRows = sanitized.rows.map((r: any, rIdx: number) => {
+                 let updatedRow = r;
+                 const safeRowId = String(r?.id || `row-${rIdx}`).replace(/[^a-zA-Z0-9_\-\.:@]/g, '_').slice(0, 44);
+                 (['image', 'audio'] as const).forEach((kind) => {
+                    const mediaVal = updatedRow?.[kind];
+                    if (typeof mediaVal === 'string' && mediaVal.length > 50000 && !mediaVal.startsWith('__fschunk__:') && !mediaVal.startsWith('__srvmedia__:')) {
+                       const totalChunks = Math.ceil(mediaVal.length / CHUNK_CHAR_LIMIT);
+                       if (totalChunks <= 150) {
+                          for (let ci = 0; ci < totalChunks; ci++) {
+                             const sliceStr = mediaVal.slice(ci * CHUNK_CHAR_LIMIT, (ci + 1) * CHUNK_CHAR_LIMIT);
+                             const chunkId = `${docSlug}_${safeRowId}_${kind === 'image' ? 'i' : 'a'}_${ci}`.slice(0, 128);
+                             chunkOps.push({
+                                chunkId,
+                                payload: {
+                                   id: chunkId,
+                                   docId: sanitized.id,
+                                   userId: fsUid,
+                                   rowId: String(r?.id || `row-${rIdx}`).slice(0, 128),
+                                   kind,
+                                   chunkIndex: ci,
+                                   totalChunks,
+                                   data: sliceStr,
+                                   updatedAt: new Date().toISOString(),
+                                },
+                             });
+                          }
+                          updatedRow = {
+                             ...updatedRow,
+                             [kind]: `__fschunk__:${kind}:${String(r?.id || `row-${rIdx}`)}:${totalChunks}`,
+                          };
+                       }
+                    }
+                 });
+                 return updatedRow;
+              });
+              for (let ci = 0; ci < chunkOps.length; ci += 3) {
+                 const batchOps = chunkOps.slice(ci, ci + 3);
+                 const execBatch = () => Promise.all(
+                    batchOps.map((op) =>
+                       runFirestoreWriteWithQuotaGuard(setDoc(doc(db, 'media_chunks', op.chunkId), op.payload, { merge: true }))
+                    )
+                 );
+                 try {
+                    await execBatch();
+                 } catch (batchErr) {
+                    if (isFirestoreQuotaError(batchErr)) throw batchErr;
+                    await execBatch();
+                 }
+              }
+              docPayload = { ...sanitized, rows: offloadedRows };
+           }
+           await runFirestoreWriteWithQuotaGuard(setDoc(doc(db, 'documents', sanitized.id), docPayload, { merge: true }));
            syncedSigs[sanitized.id] = nextSig;
            sigsDirty = true;
         } catch (err) {
@@ -3180,6 +3451,10 @@ const handleSaveLabelModal = () => {
         }
      }
      return ok;
+     };
+     const chained = firestoreSyncQueueRef.current.catch(() => false).then(() => runTask());
+     firestoreSyncQueueRef.current = chained;
+     return chained;
   };
   const getApiEndpoints = (path: string): string[] => {
      const savedCustomServer = (localStorage.getItem('grid_notepad_custom_server') || '').trim();
@@ -3195,6 +3470,158 @@ const handleSaveLabelModal = () => {
      const relativePath = path;
      const fullCurrentOrigin = currentOrigin ? `${currentOrigin}${path}` : '';
      return Array.from(new Set([customEndpoint, relativePath, fullCurrentOrigin].filter(Boolean)));
+  };
+  const offloadDocsMediaToServerChunks = async (docsInput: GridDocument[], idToken: string | null): Promise<GridDocument[]> => {
+     if (!Array.isArray(docsInput) || !idToken) return docsInput;
+     const SRV_MEDIA_PREFIX = '__srvmedia__:';
+     const CHUNK_SIZE = 2000000; // ~2MB chars per request — well below Cloud Run 32MB limit
+     const endpoints = getApiEndpoints('/api/cloud/media/chunk');
+     let activeEndpoint = endpoints[0] || '/api/cloud/media/chunk';
+     const resultDocs: GridDocument[] = [];
+     for (const docObj of docsInput) {
+        if (!docObj || !Array.isArray(docObj.rows)) {
+           resultDocs.push(docObj);
+           continue;
+        }
+        let docModified = false;
+        const nextRows: GridRow[] = [];
+        for (let rIdx = 0; rIdx < docObj.rows.length; rIdx++) {
+           let row = docObj.rows[rIdx];
+           if (!row || typeof row !== 'object') {
+              nextRows.push(row);
+              continue;
+           }
+           for (const kind of ['image', 'audio'] as const) {
+              const val = row[kind];
+              if (typeof val === 'string' && val.length > 1500000 && !val.startsWith(SRV_MEDIA_PREFIX) && !val.startsWith('__fschunk__:')) {
+                 const mediaId = `${String(docObj.id || 'doc').replace(/[^a-zA-Z0-9_\-]/g, '_').slice(0, 28)}_${String(row.id || `r${rIdx}`).replace(/[^a-zA-Z0-9_\-]/g, '_').slice(0, 28)}_${kind}_${val.length}`;
+                 const cacheKey = `${mediaId}:${val.slice(0, 48)}:${val.slice(-24)}`;
+                 let uploaded = uploadedServerMediaMapRef.current.get(cacheKey) === mediaId;
+                 if (!uploaded) {
+                    const totalChunks = Math.ceil(val.length / CHUNK_SIZE);
+                    let allChunksOk = true;
+                    for (let ci = 0; ci < totalChunks; ci++) {
+                       const chunkSlice = val.slice(ci * CHUNK_SIZE, (ci + 1) * CHUNK_SIZE);
+                       let chunkSent = false;
+                       const orderedEps = [activeEndpoint, ...endpoints.filter((e) => e !== activeEndpoint)];
+                       for (const ep of orderedEps) {
+                          try {
+                             const res = await fetch(ep, {
+                                method: 'POST',
+                                headers: {
+                                   'Content-Type': 'application/json',
+                                   'Authorization': `Bearer ${idToken}`,
+                                },
+                                body: JSON.stringify({
+                                   mediaId,
+                                   chunkIndex: ci,
+                                   totalChunks,
+                                   data: chunkSlice,
+                                }),
+                             });
+                             if (res.ok && (res.headers.get('content-type') || '').includes('application/json')) {
+                                const j = await res.json();
+                                if (j?.success) {
+                                   activeEndpoint = ep;
+                                   chunkSent = true;
+                                   break;
+                                }
+                             }
+                          } catch {}
+                       }
+                       if (!chunkSent) {
+                          allChunksOk = false;
+                          break;
+                       }
+                    }
+                    if (allChunksOk) {
+                       uploadedServerMediaMapRef.current.set(cacheKey, mediaId);
+                       uploaded = true;
+                    }
+                 }
+                 if (uploaded) {
+                    row = { ...row, [kind]: `${SRV_MEDIA_PREFIX}${mediaId}` };
+                    docModified = true;
+                 }
+              }
+           }
+           nextRows.push(row);
+        }
+        resultDocs.push(docModified ? { ...docObj, rows: nextRows } : docObj);
+     }
+     return resultDocs;
+  };
+  const fetchSingleServerMediaById = async (mediaId: string, idToken: string | null): Promise<string | null> => {
+     if (!mediaId || !idToken) return null;
+     const cleanId = encodeURIComponent(mediaId.replace(/^__srvmedia__:/, ''));
+     const endpoints = getApiEndpoints(`/api/cloud/media/${cleanId}?chunkIndex=0&chunkSize=2500000`);
+     for (const ep of endpoints) {
+        try {
+           const firstRes = await fetch(ep, { headers: { 'Authorization': `Bearer ${idToken}` } });
+           if (!firstRes.ok || !(firstRes.headers.get('content-type') || '').includes('application/json')) continue;
+           const firstJson = await firstRes.json();
+           if (!firstJson?.success || typeof firstJson.data !== 'string') continue;
+           const totalChunks = Number(firstJson.totalChunks) || 1;
+           if (totalChunks === 1) return firstJson.data;
+           const parts: string[] = new Array(totalChunks);
+           parts[0] = firstJson.data;
+           const baseEp = ep.replace(/chunkIndex=0/, '');
+           for (let ci = 1; ci < totalChunks; ci++) {
+              const chunkEp = ep.replace('chunkIndex=0', `chunkIndex=${ci}`);
+              const r = await fetch(chunkEp, { headers: { 'Authorization': `Bearer ${idToken}` } });
+              if (!r.ok) return null;
+              const j = await r.json();
+              if (!j?.success || typeof j.data !== 'string') return null;
+              parts[ci] = j.data;
+           }
+           void baseEp;
+           return parts.join('');
+        } catch {}
+     }
+     return null;
+  };
+  const hydrateServerMediaRefs = async (docsInput: GridDocument[], idToken: string | null): Promise<GridDocument[]> => {
+     if (!Array.isArray(docsInput) || !idToken) return docsInput;
+     const SRV_MEDIA_PREFIX = '__srvmedia__:';
+     const needsHydration = docsInput.some(
+        (d) => Array.isArray(d?.rows) && d.rows.some(
+           (r: any) =>
+              (typeof r?.image === 'string' && r.image.startsWith(SRV_MEDIA_PREFIX)) ||
+              (typeof r?.audio === 'string' && r.audio.startsWith(SRV_MEDIA_PREFIX))
+        )
+     );
+     if (!needsHydration) return docsInput;
+     const resolvedCache = new Map<string, string>();
+     const outDocs: GridDocument[] = [];
+     for (const d of docsInput) {
+        if (!d || !Array.isArray(d.rows)) {
+           outDocs.push(d);
+           continue;
+        }
+        let changed = false;
+        const nextRows: GridRow[] = [];
+        for (const r of d.rows) {
+           let nextRow = r;
+           for (const kind of ['image', 'audio'] as const) {
+              const val = nextRow?.[kind];
+              if (typeof val === 'string' && val.startsWith(SRV_MEDIA_PREFIX)) {
+                 const mediaId = val.slice(SRV_MEDIA_PREFIX.length);
+                 let fullData = resolvedCache.get(mediaId) || null;
+                 if (!fullData) {
+                    fullData = await fetchSingleServerMediaById(mediaId, idToken);
+                    if (fullData) resolvedCache.set(mediaId, fullData);
+                 }
+                 if (fullData) {
+                    nextRow = { ...nextRow, [kind]: fullData };
+                    changed = true;
+                 }
+              }
+           }
+           nextRows.push(nextRow);
+        }
+        outDocs.push(changed ? { ...d, rows: nextRows } : d);
+     }
+     return outDocs;
   };
   useEffect(() => {
      const updateLogs = () => {
@@ -3235,7 +3662,7 @@ const handleSaveLabelModal = () => {
         return;
      }
      const recognition = new SpeechRecognition();
-     recognition.lang = language === 'en' ? 'en-US' : 'sq-AL';
+     recognition.lang = dateLocale;
      recognition.continuous = false;
      recognition.interimResults = false;
      recognition.onresult = (event: any) => {
@@ -3287,7 +3714,7 @@ const handleSaveLabelModal = () => {
         return;
      }
      const recognition = new SpeechRecognition();
-     recognition.lang = language === 'en' ? 'en-US' : 'sq-AL';
+     recognition.lang = dateLocale;
      recognition.continuous = false;
      recognition.interimResults = false;
      recognition.onresult = (event: any) => {
@@ -3667,7 +4094,7 @@ Kthe VETËM JSON të vlefshëm pa koodblock markdown!`;
              setDocuments(prevDocs => {
                  const next = [...prevDocs, newDoc];
                  latestDocsRef.current = next;
-                 localStorage.setItem('grid_notepad_documents_v2', JSON.stringify(next));
+                 saveDocsLocalSafe(next);
                  markPendingSync();
                  syncWithGoogleCloud(next, true);
                  return next;
@@ -3709,7 +4136,7 @@ Kthe VETËM JSON të vlefshëm pa koodblock markdown!`;
                      return d;
                  });
                  latestDocsRef.current = next;
-                 localStorage.setItem('grid_notepad_documents_v2', JSON.stringify(next));
+                 saveDocsLocalSafe(next);
                  markPendingSync();
                  syncWithGoogleCloud(next, true);
                  return next;
@@ -3747,7 +4174,7 @@ Kthe VETËM JSON të vlefshëm pa koodblock markdown!`;
                      return d;
                  });
                  latestDocsRef.current = next;
-                 localStorage.setItem('grid_notepad_documents_v2', JSON.stringify(next));
+                 saveDocsLocalSafe(next);
                  markPendingSync();
                  syncWithGoogleCloud(next, true);
                  return next;
@@ -3771,7 +4198,7 @@ Kthe VETËM JSON të vlefshëm pa koodblock markdown!`;
              setDocuments(prevDocs => {
                  const next = prevDocs.filter(d => d.id !== act.documentId);
                  latestDocsRef.current = next;
-                 localStorage.setItem('grid_notepad_documents_v2', JSON.stringify(next));
+                 saveDocsLocalSafe(next);
                  markPendingSync([act.documentId]);
                  syncWithGoogleCloud(next, true, undefined, undefined, undefined, [act.documentId], undefined, nextTrash);
                  return next;
@@ -3861,7 +4288,7 @@ Kthe VETËM JSON të vlefshëm pa koodblock markdown!`;
       }).join(' | ');
       return `${rIdx + 1}. ${cells}`;
     });
-    const txtContent = [`${t('Titulli', 'Title')}: ${docToExport.title || t('AI Parapamje', 'AI Preview')}`, `${t('Data', 'Date')}: ${new Date().toLocaleDateString(language === 'en' ? 'en-US' : 'sq-AL')}`, '', ...rowLines].join('\n');
+    const txtContent = [`${t('Titulli', 'Title')}: ${docToExport.title || t('AI Parapamje', 'AI Preview')}`, `${t('Data', 'Date')}: ${new Date().toLocaleDateString(dateLocale)}`, '', ...rowLines].join('\n');
     const blob = new Blob([txtContent], { type: 'text/plain;charset=utf-8;' });
     const url = URL.createObjectURL(blob);
     const link = document.createElement('a');
@@ -4236,7 +4663,7 @@ Kthe VETËM JSON të vlefshëm pa koodblock markdown!`;
         const dItem = documents.find(d => d.id === docId);
         if (!dItem) return;
         const activeRows = (dItem.rows || []).filter(r =>
-          (dItem.headers || []).some((_, idx) => String(r[`col${idx + 1}`] || '').trim() !== '') || r.image
+          (dItem.headers || []).some((_, idx) => String(r[`col${idx + 1}`] || '').trim() !== '') || r.image || r.audio
         );
         const tagInfo = Array.isArray(dItem.tags) && dItem.tags.length > 0 ? `${t('Etiketa', 'Labels')}: ${dItem.tags.join(', ')} | ` : '';
         const metaNote = `${tagInfo}${t('Përditësuar', 'Updated')}: ${safeFormatDate(dItem.updatedAt, 'dd.MM.yyyy HH:mm')} | ${t('Gjithsej', 'Total')} ${activeRows.length} ${t('rreshta', 'rows')}`;
@@ -4322,9 +4749,10 @@ const exportChatResponseToPdf = async () => {
     
     appendDebugLog(`☁️ [Google Cloud Sync] Po ngarkohen ${docs.length} dokumente, ${finalCustomLabels.length} etiketa dhe ${finalTrashItems.length} në kosh për përdoruesin: ${uid}`);
     const idToken = auth.currentUser ? await auth.currentUser.getIdToken(true).catch(() => null) : null;
+    const serverReadyDocs = await offloadDocsMediaToServerChunks(docs, idToken);
     const payloadObj: any = {
       userId: uid,
-      documents: docs,
+      documents: serverReadyDocs,
       blueText: finalBlueText,
       secretList: finalSecretList,
       customLabels: finalCustomLabels,
@@ -4557,7 +4985,7 @@ const exportChatResponseToPdf = async () => {
         else nextDocs = [docData, ...nextDocs];
         setDocuments(nextDocs);
         latestDocsRef.current = nextDocs;
-        localStorage.setItem('grid_notepad_documents_v2', JSON.stringify(nextDocs));
+        saveDocsLocalSafe(nextDocs);
         clearPendingDeletes([docData.id]);
         if (docData.tags && docData.tags.length > 0) {
            nextLabels = mergeAllLabels(nextLabels, docData.tags, nextDocs);
@@ -4606,7 +5034,7 @@ const exportChatResponseToPdf = async () => {
               });
               setDocuments(nextDocs);
               latestDocsRef.current = nextDocs;
-              localStorage.setItem('grid_notepad_documents_v2', JSON.stringify(nextDocs));
+              saveDocsLocalSafe(nextDocs);
            }
            setCustomLabels(nextLabels);
            latestCustomLabelsRef.current = nextLabels;
@@ -4969,7 +5397,7 @@ const exportChatResponseToPdf = async () => {
             } else if (name.endsWith('.csv')) {
                content = "Elementi,Përshkrimi,Statusi\nTask 1,Zgjedhur nga memorja,Në pritje\nTask 2,Lexuar nga dosja,Përfunduar";
             } else {
-               content = `--- ${name.toUpperCase()} ---\nKy është një dokument i simuluar i ngarkuar nga memorja e telefonit.\nData: ${new Date().toLocaleString('sq-AL')}`;
+               content = `--- ${name.toUpperCase()} ---\nKy është një dokument i simuluar i ngarkuar nga memorja e telefonit.\nData: ${new Date().toLocaleString(dateLocale)}`;
             }
          }
          // Import the content based on file extension
@@ -4993,7 +5421,7 @@ const exportChatResponseToPdf = async () => {
                });
                const updated = Array.from(mergedMap.values());
                setDocuments(updated);
-               localStorage.setItem('grid_notepad_documents_v2', JSON.stringify(updated));
+               saveDocsLocalSafe(updated);
                showToast(t(`U importuan me sukses ${parsed.length} dokumente nga '${name}'!`, `Successfully imported ${parsed.length} documents from '${name}'!`));
                await syncWithGoogleCloud(updated, false);
                setShowStoragePickerModal(false);
@@ -5044,7 +5472,7 @@ const exportChatResponseToPdf = async () => {
                };
                const updated = [newDoc, ...documents];
                setDocuments(updated);
-               localStorage.setItem('grid_notepad_documents_v2', JSON.stringify(updated));
+               saveDocsLocalSafe(updated);
                openDocument(newDoc);
                showToast(t(`U krijua lista e re nga skedari CSV '${name}'!`, `Created new list from CSV file '${name}'!`));
                await syncWithGoogleCloud(updated, false);
@@ -5072,7 +5500,7 @@ const exportChatResponseToPdf = async () => {
             };
             const updated = [newDoc, ...documents];
             setDocuments(updated);
-            localStorage.setItem('grid_notepad_documents_v2', JSON.stringify(updated));
+            saveDocsLocalSafe(updated);
             openDocument(newDoc);
             showToast(t(`U krijua shënimi i ri nga skedari '${name}'!`, `Created new note from file '${name}'!`));
             await syncWithGoogleCloud(updated, false);
@@ -5122,8 +5550,9 @@ const exportChatResponseToPdf = async () => {
 
     const fsRemote = await fetchFirestoreSnapshot();
     const pendingDeletes = getPendingDeletes();
+    const hydratedLoadedServerDocs = await hydrateServerMediaRefs(loadedData?.documents || [], idToken);
     const mergedRemoteDocs = mergeDocsByUpdatedAt(
-       (loadedData?.documents || []).filter((d: any) => d && !pendingDeletes.includes(d.id)),
+       hydratedLoadedServerDocs.filter((d: any) => d && !pendingDeletes.includes(d.id)),
        (fsRemote.docs || []).filter((d: any) => d && !pendingDeletes.includes(d.id))
     );
     const mergedSettings = fsRemote.settings || loadedData || null;
@@ -5215,10 +5644,10 @@ const exportChatResponseToPdf = async () => {
         setDocuments(mergedRemoteDocs);
         latestDocsRef.current = mergedRemoteDocs;
         setCloudDocs(mergedRemoteDocs);
-        localStorage.setItem('grid_notepad_documents_v2', JSON.stringify(mergedRemoteDocs));
+        saveDocsLocalSafe(mergedRemoteDocs);
         if (activeDocIdRef.current) {
           const curr = mergedRemoteDocs.find(x => x.id === activeDocIdRef.current);
-          if (curr) {
+          if (curr && Date.now() - lastUserTypingTsRef.current >= 4500) {
             setRows(curr.rows);
             setHeaders(curr.headers);
             setTitle(curr.title);
@@ -5272,7 +5701,7 @@ const exportChatResponseToPdf = async () => {
         const updatedLocalDocs = documents.filter(d => d.id !== delId);
         setDocuments(updatedLocalDocs);
         latestDocsRef.current = updatedLocalDocs;
-        localStorage.setItem('grid_notepad_documents_v2', JSON.stringify(updatedLocalDocs));
+        saveDocsLocalSafe(updatedLocalDocs);
         markPendingSync([delId]);
         await syncWithGoogleCloud(updatedLocalDocs, true, undefined, undefined, undefined, [delId], undefined, nextTrash);
         if (activeDocId === delId) {
@@ -5311,8 +5740,9 @@ const exportChatResponseToPdf = async () => {
     }
 
     const fsRemote = await fetchFirestoreSnapshot();
+    const hydratedServerDocs = await hydrateServerMediaRefs(serverJson?.documents || [], idToken);
     const mergedOnlineDocs = mergeDocsByUpdatedAt(
-       serverJson?.documents || [],
+       hydratedServerDocs,
        fsRemote.docs || []
     );
 
@@ -5354,7 +5784,7 @@ const exportChatResponseToPdf = async () => {
      const restoredLabels = mergeAllLabels(onlineCustomLabels, [], cloudDocs);
      setDocuments(cloudDocs);
      latestDocsRef.current = cloudDocs;
-     localStorage.setItem('grid_notepad_documents_v2', JSON.stringify(cloudDocs));
+     saveDocsLocalSafe(cloudDocs);
      setCustomLabels(restoredLabels);
      latestCustomLabelsRef.current = restoredLabels;
      localStorage.setItem('customLabels', JSON.stringify(restoredLabels));
@@ -5371,7 +5801,7 @@ const exportChatResponseToPdf = async () => {
      setNotesColor(onlineNotesColor || 'default');
      latestNotesColorRef.current = onlineNotesColor || 'default';
      localStorage.setItem('grid_notepad_notes_color', onlineNotesColor || 'default');
-     if (activeDocIdRef.current) {
+     if (activeDocIdRef.current && Date.now() - lastUserTypingTsRef.current >= 4500) {
         const curr = cloudDocs.find(x => x.id === activeDocIdRef.current);
         if (curr) {
            setRows(curr.rows);
@@ -5641,7 +6071,7 @@ const exportChatResponseToPdf = async () => {
                    
                    const newMerged = Array.from(mergedMap.values()).sort((a, b) => new Date(b.updatedAt || 0).getTime() - new Date(a.updatedAt || 0).getTime());
                    latestDocsRef.current = newMerged;
-                   localStorage.setItem('grid_notepad_documents_v2', JSON.stringify(newMerged));
+                   saveDocsLocalSafe(newMerged);
                    
                    const currActiveId = activeDocIdRef.current;
                    if (currActiveId) {
@@ -5686,9 +6116,21 @@ const exportChatResponseToPdf = async () => {
   useEffect(() => {
      const interval = setInterval(() => {
          if (documents.length > 0) {
-             localStorage.setItem('grid_notepad_documents_v2_backup_interval', JSON.stringify(documents));
+             try {
+                const lightIntervalDocs = documents.map((d) => ({
+                   ...d,
+                   rows: Array.isArray(d.rows)
+                      ? d.rows.map((r) => ({
+                           ...r,
+                           audio: typeof r?.audio === 'string' && r.audio.length > 80000 ? '' : r?.audio,
+                        }))
+                      : [],
+                }));
+                localStorage.setItem('grid_notepad_documents_v2_backup_interval', JSON.stringify(lightIntervalDocs));
+             } catch {}
+             saveDocsLocalSafe(documents);
              if (blueText) {
-                 localStorage.setItem('grid_notepad_blue_backup_interval', blueText);
+                 try { localStorage.setItem('grid_notepad_blue_backup_interval', blueText); } catch {}
              }
              
              setIsSaving(true);
@@ -6253,7 +6695,7 @@ const exportChatResponseToPdf = async () => {
       const updatedDocs = [newDoc, ...documents];
       setDocuments(updatedDocs);
       latestDocsRef.current = updatedDocs;
-      localStorage.setItem('grid_notepad_documents_v2', JSON.stringify(updatedDocs));
+      saveDocsLocalSafe(updatedDocs);
       const updatedEvents = calendarEvents.map((item) => (item.id === ev.id ? { ...item, linkedDocId: newDoc.id } : item));
       saveCalendarEventsList(updatedEvents);
       setShowCalendarModal(false);
@@ -6377,7 +6819,7 @@ const exportChatResponseToPdf = async () => {
       const updatedDocs = [newDoc, ...documents];
       setDocuments(updatedDocs);
       latestDocsRef.current = updatedDocs;
-      localStorage.setItem('grid_notepad_documents_v2', JSON.stringify(updatedDocs));
+      saveDocsLocalSafe(updatedDocs);
       triggerAutoSave(updatedDocs, true);
       setShowCalendarModal(false);
       openDocument(newDoc);
@@ -6597,11 +7039,11 @@ const exportChatResponseToPdf = async () => {
                                  }
                                  return d;
                              });
-                             localStorage.setItem('grid_notepad_documents_v2', JSON.stringify(next));
+                             saveDocsLocalSafe(next);
                              syncWithGoogleCloud(next, true);
                              return next;
                          });
-                         if (act.documentId === activeDocIdRef.current) {
+                         if (act.documentId === activeDocIdRef.current && Date.now() - lastUserTypingTsRef.current >= 4500) {
                              if (act.newHeaders) setHeaders(act.newHeaders);
                              if (act.newColumnWidths) setColumnWidths(act.newColumnWidths);
                              if (act.newRows) setRows(act.newRows);
@@ -6619,11 +7061,11 @@ const exportChatResponseToPdf = async () => {
                                  }
                                  return d;
                              });
-                             localStorage.setItem('grid_notepad_documents_v2', JSON.stringify(next));
+                             saveDocsLocalSafe(next);
                              syncWithGoogleCloud(next, true);
                              return next;
                          });
-                         if (act.documentId === activeDocIdRef.current && act.newRows) {
+                         if (act.documentId === activeDocIdRef.current && act.newRows && Date.now() - lastUserTypingTsRef.current >= 4500) {
                              setRows(act.newRows);
                          }
                          showToast(t("⚡ Agjenti Gemini korrigjoi rreshtat e bllokut automatikisht!", "⚡ Gemini agent updated list rows automatically!"));
@@ -6633,7 +7075,7 @@ const exportChatResponseToPdf = async () => {
                           const next = latestDocsRef.current.filter(d => d.id !== act.documentId);
                           setDocuments(next);
                           latestDocsRef.current = next;
-                          localStorage.setItem('grid_notepad_documents_v2', JSON.stringify(next));
+                          saveDocsLocalSafe(next);
                           markPendingSync([act.documentId]);
                           syncWithGoogleCloud(next, true, undefined, undefined, undefined, [act.documentId], undefined, nextTrash);
                           if (act.documentId === activeDocIdRef.current) {
@@ -6665,11 +7107,11 @@ const exportChatResponseToPdf = async () => {
       
       if (localSaveTimeout.current) clearTimeout(localSaveTimeout.current);
       if (immediate) {
-          localStorage.setItem('grid_notepad_documents_v2', JSON.stringify(updatedDocs));
+          saveDocsLocalSafe(updatedDocs);
           pendingLocalSaveRef.current = false;
       } else {
           localSaveTimeout.current = setTimeout(() => {
-              localStorage.setItem('grid_notepad_documents_v2', JSON.stringify(updatedDocs));
+              saveDocsLocalSafe(updatedDocs);
               pendingLocalSaveRef.current = false;
               const freqCheck = parseInt(localStorage.getItem('grid_cloud_sync_freq') || '500', 10);
               if (freqCheck === -1 || !navigator.onLine) {
@@ -6712,6 +7154,7 @@ const exportChatResponseToPdf = async () => {
      const handleCloudUpdate = (e: any) => {
          const docObj = e.detail;
          if (docObj && docObj.id === activeDocIdRef.current) {
+             if (Date.now() - lastUserTypingTsRef.current < 4500) return;
              setRows(docObj.rows);
              setHeaders(docObj.headers);
              setTitle(docObj.title);
@@ -6726,7 +7169,7 @@ const exportChatResponseToPdf = async () => {
   useEffect(() => {
     const handleBeforeUnload = () => {
        if (pendingLocalSaveRef.current) {
-           localStorage.setItem('grid_notepad_documents_v2', JSON.stringify(latestDocsRef.current));
+           saveDocsLocalSafe(latestDocsRef.current);
        }
     };
     window.addEventListener('beforeunload', handleBeforeUnload);
@@ -6896,7 +7339,7 @@ const exportChatResponseToPdf = async () => {
   useEffect(() => {
      const flushOfflineQueue = () => {
         if (pendingLocalSaveRef.current && latestDocsRef.current.length > 0) {
-           localStorage.setItem('grid_notepad_documents_v2', JSON.stringify(latestDocsRef.current));
+           saveDocsLocalSafe(latestDocsRef.current);
            pendingLocalSaveRef.current = false;
         }
         if (!navigator.onLine || onlineViewRef.current) return;
@@ -7087,11 +7530,11 @@ const exportChatResponseToPdf = async () => {
              setColumnWidths(matchedDoc.columnWidths || []);
              
              const newRows = [...matchedDoc.rows];
-             const hasContent = (r: GridRow) => (matchedDoc.headers.some((_, i) => (r[`col${i+1}`] || '').toString().trim()) || r.image) ? true : false;
+             const hasContent = (r: GridRow) => (matchedDoc.headers.some((_, i) => (r[`col${i+1}`] || '').toString().trim()) || r.image || r.audio) ? true : false;
              if (newRows.length > 0) {
                  const firstRowIsUsed = hasContent(newRows[0]) || (newRows[0].status && newRows[0].status !== 'none');
                  if (firstRowIsUsed) {
-                     const firstEmptyIndex = newRows.findIndex(r => !hasContent(r) && r.status === 'none' && !r.image);
+                     const firstEmptyIndex = newRows.findIndex(r => !hasContent(r) && r.status === 'none' && !r.image && !r.audio);
                      if (firstEmptyIndex !== -1) {
                          const emptyRow = newRows.splice(firstEmptyIndex, 1)[0];
                          newRows.unshift(emptyRow);
@@ -7117,9 +7560,35 @@ const exportChatResponseToPdf = async () => {
              rows: JSON.parse(oldRows)
           };
           setDocuments([doc]);
-          localStorage.setItem('grid_notepad_documents_v2', JSON.stringify([doc]));
+          saveDocsLocalSafe([doc]);
        }
     }
+    // Hydrate full documents & large >5MB audio/image attachments from IndexedDB asynchronously
+    loadDocsFromIdb().then((idbDocs) => {
+       if (!idbDocs || idbDocs.length === 0) return;
+       const currentLocal = latestDocsRef.current;
+       const shouldHydrate =
+          currentLocal.length === 0 ||
+          hasIdbMediaMarkers(currentLocal) ||
+          idbDocs.some((idDoc) => {
+             const matched = currentLocal.find((ld) => ld.id === idDoc.id);
+             if (!matched) return true;
+             return Array.isArray(idDoc.rows) && idDoc.rows.some((ir: any, idx: number) => {
+                const lr = matched.rows?.[idx];
+                return (ir?.audio && (!lr?.audio || String(lr.audio).startsWith('__idb_media__:'))) ||
+                       (ir?.image && (!lr?.image || String(lr.image).startsWith('__idb_media__:')));
+             });
+          });
+       if (!shouldHydrate) return;
+       setDocuments(idbDocs);
+       latestDocsRef.current = idbDocs;
+       if (activeDocIdRef.current) {
+          const activeHydrated = idbDocs.find((d) => d.id === activeDocIdRef.current);
+          if (activeHydrated && Date.now() - lastUserTypingTsRef.current >= 3000) {
+             setRows(activeHydrated.rows || []);
+          }
+       }
+    }).catch(() => {});
   }, []);
   // Auto-activate and sync Google Cloud on mount if authenticated and online
   useEffect(() => {
@@ -7341,7 +7810,7 @@ const exportChatResponseToPdf = async () => {
     const updatedDocs = [newDocObj, ...baseDocs];
     setDocuments(updatedDocs);
     latestDocsRef.current = updatedDocs;
-    localStorage.setItem('grid_notepad_documents_v2', JSON.stringify(updatedDocs));
+    saveDocsLocalSafe(updatedDocs);
     triggerAutoSave(updatedDocs, true);
   };
   const openDocument = (doc: GridDocument) => {
@@ -7360,11 +7829,11 @@ const exportChatResponseToPdf = async () => {
     localStorage.setItem('grid_notepad_text_color_mode', docColor);
     
     const newRows = [...doc.rows];
-    const hasContent = (r: GridRow) => (doc.headers.some((_, i) => (r[`col${i+1}`] || '').toString().trim()) || r.image) ? true : false;
+    const hasContent = (r: GridRow) => (doc.headers.some((_, i) => (r[`col${i+1}`] || '').toString().trim()) || r.image || r.audio) ? true : false;
     if (newRows.length > 0) {
         const firstRowIsUsed = hasContent(newRows[0]) || (newRows[0].status && newRows[0].status !== 'none');
         if (firstRowIsUsed) {
-            const firstEmptyIndex = newRows.findIndex(r => !hasContent(r) && r.status === 'none' && !r.image);
+            const firstEmptyIndex = newRows.findIndex(r => !hasContent(r) && r.status === 'none' && !r.image && !r.audio);
             if (firstEmptyIndex !== -1) {
                 const emptyRow = newRows.splice(firstEmptyIndex, 1)[0];
                 newRows.unshift(emptyRow);
@@ -7386,7 +7855,7 @@ const exportChatResponseToPdf = async () => {
     const updatedDocs = documents.map(d => d.id === targetDoc.id ? { ...d, pinned: nextPinned, updatedAt: nowIso } : d);
     setDocuments(updatedDocs);
     latestDocsRef.current = updatedDocs;
-    localStorage.setItem('grid_notepad_documents_v2', JSON.stringify(updatedDocs));
+    saveDocsLocalSafe(updatedDocs);
     triggerAutoSave(updatedDocs, true);
     showToast(nextPinned ? t(`"${targetDoc.title}" u fiksua në krye!`, `"${targetDoc.title}" pinned to top!`) : t('U hoq nga të fiksuarat.', 'Unpinned.'));
   };
@@ -7396,7 +7865,7 @@ const exportChatResponseToPdf = async () => {
     const clonedDoc: GridDocument = {
       ...targetDoc,
       id: `doc-${Date.now()}`,
-      title: `${targetDoc.title || t('Shënim', 'Note')} (Kopje)`,
+      title: `${targetDoc.title || t('Shënim', 'Note')} (${t('Kopje', 'Copy', 'Αντίγραφο')})`,
       pinned: false,
       isReadOnly: false,
       createdAt: nowIso,
@@ -7406,7 +7875,7 @@ const exportChatResponseToPdf = async () => {
     const updatedDocs = [clonedDoc, ...documents];
     setDocuments(updatedDocs);
     latestDocsRef.current = updatedDocs;
-    localStorage.setItem('grid_notepad_documents_v2', JSON.stringify(updatedDocs));
+    saveDocsLocalSafe(updatedDocs);
     triggerAutoSave(updatedDocs, true);
     showToast(t(`Lista "${targetDoc.title}" u duplikua!`, `Duplicated "${targetDoc.title}"!`));
   };
@@ -7420,7 +7889,7 @@ const exportChatResponseToPdf = async () => {
       const updatedDocs = documents.map(d => d.id === activeDocId ? { ...d, isReadOnly: nextVal, updatedAt: nowIso } : d);
       setDocuments(updatedDocs);
       latestDocsRef.current = updatedDocs;
-      localStorage.setItem('grid_notepad_documents_v2', JSON.stringify(updatedDocs));
+      saveDocsLocalSafe(updatedDocs);
       triggerAutoSave(updatedDocs, true);
       showToast(nextVal ? t('Dokumenti u vendos në modalitetin Vetëm Lexim!', 'Document locked as Read-Only!') : t('Dokumenti u hap për editim!', 'Document unlocked for editing!'));
     };
@@ -7450,7 +7919,7 @@ const exportChatResponseToPdf = async () => {
                const updatedDocs = currentDocs.filter(d => d.id !== id);
                setDocuments(updatedDocs);
                latestDocsRef.current = updatedDocs;
-               localStorage.setItem('grid_notepad_documents_v2', JSON.stringify(updatedDocs));
+               saveDocsLocalSafe(updatedDocs);
                markPendingSync([id]);
                await syncWithGoogleCloud(updatedDocs, true, undefined, undefined, undefined, [id], undefined, nextTrash);
                showToast(t('Dokumenti u fshi dhe u ruajt te Listat në Kosh (Cloud, Firebase & Gist)!', 'Document deleted and saved to Trash (Cloud, Firebase & Gist)!'));
@@ -7466,6 +7935,7 @@ const exportChatResponseToPdf = async () => {
      const currentDoc = documents.find(d => d.id === activeDocId);
      if (currentDoc?.isReadOnly) return;
      const now = Date.now();
+     lastUserTypingTsRef.current = now;
      if (now - lastCellTypingSnapshotTsRef.current > 1800) {
        pushUndoSnapshot();
        lastCellTypingSnapshotTsRef.current = now;
@@ -7520,7 +7990,7 @@ const exportChatResponseToPdf = async () => {
          pushUndoSnapshot();
          const newRows = rows.map(r => ({ ...r }));
          
-         const hasContent = (r: GridRow) => (headers.some((_, i) => (r[`col${i+1}`] || '').toString().trim()) || r.image) ? true : false;
+         const hasContent = (r: GridRow) => (headers.some((_, i) => (r[`col${i+1}`] || '').toString().trim()) || r.image || r.audio) ? true : false;
          
          selectedRows.forEach(rIndex => {
              if (newRows[rIndex]) newRows[rIndex].status = newStatus;
@@ -7544,7 +8014,7 @@ const exportChatResponseToPdf = async () => {
          // Siguro që rrjeshti i parë të jetë gjithmonë bosh për shënim (Rule applied: always keep first row empty)
          const firstRowIsUsed = hasContent(newRows[0]) || (newRows[0].status && newRows[0].status !== 'none');
          if (firstRowIsUsed) {
-             const firstEmptyIndex = newRows.findIndex(r => !hasContent(r) && r.status === 'none' && !r.image);
+             const firstEmptyIndex = newRows.findIndex(r => !hasContent(r) && r.status === 'none' && !r.image && !r.audio);
              if (firstEmptyIndex !== -1) {
                  const emptyRow = newRows.splice(firstEmptyIndex, 1)[0];
                  newRows.unshift(emptyRow);
@@ -7621,7 +8091,7 @@ const exportChatResponseToPdf = async () => {
   const handleInsertColumnTotalRow = (colIdx: number, totalStr: string) => {
      if (isDocReadOnly) return;
      pushUndoSnapshot();
-     const hasContent = (r: GridRow) => Boolean(headers.some((_, c) => String(r[`col${c + 1}`] || '').trim()) || r.image);
+     const hasContent = (r: GridRow) => Boolean(headers.some((_, c) => String(r[`col${c + 1}`] || '').trim()) || r.image || r.audio);
      let insertAt = rows.length;
      for (let i = rows.length - 1; i >= 1; i--) {
        if (hasContent(rows[i]) || (rows[i].status && rows[i].status !== 'none')) {
@@ -7649,7 +8119,7 @@ const exportChatResponseToPdf = async () => {
   };
   const handleTrimEmptyRowsInCurrentDoc = () => {
      if (isDocReadOnly) return;
-     const hasContent = (r: GridRow) => Boolean(headers.some((_, c) => String(r[`col${c + 1}`] || '').trim()) || r.image || (r.status && r.status !== 'none'));
+     const hasContent = (r: GridRow) => Boolean(headers.some((_, c) => String(r[`col${c + 1}`] || '').trim()) || r.image || r.audio || (r.status && r.status !== 'none'));
      const used = rows.filter((r, idx) => idx > 0 && hasContent(r));
      const firstEmpty = rows[0] && !hasContent(rows[0])
        ? rows[0]
@@ -7673,7 +8143,7 @@ const exportChatResponseToPdf = async () => {
      const clone: GridDocument = {
        ...currentDoc,
        id: `doc-${Date.now()}`,
-       title: `${title || currentDoc.title || t('Shënim', 'Note')} (${t('Kopje', 'Copy')})`,
+       title: `${title || currentDoc.title || t('Shënim', 'Note')} (${t('Kopje', 'Copy', 'Αντίγραφο')})`,
        pinned: false,
        isReadOnly: false,
        createdAt: nowIso,
@@ -7683,7 +8153,7 @@ const exportChatResponseToPdf = async () => {
      const updatedDocs = [clone, ...documents];
      setDocuments(updatedDocs);
      latestDocsRef.current = updatedDocs;
-     localStorage.setItem('grid_notepad_documents_v2', JSON.stringify(updatedDocs));
+     saveDocsLocalSafe(updatedDocs);
      triggerAutoSave(updatedDocs, true);
      setShowTagColorMenu(false);
      openDocument(clone);
@@ -7691,7 +8161,7 @@ const exportChatResponseToPdf = async () => {
   };
   const handleSortRowsByColumn = (colIdx: number, direction: 'asc' | 'desc') => {
      const colKey = `col${colIdx + 1}`;
-     const hasContent = (r: GridRow) => (headers.some((_, i) => (r[`col${i+1}`] || '').toString().trim()) || r.image) ? true : false;
+     const hasContent = (r: GridRow) => (headers.some((_, i) => (r[`col${i+1}`] || '').toString().trim()) || r.image || r.audio) ? true : false;
      const filled = rows.filter(hasContent);
      const empty = rows.filter(r => !hasContent(r));
      if (filled.length < 2) {
@@ -7761,7 +8231,7 @@ const exportChatResponseToPdf = async () => {
        return { ...src, id: `row-${Date.now()}-dup-${cIdx}`, status: 'none' };
      });
      const nextRows = rows.map(r => ({ ...r }));
-     const hasContent = (r: GridRow) => (headers.some((_, i) => (r[`col${i+1}`] || '').toString().trim()) || r.image || (r.status && r.status !== 'none')) ? true : false;
+     const hasContent = (r: GridRow) => (headers.some((_, i) => (r[`col${i+1}`] || '').toString().trim()) || r.image || r.audio || (r.status && r.status !== 'none')) ? true : false;
      let insertPtr = 1; // Preserve empty row 0
      clones.forEach(clone => {
        while (insertPtr < nextRows.length && hasContent(nextRows[insertPtr])) {
@@ -7782,7 +8252,7 @@ const exportChatResponseToPdf = async () => {
   const isGridRowCompletelyEmpty = (r: GridRow | undefined, colCount: number): boolean => {
      if (!r) return true;
      const hasText = Array.from({ length: colCount }, (_, c) => String(r[`col${c + 1}`] || '').trim()).some(Boolean);
-     if (hasText || r.image) return false;
+     if (hasText || r.image || r.audio) return false;
      if (r.status && r.status !== 'none') return false;
      return true;
   };
@@ -8012,37 +8482,403 @@ const exportChatResponseToPdf = async () => {
      }
      moveSelectedRowsInDraft(direction);
   };
+  const dataUrlToBlob = (dataUrl: string, fallbackMime = 'application/octet-stream'): { blob: Blob; mimeType: string } => {
+     const parts = String(dataUrl || '').split(',');
+     const header = parts[0] || '';
+     const body = parts.slice(1).join(',');
+     const mimeMatch = header.match(/data:([^;]+);/i);
+     const mimeType = (mimeMatch && mimeMatch[1]) || fallbackMime;
+     if (!header.toLowerCase().includes(';base64')) {
+       return { blob: new Blob([decodeURIComponent(body)], { type: mimeType }), mimeType };
+     }
+     const binStr = atob(body);
+     const bytes = new Uint8Array(binStr.length);
+     for (let i = 0; i < binStr.length; i++) {
+       bytes[i] = binStr.charCodeAt(i);
+     }
+     return { blob: new Blob([bytes], { type: mimeType }), mimeType };
+  };
+  const handleDownloadRowMedia = async (dataUrl: string, fileName: string, kind: 'image' | 'audio') => {
+     if (!dataUrl || dataUrl.startsWith('__fschunk__:')) {
+       showToast(t("Skedari po sinkronizohet, provoni pas pak.", "Media file is still syncing, please retry shortly.", "Το αρχείο συγχρονίζεται ακόμα, δοκιμάστε σε λίγο."));
+       return;
+     }
+     try {
+       const fallbackMime = kind === 'image' ? 'image/jpeg' : 'audio/mpeg';
+       const { blob, mimeType } = dataUrlToBlob(dataUrl, fallbackMime);
+       const safeBase = (fileName || `${kind}_${Date.now()}`).replace(/[^a-zA-Z0-9._-]+/g, '_');
+       const extFromMime =
+         mimeType.includes('png') ? 'png' :
+         mimeType.includes('jpeg') || mimeType.includes('jpg') ? 'jpg' :
+         mimeType.includes('mp4') || mimeType.includes('m4a') ? 'm4a' :
+         mimeType.includes('amr') ? 'amr' :
+         mimeType.includes('mpeg') || mimeType.includes('mp3') ? 'mp3' :
+         (kind === 'image' ? 'jpg' : 'mp3');
+       const finalName = /\.[a-z0-9]{2,5}$/i.test(safeBase) ? safeBase : `${safeBase}.${extFromMime}`;
+       await handleDownload(blob, finalName, mimeType, finalName);
+     } catch {
+       showToast(t("Gabim gjatë shkarkimit të skedarit.", "Error downloading media file.", "Σφάλμα κατά τη λήψη του αρχείου."));
+     }
+  };
+  const formatAudioTime = (seconds: number): string => {
+     if (!Number.isFinite(seconds) || seconds < 0) return '00:00';
+     const total = Math.floor(seconds);
+     const hrs = Math.floor(total / 3600);
+     const mins = Math.floor((total % 3600) / 60);
+     const secs = total % 60;
+     const mm = String(mins).padStart(2, '0');
+     const ss = String(secs).padStart(2, '0');
+     return hrs > 0 ? `${hrs}:${mm}:${ss}` : `${mm}:${ss}`;
+  };
+  const buildDocAudioPlaylist = (scope: 'local' | 'online'): AudioTrackItem[] => {
+     const listRows = scope === 'online'
+        ? (selectedOnlineDoc?.rows || [])
+        : (latestRowsRef.current.length > 0 ? latestRowsRef.current : rows);
+     const readOnly = scope === 'online' ? !isOnlineEditing : isDocReadOnly;
+     const tracks: AudioTrackItem[] = [];
+     listRows.forEach((rItem: any, idx: number) => {
+        if (!rItem?.audio) return;
+        const rowTextPreview = [rItem.col1, rItem.col2].filter((v) => typeof v === 'string' && v.trim()).join(' · ').trim();
+        const fName = rItem.audioName || `audio_row_${idx + 1}.mp3`;
+        const dataStr = String(rItem.audio);
+        tracks.push({
+           rowKey: `${scope}-${rItem.id || idx}`,
+           rowId: rItem.id,
+           rowIndex: idx,
+           sourceScope: scope,
+           title: rowTextPreview ? `#${idx + 1} · ${rowTextPreview}` : (rItem.audioName || `${t('Rrjeshti', 'Row')} #${idx + 1}`),
+           dataUrl: dataStr,
+           fileName: fName,
+           mime: rItem.audioMime,
+           sizeBytes: estimateDataUrlSizeBytes(dataStr),
+           readOnly,
+           onDelete: scope === 'online' ? () => onlineRowMediaRemoveRef.current?.(idx, 'audio') : () => removeAudio(idx),
+        });
+     });
+     return tracks;
+  };
+  const stopAndCloseAudioPlayer = () => {
+     if (rowAudioElementRef.current) {
+       try {
+         rowAudioElementRef.current.pause();
+         rowAudioElementRef.current.currentTime = 0;
+         rowAudioElementRef.current.src = '';
+       } catch {}
+       rowAudioElementRef.current = null;
+     }
+     setPlayingRowAudioKey(null);
+     setActiveAudioTrack(null);
+     setIsAudioModalOpen(false);
+     setAudioCurrentTime(0);
+     setAudioDuration(0);
+     setAudioPlayerError(false);
+  };
+  const startAudioTrackPlayback = (track: AudioTrackItem, playlist: AudioTrackItem[], openModal: boolean, autoPlay = true) => {
+     if (track.dataUrl && track.dataUrl.startsWith('__srvmedia__:')) {
+       const mediaId = track.dataUrl.slice('__srvmedia__:'.length);
+       showToast(t("Audio po shkarkohet nga Cloud...", "Loading audio from Cloud..."));
+       (async () => {
+         const idToken = auth.currentUser ? await auth.currentUser.getIdToken(true).catch(() => null) : null;
+         const resolvedData = await fetchSingleServerMediaById(mediaId, idToken);
+         if (resolvedData) {
+           const updatedTrack = { ...track, dataUrl: resolvedData, sizeBytes: estimateDataUrlSizeBytes(resolvedData) };
+           const updatedPlaylist = playlist.map((p) => (p.rowKey === track.rowKey ? updatedTrack : p));
+           startAudioTrackPlayback(updatedTrack, updatedPlaylist, openModal, autoPlay);
+         } else {
+           showToast(t("Nuk u arrit të shkarkohet audio nga Cloud.", "Could not download audio from Cloud."));
+         }
+       })();
+       return;
+     }
+     if (!track.dataUrl || track.dataUrl.startsWith('__fschunk__:')) {
+       showToast(t("Audio po ngarkohet nga Cloud, provoni pas pak.", "Audio is loading from Cloud, please try again.", "Ο ήχος φορτώνεται από το Cloud, δοκιμάστε ξανά."));
+       return;
+     }
+     if (track.dataUrl.startsWith('__idb_media__:')) {
+       showToast(t("Audio po rikthehet nga memorja lokale...", "Restoring audio from local storage...", "Ο ήχος ανακτάται από την τοπική μνήμη..."));
+       loadDocsFromIdb().then((idbDocs) => {
+         if (!idbDocs) return;
+         for (const d of idbDocs) {
+           const mr = Array.isArray(d?.rows) ? d.rows.find((rx: any) => rx?.id === track.rowId || (rx?.audioName && rx.audioName === track.fileName)) : null;
+           if (mr?.audio && typeof mr.audio === 'string' && !mr.audio.startsWith('__idb_media__:')) {
+             const updatedTrack = { ...track, dataUrl: mr.audio, sizeBytes: estimateDataUrlSizeBytes(mr.audio) };
+             const updatedPlaylist = playlist.map((p) => (p.rowKey === track.rowKey ? updatedTrack : p));
+             startAudioTrackPlayback(updatedTrack, updatedPlaylist, openModal, autoPlay);
+             return;
+           }
+         }
+       }).catch(() => {});
+       return;
+     }
+     setAudioPlaylist(playlist);
+     setActiveAudioTrack(track);
+     setAudioPlayerError(false);
+     if (openModal) setIsAudioModalOpen(true);
+
+     if (activeAudioTrackRef.current?.rowKey === track.rowKey && rowAudioElementRef.current) {
+       const existingEl = rowAudioElementRef.current;
+       if (autoPlay) {
+         if (existingEl.paused) {
+           existingEl.play().then(() => setPlayingRowAudioKey(track.rowKey)).catch(() => {});
+         } else if (!openModal) {
+           existingEl.pause();
+           setPlayingRowAudioKey(null);
+         }
+       }
+       return;
+     }
+
+     if (rowAudioElementRef.current) {
+       try {
+         rowAudioElementRef.current.pause();
+         rowAudioElementRef.current.src = '';
+       } catch {}
+       rowAudioElementRef.current = null;
+     }
+     setAudioCurrentTime(0);
+     setAudioDuration(0);
+
+     const isAmr = /\.amr$/i.test(track.fileName || '') || (track.mime || '').toLowerCase().includes('amr');
+     const playableSrc = dataUrlToPlayableSrc(track.dataUrl, track.mime || 'audio/mpeg');
+     try {
+       const audioEl = new Audio(playableSrc);
+       audioEl.playbackRate = audioPlaybackRate;
+       audioEl.volume = isAudioMuted ? 0 : audioVolume;
+       audioEl.muted = isAudioMuted;
+       rowAudioElementRef.current = audioEl;
+
+       audioEl.onloadedmetadata = () => {
+         if (rowAudioElementRef.current === audioEl && Number.isFinite(audioEl.duration)) {
+           setAudioDuration(audioEl.duration);
+         }
+       };
+       audioEl.ondurationchange = () => {
+         if (rowAudioElementRef.current === audioEl && Number.isFinite(audioEl.duration)) {
+           setAudioDuration(audioEl.duration);
+         }
+       };
+       audioEl.ontimeupdate = () => {
+         if (rowAudioElementRef.current === audioEl) {
+           setAudioCurrentTime(audioEl.currentTime || 0);
+         }
+       };
+       audioEl.onplay = () => {
+         if (rowAudioElementRef.current === audioEl) {
+           setPlayingRowAudioKey(track.rowKey);
+         }
+       };
+       audioEl.onpause = () => {
+         if (rowAudioElementRef.current === audioEl) {
+           setPlayingRowAudioKey(null);
+         }
+       };
+       audioEl.onended = () => {
+         if (rowAudioElementRef.current === audioEl) {
+           setPlayingRowAudioKey(null);
+           setAudioCurrentTime(0);
+         }
+       };
+       audioEl.onerror = () => {
+         if (rowAudioElementRef.current === audioEl) {
+           setPlayingRowAudioKey(null);
+           setAudioPlayerError(true);
+           if (isAmr || !openModal) {
+             setIsAudioModalOpen(true);
+           }
+         }
+       };
+
+       if (autoPlay && !isAmr) {
+         const playPromise = audioEl.play();
+         if (playPromise && typeof playPromise.then === 'function') {
+           playPromise
+             .then(() => setPlayingRowAudioKey(track.rowKey))
+             .catch(() => {
+               setPlayingRowAudioKey(null);
+               setIsAudioModalOpen(true);
+             });
+         }
+       } else if (autoPlay && isAmr) {
+         const playPromise = audioEl.play();
+         if (playPromise && typeof playPromise.then === 'function') {
+           playPromise
+             .then(() => setPlayingRowAudioKey(track.rowKey))
+             .catch(() => {
+               setPlayingRowAudioKey(null);
+               setAudioPlayerError(true);
+               setIsAudioModalOpen(true);
+             });
+         }
+       }
+     } catch {
+       setPlayingRowAudioKey(null);
+       setAudioPlayerError(true);
+       setIsAudioModalOpen(true);
+     }
+  };
+  const toggleInlineRowAudio = (rowKey: string, dataUrl: string, fileName: string, mime?: string, rowMeta?: { rowId?: string; rowIndex?: number; sourceScope?: 'local' | 'online'; readOnly?: boolean; onDelete?: () => void }) => {
+     const scope: 'local' | 'online' = rowMeta?.sourceScope || (rowKey.startsWith('online-') ? 'online' : 'local');
+     const playlist = buildDocAudioPlaylist(scope);
+     const matched = playlist.find((tItem) => tItem.rowKey === rowKey) || {
+        rowKey,
+        rowId: rowMeta?.rowId,
+        rowIndex: rowMeta?.rowIndex ?? 0,
+        sourceScope: scope,
+        title: fileName || t('Skedar Audio', 'Audio File', 'Αρχείο Ήχου'),
+        dataUrl,
+        fileName: fileName || 'audio.mp3',
+        mime,
+        sizeBytes: estimateDataUrlSizeBytes(dataUrl),
+        readOnly: rowMeta?.readOnly,
+        onDelete: rowMeta?.onDelete,
+     };
+     startAudioTrackPlayback(matched, playlist.length > 0 ? playlist : [matched], false, true);
+  };
+  const openAudioPlayerModal = (rowKey: string, dataUrl: string, fileName: string, mime?: string, rowMeta?: { rowId?: string; rowIndex?: number; sourceScope?: 'local' | 'online'; title?: string; readOnly?: boolean; onDelete?: () => void }) => {
+     const scope: 'local' | 'online' = rowMeta?.sourceScope || (rowKey.startsWith('online-') ? 'online' : 'local');
+     const playlist = buildDocAudioPlaylist(scope);
+     const matched = playlist.find((tItem) => tItem.rowKey === rowKey) || {
+        rowKey,
+        rowId: rowMeta?.rowId,
+        rowIndex: rowMeta?.rowIndex ?? 0,
+        sourceScope: scope,
+        title: rowMeta?.title || fileName || t('Skedar Audio', 'Audio File', 'Αρχείο Ήχου'),
+        dataUrl,
+        fileName: fileName || 'audio.mp3',
+        mime,
+        sizeBytes: estimateDataUrlSizeBytes(dataUrl),
+        readOnly: rowMeta?.readOnly,
+        onDelete: rowMeta?.onDelete,
+     };
+     const isSameAlreadyPlaying = activeAudioTrackRef.current?.rowKey === rowKey && rowAudioElementRef.current && !rowAudioElementRef.current.paused;
+     if (isSameAlreadyPlaying) {
+       setAudioPlaylist(playlist.length > 0 ? playlist : [matched]);
+       setIsAudioModalOpen(true);
+       return;
+     }
+     startAudioTrackPlayback(matched, playlist.length > 0 ? playlist : [matched], true, true);
+  };
+  const toggleAudioPlayPause = () => {
+     const el = rowAudioElementRef.current;
+     const track = activeAudioTrackRef.current;
+     if (!track) return;
+     if (!el) {
+       startAudioTrackPlayback(track, audioPlaylistRef.current, isAudioModalOpen, true);
+       return;
+     }
+     if (el.paused) {
+       el.play().then(() => setPlayingRowAudioKey(track.rowKey)).catch(() => {
+         setAudioPlayerError(true);
+       });
+     } else {
+       el.pause();
+       setPlayingRowAudioKey(null);
+     }
+  };
+  const seekAudioTo = (timeSec: number) => {
+     const el = rowAudioElementRef.current;
+     if (!el || !Number.isFinite(timeSec)) return;
+     const maxDur = Number.isFinite(el.duration) && el.duration > 0 ? el.duration : audioDuration;
+     const clamped = Math.max(0, maxDur > 0 ? Math.min(maxDur, timeSec) : timeSec);
+     try {
+       el.currentTime = clamped;
+       setAudioCurrentTime(clamped);
+     } catch {}
+  };
+  const skipAudioBy = (deltaSec: number) => {
+     const el = rowAudioElementRef.current;
+     const baseTime = el ? el.currentTime : audioCurrentTime;
+     seekAudioTo(baseTime + deltaSec);
+  };
+  const cycleAudioSpeed = () => {
+     const rates = [0.75, 1, 1.25, 1.5, 2];
+     const nextIdx = (rates.indexOf(audioPlaybackRate) + 1) % rates.length;
+     const nextRate = rates[nextIdx];
+     setAudioPlaybackRate(nextRate);
+     if (rowAudioElementRef.current) {
+       rowAudioElementRef.current.playbackRate = nextRate;
+     }
+  };
+  const changeAudioVolume = (vol: number) => {
+     const v = Math.max(0, Math.min(1, vol));
+     setAudioVolume(v);
+     setIsAudioMuted(v === 0);
+     if (rowAudioElementRef.current) {
+       rowAudioElementRef.current.volume = v;
+       rowAudioElementRef.current.muted = v === 0;
+     }
+  };
+  const toggleAudioMute = () => {
+     const nextMuted = !isAudioMuted;
+     setIsAudioMuted(nextMuted);
+     if (rowAudioElementRef.current) {
+       rowAudioElementRef.current.muted = nextMuted;
+       if (!nextMuted && audioVolume === 0) {
+         setAudioVolume(0.8);
+         rowAudioElementRef.current.volume = 0.8;
+       }
+     }
+  };
+  const stepAudioTrack = (dir: -1 | 1) => {
+     const list = audioPlaylistRef.current;
+     const curr = activeAudioTrackRef.current;
+     if (!curr || list.length <= 1) return;
+     const idx = list.findIndex((item) => item.rowKey === curr.rowKey);
+     if (idx === -1) return;
+     const nextIdx = (idx + dir + list.length) % list.length;
+     startAudioTrackPlayback(list[nextIdx], list, isAudioModalOpen, true);
+  };
   const handleImageUpload = (rIndex: number, file: File) => {
+     const fileName = file.name || `image_${rIndex + 1}.png`;
+     const lower = fileName.toLowerCase();
+     const isValidType = ['image/png', 'image/jpeg', 'image/jpg'].includes((file.type || '').toLowerCase()) || /\.(png|jpe?g)$/i.test(lower);
+     if (!isValidType) {
+        showToast(t("Lejohen vetëm imazhe PNG, JPEG ose JPG!", "Only PNG, JPEG, or JPG images are supported!", "Υποστηρίζονται μόνο εικόνες PNG, JPEG ή JPG!"));
+        return;
+     }
      const reader = new FileReader();
      reader.onload = (e) => {
         const img = new Image();
         img.onload = () => {
            const canvas = document.createElement('canvas');
-           const MAX_WIDTH = 800; // Resize to save memory
-           const MAX_HEIGHT = 800;
+           const MAX_WIDTH = 900;
+           const MAX_HEIGHT = 900;
            let width = img.width;
            let height = img.height;
            if (width > height) {
               if (width > MAX_WIDTH) {
-                 height *= MAX_WIDTH / width;
+                 height = Math.round(height * (MAX_WIDTH / width));
                  width = MAX_WIDTH;
               }
            } else {
               if (height > MAX_HEIGHT) {
-                 width *= MAX_HEIGHT / height;
+                 width = Math.round(width * (MAX_HEIGHT / height));
                  height = MAX_HEIGHT;
               }
            }
-           canvas.width = width;
-           canvas.height = height;
+           canvas.width = Math.max(1, width);
+           canvas.height = Math.max(1, height);
            const ctx = canvas.getContext('2d');
            if (ctx) {
-               ctx.drawImage(img, 0, 0, width, height);
-               const dataUrl = canvas.toDataURL('image/jpeg', 0.6); // Compress
-               const newRows = [...rows];
-               newRows[rIndex].image = dataUrl;
+               ctx.drawImage(img, 0, 0, canvas.width, canvas.height);
+               const isPng = file.type === 'image/png' || lower.endsWith('.png');
+               let dataUrl = isPng ? canvas.toDataURL('image/png') : canvas.toDataURL('image/jpeg', 0.68);
+               if (isPng && dataUrl.length > 350000) {
+                 dataUrl = canvas.toDataURL('image/jpeg', 0.68);
+               }
+               pushUndoSnapshot();
+               const baseRows = latestRowsRef.current.length > rIndex ? latestRowsRef.current : rows;
+               const newRows = baseRows.map((rowItem, idx) =>
+                 idx === rIndex ? { ...rowItem, image: dataUrl, imageName: fileName } : rowItem
+               );
+               latestRowsRef.current = newRows;
                setRows(newRows);
                updateActiveDocumentState(title, newRows, headers, columnWidths, activeTags, undefined, true);
+               showToast(t(
+                 '✓ Imazhi u ngarkua dhe u sinkronizua në Cloud, Firebase & Gist!',
+                 '✓ Image uploaded and synced to Cloud, Firebase & Gist!',
+                 '✓ Η εικόνα μεταφορτώθηκε και συγχρονίστηκε σε Cloud, Firebase & Gist!'
+               ));
            }
         };
         img.src = e.target?.result as string;
@@ -8051,10 +8887,100 @@ const exportChatResponseToPdf = async () => {
   };
   const removeImage = (rIndex: number) => {
      pushUndoSnapshot();
-     const newRows = [...rows];
-     newRows[rIndex].image = '';
+     const baseRows = latestRowsRef.current.length > rIndex ? latestRowsRef.current : rows;
+     const newRows = baseRows.map((rowItem, idx) =>
+       idx === rIndex ? { ...rowItem, image: '', imageName: '' } : rowItem
+     );
+     latestRowsRef.current = newRows;
      setRows(newRows);
      updateActiveDocumentState(title, newRows, headers, columnWidths, activeTags, undefined, true);
+     showToast(t(
+       'Imazhi u fshi dhe u sinkronizua!',
+       'Image deleted and synced!',
+       'Η εικόνα διαγράφηκε και συγχρονίστηκε!'
+     ));
+  };
+  const handleAudioUpload = async (rIndex: number, file: File) => {
+     const fileName = file.name || `audio_${rIndex + 1}.mp3`;
+     const lower = fileName.toLowerCase();
+     const rawType = (file.type || '').toLowerCase();
+     const isValidAudio =
+       rawType.startsWith('audio/') ||
+       rawType === 'video/mp4' ||
+       ['audio/mpeg', 'audio/mp3', 'audio/x-mpeg', 'audio/mp4', 'audio/m4a', 'audio/x-m4a', 'audio/mp4a-latm', 'audio/aac', 'audio/amr', 'audio/amr-wb', 'audio/3gpp', 'audio/3gpp2'].includes(rawType) ||
+       /\.(mp3|m4a|amr|mp4|aac|3gp|ogg|wav)$/i.test(lower);
+     if (!isValidAudio) {
+       showToast(t(
+         'Lejohen vetëm skedarë audio MP3, M4A ose AMR!',
+         'Only MP3, M4A, or AMR audio files are supported!',
+         'Υποστηρίζονται μόνο αρχεία ήχου MP3, M4A ή AMR!'
+       ));
+       return;
+     }
+     if (file.size > 30 * 1024 * 1024) {
+       showToast(t(
+         'Skedari audio është shumë i madh (maksimumi 30 MB)!',
+         'Audio file is too large (max 30 MB)!',
+         'Το αρχείο ήχου είναι πολύ μεγάλο (μέγιστο 30 MB)!'
+       ));
+       return;
+     }
+     if (file.size > 5 * 1024 * 1024) {
+       showToast(t(
+         `Po ngarkohet audio (${formatBytesReadable(file.size)})...`,
+         `Loading audio (${formatBytesReadable(file.size)})...`
+       ));
+     }
+     const normalizedMime =
+       lower.endsWith('.amr') || rawType.includes('amr') ? 'audio/amr' :
+       lower.endsWith('.m4a') || rawType.includes('mp4') || rawType.includes('m4a') || rawType.includes('aac') ? 'audio/mp4' :
+       'audio/mpeg';
+     try {
+       const rawDataUrl = await readAudioFileAsDataUrlSafe(file, normalizedMime);
+       if (!rawDataUrl) {
+         showToast(t('Gabim gjatë leximit të skedarit audio!', 'Error reading audio file!', 'Σφάλμα ανάγνωσης αρχείου ήχου!'));
+         return;
+       }
+       lastUserTypingTsRef.current = Date.now();
+       pushUndoSnapshot();
+       const baseRows = latestRowsRef.current.length > rIndex ? latestRowsRef.current : rows;
+       const newRows = baseRows.map((rowItem, idx) =>
+         idx === rIndex ? { ...rowItem, audio: rawDataUrl, audioName: fileName, audioMime: normalizedMime } : rowItem
+       );
+       latestRowsRef.current = newRows;
+       setRows(newRows);
+       updateActiveDocumentState(title, newRows, headers, columnWidths, activeTags, undefined, true);
+       if (file.size > 5 * 1024 * 1024) {
+         await saveDocsLocalSafeAsync(latestDocsRef.current);
+       }
+       showToast(t(
+         `✓ Audio (${formatBytesReadable(file.size)}) u ngarkua dhe u sinkronizua!`,
+         `✓ Audio (${formatBytesReadable(file.size)}) uploaded and synced!`,
+         `✓ Ο ήχος (${formatBytesReadable(file.size)}) μεταφορτώθηκε και συγχρονίστηκε!`
+       ));
+     } catch {
+       showToast(t('Gabim gjatë leximit të skedarit audio!', 'Error reading audio file!', 'Σφάλμα ανάγνωσης αρχείου ήχου!'));
+     }
+  };
+  const removeAudio = (rIndex: number) => {
+     const targetRow = (latestRowsRef.current.length > rIndex ? latestRowsRef.current : rows)[rIndex];
+     const rowKey = targetRow?.id ? `local-${targetRow.id}` : `local-${rIndex}`;
+     if (activeAudioTrackRef.current?.rowKey === rowKey || playingRowAudioKey === rowKey) {
+       stopAndCloseAudioPlayer();
+     }
+     pushUndoSnapshot();
+     const baseRows = latestRowsRef.current.length > rIndex ? latestRowsRef.current : rows;
+     const newRows = baseRows.map((rowItem, idx) =>
+       idx === rIndex ? { ...rowItem, audio: '', audioName: '', audioMime: '' } : rowItem
+     );
+     latestRowsRef.current = newRows;
+     setRows(newRows);
+     updateActiveDocumentState(title, newRows, headers, columnWidths, activeTags, undefined, true);
+     showToast(t(
+       'Audio u fshi dhe u sinkronizua!',
+       'Audio deleted and synced!',
+       'Ο ήχος διαγράφηκε και συγχρονίστηκε!'
+     ));
   };
   const generatePlaceholderImage = async (rIndex: number) => {
       try {
@@ -8129,7 +9055,7 @@ const exportChatResponseToPdf = async () => {
          if (selectedRows.has(index)) {
              if (index === 0) {
                  // Row 1 (index 0) is never removed from grid structure; clear its content cleanly
-                 nextRows.push({ id: r.id, status: 'none' as const, image: '' });
+                 nextRows.push({ id: r.id, status: 'none' as const, image: '', imageName: '', audio: '', audioName: '', audioMime: '' });
              } else {
                  removedCount++;
              }
@@ -8370,7 +9296,7 @@ const exportChatResponseToPdf = async () => {
   const exportCsv = async () => {
     let hasContent = false;
     rows.forEach(r => {
-       if (headers.some((_, i) => (r[`col${i+1}`] || '').toString().trim()) || r.image) hasContent = true;
+       if (headers.some((_, i) => (r[`col${i+1}`] || '').toString().trim()) || r.image || r.audio) hasContent = true;
     });
     if (!hasContent) {
        showToast(t("Blloku është bosh!", "List is empty!"));
@@ -8379,7 +9305,7 @@ const exportChatResponseToPdf = async () => {
     const csvRows = [];
     csvRows.push(headers.map(h => `"${h.replace(/"/g, '""')}"`).join(","));
     rows.forEach(r => {
-      let hasAny = headers.some((_, c) => (r[`col${c+1}`] || '').toString().trim()) || r.image;
+      let hasAny = headers.some((_, c) => (r[`col${c+1}`] || '').toString().trim()) || r.image || r.audio;
       if (hasAny) {
          csvRows.push(headers.map((_, c) => `"${(r[`col${c+1}`] || '').toString().trim().replace(/"/g, '""')}"`).join(','));
       }
@@ -8393,7 +9319,7 @@ const exportChatResponseToPdf = async () => {
   const exportPdf = () => {
     let lastActiveRowIndex = -1;
     rows.forEach((r, rIndex) => {
-       const hasAny = headers.some((_, i) => (r[`col${i+1}`] || '').toString().trim()) || r.image || (r.status && r.status !== 'none');
+       const hasAny = headers.some((_, i) => (r[`col${i+1}`] || '').toString().trim()) || r.image || r.audio || (r.status && r.status !== 'none');
        if (hasAny) {
           lastActiveRowIndex = rIndex;
        }
@@ -8589,7 +9515,7 @@ const exportChatResponseToPdf = async () => {
   };
   const openModal = (rIndex: number, colKey: string) => {
      modalHadContentOnOpenRef.current = Boolean(
-       headers.some((_, c) => String(rows[rIndex]?.[`col${c + 1}`] || '').trim()) || rows[rIndex]?.image
+       headers.some((_, c) => String(rows[rIndex]?.[`col${c + 1}`] || '').trim()) || rows[rIndex]?.image || rows[rIndex]?.audio
      );
      lastFocusedCellRef.current = { rIndex, colKey };
      setActiveCell({ rIndex, colKey });
@@ -8638,7 +9564,7 @@ const exportChatResponseToPdf = async () => {
          doc.setFontSize(10);
          
          dItem.rows.forEach((r, i) => {
-             let hasAny = dItem.headers.some((_, c) => (r[`col${c+1}`] || '').toString().trim()) || r.image;
+             let hasAny = dItem.headers.some((_, c) => (r[`col${c+1}`] || '').toString().trim()) || r.image || r.audio;
              if (hasAny) {
                  let rowText = `${t('Rrjeshti', 'Row')} ${i+1}:`;
                  dItem.headers.forEach((h: string, c: number) => {
@@ -8961,7 +9887,7 @@ const exportChatResponseToPdf = async () => {
                 onConfirm: async () => {
                     const currentDocs = latestDocsRef.current.length > 0 ? latestDocsRef.current : documents;
                     const delIds = currentDocs.map(d => d.id).filter(Boolean);
-                    localStorage.removeItem('grid_notepad_documents_v2');
+                    clearDocsLocalSafe();
                     localStorage.removeItem('grid_notepad_blue');
                     localStorage.removeItem('grid_notepad_secret_list');
                     localStorage.removeItem('customLabels');
@@ -9042,7 +9968,7 @@ const exportChatResponseToPdf = async () => {
                       let nextNotesColor = latestNotesColorRef.current;
                       if (jsonData.documents) {
                           nextDocs = jsonData.documents;
-                          localStorage.setItem('grid_notepad_documents_v2', JSON.stringify(jsonData.documents));
+                          saveDocsLocalSafe(jsonData.documents);
                           setDocuments(jsonData.documents);
                           latestDocsRef.current = jsonData.documents;
                       }
@@ -9108,7 +10034,7 @@ const exportChatResponseToPdf = async () => {
        executeProtectedAction(() => {
            const newDocs = [...documents].sort((a, b) => a.title.localeCompare(b.title));
            setDocuments(newDocs);
-           localStorage.setItem('grid_notepad_documents_v2', JSON.stringify(newDocs));
+           saveDocsLocalSafe(newDocs);
            showToast(t("Dokumentet u renditën A-Z.", "Documents sorted A-Z."));
        });
        setShowOptionsMenu(false);
@@ -9117,7 +10043,7 @@ const exportChatResponseToPdf = async () => {
        executeProtectedAction(() => {
            const newDocs = [...documents].sort((a, b) => b.title.localeCompare(a.title));
            setDocuments(newDocs);
-           localStorage.setItem('grid_notepad_documents_v2', JSON.stringify(newDocs));
+           saveDocsLocalSafe(newDocs);
            showToast(t("Dokumentet u renditën Z-A.", "Documents sorted Z-A."));
        });
        setShowOptionsMenu(false);
@@ -9126,7 +10052,7 @@ const exportChatResponseToPdf = async () => {
        executeProtectedAction(() => {
            const newDocs = [...documents].sort((a, b) => b.createdAt - a.createdAt);
            setDocuments(newDocs);
-           localStorage.setItem('grid_notepad_documents_v2', JSON.stringify(newDocs));
+           saveDocsLocalSafe(newDocs);
            showToast(t("Dokumentet u renditën më të rejat të parat.", "Documents sorted newest first."));
        });
        setShowOptionsMenu(false);
@@ -9135,7 +10061,7 @@ const exportChatResponseToPdf = async () => {
        executeProtectedAction(() => {
            const newDocs = [...documents].sort((a, b) => a.createdAt - b.createdAt);
            setDocuments(newDocs);
-           localStorage.setItem('grid_notepad_documents_v2', JSON.stringify(newDocs));
+           saveDocsLocalSafe(newDocs);
            showToast(t("Dokumentet u renditën më të vjetrat të parat.", "Documents sorted oldest first."));
        });
        setShowOptionsMenu(false);
@@ -9150,7 +10076,7 @@ const exportChatResponseToPdf = async () => {
            });
            setDocuments(newDocs);
            latestDocsRef.current = newDocs;
-           localStorage.setItem('grid_notepad_documents_v2', JSON.stringify(newDocs));
+           saveDocsLocalSafe(newDocs);
            triggerAutoSave(newDocs, true);
            showToast(t("Titujt u kapitalizuan me sukses.", "Titles capitalized successfully."));
        });
@@ -9175,7 +10101,7 @@ const exportChatResponseToPdf = async () => {
            if (statusesRemoved > 0) {
                setDocuments(newDocs);
                latestDocsRef.current = newDocs;
-               localStorage.setItem('grid_notepad_documents_v2', JSON.stringify(newDocs));
+               saveDocsLocalSafe(newDocs);
                triggerAutoSave(newDocs, true);
                showToast(t(`U fshinë ${statusesRemoved} statuse ngjyrash nga rrjeshtat.`, `Removed ${statusesRemoved} row color statuses.`));
            } else {
@@ -9190,7 +10116,7 @@ const exportChatResponseToPdf = async () => {
            const emptyDocIds: string[] = [];
            const emptyDocs: GridDocument[] = [];
            const newDocs = documents.filter(d => {
-               const hasData = d.rows.some(r => d.headers.some((_, c) => (r[`col${c+1}`] || '').toString().trim()) || r.image);
+               const hasData = d.rows.some(r => d.headers.some((_, c) => (r[`col${c+1}`] || '').toString().trim()) || r.image || r.audio);
                if (!hasData) {
                    emptyCount++;
                    emptyDocIds.push(d.id);
@@ -9202,7 +10128,7 @@ const exportChatResponseToPdf = async () => {
                const nextTrash = appendItemsToTrashState(emptyDocs.map(buildTrashFromDoc));
                setDocuments(newDocs);
                latestDocsRef.current = newDocs;
-               localStorage.setItem('grid_notepad_documents_v2', JSON.stringify(newDocs));
+               saveDocsLocalSafe(newDocs);
                setCloudDocs(prev => prev.filter(d => !emptyDocIds.includes(d.id)));
                markPendingSync(emptyDocIds);
                if (navigator.onLine) {
@@ -9221,7 +10147,7 @@ const exportChatResponseToPdf = async () => {
            const nowIso = new Date().toISOString();
            const newDocs = documents.map(d => {
                const originalLen = d.rows.length;
-               const cleanRows = d.rows.filter(r => d.headers.some((_, c) => (r[`col${c+1}`] || '').toString().trim()) || r.image);
+               const cleanRows = d.rows.filter(r => d.headers.some((_, c) => (r[`col${c+1}`] || '').toString().trim()) || r.image || r.audio);
                const diff = originalLen - cleanRows.length;
                totalCleaned += diff;
                return diff > 0 ? { ...d, rows: cleanRows, updatedAt: nowIso } : d;
@@ -9229,7 +10155,7 @@ const exportChatResponseToPdf = async () => {
            if (totalCleaned > 0) {
                setDocuments(newDocs);
                latestDocsRef.current = newDocs;
-               localStorage.setItem('grid_notepad_documents_v2', JSON.stringify(newDocs));
+               saveDocsLocalSafe(newDocs);
                setCloudDocs(prev => prev.map(c => {
                    const local = newDocs.find(l => l.id === c.id);
                    return local ? { ...c, rows: local.rows, updatedAt: local.updatedAt } : c;
@@ -9264,14 +10190,14 @@ const exportChatResponseToPdf = async () => {
                                imagesRemoved++;
                                changed = true;
                            }
-                           return { ...r, image: null };
+                           return { ...r, image: null, imageName: '' };
                        });
                        return changed ? { ...d, rows: cleanRows, updatedAt: nowIso } : d;
                    });
                    if (imagesRemoved > 0) {
                        setDocuments(newDocs);
                        latestDocsRef.current = newDocs;
-                       localStorage.setItem('grid_notepad_documents_v2', JSON.stringify(newDocs));
+                       saveDocsLocalSafe(newDocs);
                        setCloudDocs(prev => prev.map(c => {
                            const local = newDocs.find(l => l.id === c.id);
                            return local ? { ...c, rows: local.rows, updatedAt: local.updatedAt } : c;
@@ -9316,7 +10242,8 @@ const exportChatResponseToPdf = async () => {
           (r.col2 && r.col2.trim()) || 
           (r.col3 && r.col3.trim()) || 
           (r.col4 && r.col4.trim()) ||
-          r.image
+          r.image ||
+          r.audio
        );
        if (contentRows.length === 0) return 'none';
        
@@ -9726,6 +10653,110 @@ const exportChatResponseToPdf = async () => {
         };
         applyOnlineDocUpdate(updatedDoc, true);
      };
+     const handleOnlineRowMediaUpload = (rIdx: number, kind: 'image' | 'audio', file: File) => {
+        if (!selectedOnlineDoc) return;
+        const fileName = file.name || `${kind}_${rIdx + 1}`;
+        const lower = fileName.toLowerCase();
+        const rawType = (file.type || '').toLowerCase();
+        if (kind === 'image') {
+           const isValidImg = ['image/png', 'image/jpeg', 'image/jpg'].includes(rawType) || /\.(png|jpe?g)$/i.test(lower);
+           if (!isValidImg) {
+              showToast(t("Lejohen vetëm imazhe PNG, JPEG ose JPG!", "Only PNG, JPEG, or JPG images are supported!", "Υποστηρίζονται μόνο εικόνες PNG, JPEG ή JPG!"));
+              return;
+           }
+           const reader = new FileReader();
+           reader.onload = (ev) => {
+              const img = new Image();
+              img.onload = () => {
+                 const canvas = document.createElement('canvas');
+                 const MAX = 900;
+                 let w = img.width;
+                 let h = img.height;
+                 if (w > h && w > MAX) { h = Math.round(h * (MAX / w)); w = MAX; }
+                 else if (h >= w && h > MAX) { w = Math.round(w * (MAX / h)); h = MAX; }
+                 canvas.width = Math.max(1, w);
+                 canvas.height = Math.max(1, h);
+                 const ctx = canvas.getContext('2d');
+                 if (!ctx) return;
+                 ctx.drawImage(img, 0, 0, canvas.width, canvas.height);
+                 const isPng = rawType === 'image/png' || lower.endsWith('.png');
+                 let dataUrl = isPng ? canvas.toDataURL('image/png') : canvas.toDataURL('image/jpeg', 0.68);
+                 if (isPng && dataUrl.length > 350000) dataUrl = canvas.toDataURL('image/jpeg', 0.68);
+                 const updatedRows = selectedOnlineDoc.rows.map((r, idx) =>
+                    idx === rIdx ? { ...r, image: dataUrl, imageName: fileName } : r
+                 );
+                 const updatedDoc = { ...selectedOnlineDoc, rows: updatedRows, updatedAt: new Date().toISOString() };
+                 applyOnlineDocUpdate(updatedDoc, true);
+                 showToast(t('✓ Imazhi u ngarkua dhe u sinkronizua në Cloud!', '✓ Image uploaded and synced to Cloud!', '✓ Η εικόνα μεταφορτώθηκε και συγχρονίστηκε στο Cloud!'));
+              };
+              img.src = String(ev.target?.result || '');
+           };
+           reader.readAsDataURL(file);
+        } else {
+           const isValidAudio =
+             rawType.startsWith('audio/') ||
+             rawType === 'video/mp4' ||
+             ['audio/mpeg', 'audio/mp3', 'audio/x-mpeg', 'audio/mp4', 'audio/m4a', 'audio/x-m4a', 'audio/mp4a-latm', 'audio/aac', 'audio/amr', 'audio/amr-wb', 'audio/3gpp', 'audio/3gpp2'].includes(rawType) ||
+             /\.(mp3|m4a|amr|mp4|aac|3gp|ogg|wav)$/i.test(lower);
+           if (!isValidAudio) {
+              showToast(t('Lejohen vetëm skedarë audio MP3, M4A ose AMR!', 'Only MP3, M4A, or AMR audio files are supported!', 'Υποστηρίζονται μόνο αρχεία ήχου MP3, M4A ή AMR!'));
+              return;
+           }
+           if (file.size > 30 * 1024 * 1024) {
+              showToast(t('Skedari audio është shumë i madh (maksimumi 30 MB)!', 'Audio file is too large (max 30 MB)!', 'Το αρχείο ήχου είναι πολύ μεγάλο (μέγιστο 30 MB)!'));
+              return;
+           }
+           if (file.size > 5 * 1024 * 1024) {
+              showToast(t(
+                 `Po ngarkohet audio (${formatBytesReadable(file.size)})...`,
+                 `Loading audio (${formatBytesReadable(file.size)})...`
+              ));
+           }
+           const normalizedMime = lower.endsWith('.amr') || rawType.includes('amr') ? 'audio/amr' : (lower.endsWith('.m4a') || rawType.includes('mp4') || rawType.includes('m4a') || rawType.includes('aac')) ? 'audio/mp4' : 'audio/mpeg';
+           void (async () => {
+              try {
+                 const rawDataUrl = await readAudioFileAsDataUrlSafe(file, normalizedMime);
+                 if (!rawDataUrl) {
+                    showToast(t('Gabim gjatë leximit të skedarit audio!', 'Error reading audio file!', 'Σφάλμα ανάγνωσης αρχείου ήχου!'));
+                    return;
+                 }
+                 lastUserTypingTsRef.current = Date.now();
+                 const updatedRows = selectedOnlineDoc.rows.map((r, idx) =>
+                    idx === rIdx ? { ...r, audio: rawDataUrl, audioName: fileName, audioMime: normalizedMime } : r
+                 );
+                 const updatedDoc = { ...selectedOnlineDoc, rows: updatedRows, updatedAt: new Date().toISOString() };
+                 applyOnlineDocUpdate(updatedDoc, true);
+                 if (file.size > 5 * 1024 * 1024) {
+                    await saveDocsLocalSafeAsync(latestDocsRef.current);
+                 }
+                 showToast(t(
+                    `✓ Audio (${formatBytesReadable(file.size)}) u ngarkua dhe u sinkronizua në Cloud!`,
+                    `✓ Audio (${formatBytesReadable(file.size)}) uploaded and synced to Cloud!`,
+                    `✓ Ο ήχος (${formatBytesReadable(file.size)}) μεταφορτώθηκε και συγχρονίστηκε στο Cloud!`
+                 ));
+              } catch {
+                 showToast(t('Gabim gjatë leximit të skedarit audio!', 'Error reading audio file!', 'Σφάλμα ανάγνωσης αρχείου ήχου!'));
+              }
+           })();
+        }
+     };
+     const handleOnlineRowMediaRemove = (rIdx: number, kind: 'image' | 'audio') => {
+        if (!selectedOnlineDoc) return;
+        const rowItem = selectedOnlineDoc.rows[rIdx];
+        const rowKey = `online-${rowItem?.id || rIdx}`;
+        if (kind === 'audio' && (activeAudioTrackRef.current?.rowKey === rowKey || playingRowAudioKey === rowKey)) {
+           stopAndCloseAudioPlayer();
+        }
+        const updatedRows = selectedOnlineDoc.rows.map((r, idx) =>
+           idx === rIdx
+              ? (kind === 'image' ? { ...r, image: '', imageName: '' } : { ...r, audio: '', audioName: '', audioMime: '' })
+              : r
+        );
+        const updatedDoc = { ...selectedOnlineDoc, rows: updatedRows, updatedAt: new Date().toISOString() };
+        applyOnlineDocUpdate(updatedDoc, true);
+        showToast(kind === 'image' ? t('Imazhi u fshi!', 'Image deleted!') : t('Audio u fshi!', 'Audio deleted!'));
+     };
+     onlineRowMediaRemoveRef.current = handleOnlineRowMediaRemove;
      const addOnlineRow = () => {
         if (!selectedOnlineDoc) return;
         const newRow = { id: `row-${Date.now()}`, status: 'none', image: '' };
@@ -9773,7 +10804,7 @@ const exportChatResponseToPdf = async () => {
            updatedDocs = [doc, ...documents];
         }
         setDocuments(updatedDocs);
-        localStorage.setItem('grid_notepad_documents_v2', JSON.stringify(updatedDocs));
+        saveDocsLocalSafe(updatedDocs);
         openDocument(doc);
         setOnlineView(null);
         showToast(t(`⚡ U hap lista "${doc.title || 'I paemërtuar'}" në Notepad!`, `⚡ Opened list "${doc.title || 'Untitled'}" in Notepad!`));
@@ -9882,7 +10913,7 @@ const exportChatResponseToPdf = async () => {
            const docsForAi = [{
               ...selectedOnlineDoc,
               rows: selectedOnlineDoc.rows.map(r => {
-                 const { image, ...rest } = r;
+                 const { image, audio, ...rest } = r;
                  return rest;
               })
            }];
@@ -10649,7 +11680,7 @@ const exportChatResponseToPdf = async () => {
                                          }
                                          const updatedDocs = [...documents.filter(d => d.id !== selectedOnlineDoc.id), selectedOnlineDoc];
                                          setDocuments(updatedDocs);
-                                         localStorage.setItem('grid_notepad_documents_v2', JSON.stringify(updatedDocs));
+                                         saveDocsLocalSafe(updatedDocs);
                                          showToast(t(`⚡ Dokumenti "${selectedOnlineDoc.title}" u rikthye në listën lokale me sukses!`, `⚡ Document "${selectedOnlineDoc.title}" restored to local list successfully!`));
                                       }}
                                       className={`px-2.5 py-1 text-[11px] font-bold rounded-md border flex items-center gap-1.5 shrink-0 active:scale-95 ${
@@ -10774,7 +11805,7 @@ const exportChatResponseToPdf = async () => {
                              </div>
                           )}
                           <div className="overflow-x-auto w-full">
-                             <div style={{ minWidth: `${Math.max(700, (selectedOnlineDoc?.headers?.length || 3) * 150)}px` }} className={`border rounded-xl overflow-hidden ${isDark ? "border-zinc-800" : "border-zinc-200"}`}>
+                             <div style={{ minWidth: `${Math.max(760, (selectedOnlineDoc?.headers?.length || 3) * 150 + 96)}px` }} className={`border rounded-xl overflow-hidden ${isDark ? "border-zinc-800" : "border-zinc-200"}`}>
                                 {/* GRID HEADERS */}
                              <div className={`flex border-b min-h-[34px] items-center shrink-0 ${isDark ? "bg-zinc-900/80 border-zinc-800 text-zinc-300" : "bg-zinc-50 border-zinc-200 text-zinc-700"}`}>
                                 <div className="w-12 shrink-0 border-r border-zinc-800/20 dark:border-zinc-200/10 flex items-center justify-center text-[10px] font-bold font-mono">
@@ -10796,6 +11827,9 @@ const exportChatResponseToPdf = async () => {
                                       )}
                                    </div>
                                 ))}
+                                <div className="w-24 shrink-0 border-l border-zinc-800/20 dark:border-zinc-200/10 flex items-center justify-center text-[10px] font-bold uppercase">
+                                   {t('MEDIA', 'MEDIA', 'ΜΕΣΑ')}
+                                </div>
                              </div>
                              {/* GRID BODY */}
                              <div className="divide-y divide-zinc-200 dark:divide-zinc-800/40">
@@ -10889,6 +11923,97 @@ const exportChatResponseToPdf = async () => {
                                             </div>
                                          );
                                       })}
+                                      {/* MEDIA COLUMN CELL (IMAGE + AUDIO) */}
+                                      <div className="w-24 shrink-0 border-l border-zinc-200/20 dark:border-zinc-800/20 px-1 py-0.5 flex items-center justify-center gap-1">
+                                         {r.image ? (
+                                            <div
+                                               onClick={() => {
+                                                  setPreviewImageMeta({
+                                                     fileName: r.imageName || `img_row_${rIdx + 1}.png`,
+                                                     readOnly: !isOnlineEditing,
+                                                     onDelete: () => handleOnlineRowMediaRemove(rIdx, 'image')
+                                                  });
+                                                  setPreviewImage(r.image as string);
+                                               }}
+                                               className="relative group/img w-6 h-6 shrink-0 cursor-pointer"
+                                               title={r.imageName || t('Kliko për parashikim, shkarkim ose fshirje', 'Tap to preview, download or delete')}
+                                            >
+                                               <img src={r.image} className="w-full h-full object-cover rounded opacity-85 hover:opacity-100 transition-opacity ring-1 ring-zinc-500/30" alt="Row media" />
+                                               {isOnlineEditing && (
+                                                  <button
+                                                     type="button"
+                                                     onClick={(e) => { e.stopPropagation(); handleOnlineRowMediaRemove(rIdx, 'image'); }}
+                                                     className="absolute -top-1 -right-1 bg-red-600 text-white rounded-full p-0.5 opacity-0 group-hover/img:opacity-100 shadow-lg scale-90 hover:scale-110 transition-all"
+                                                     title={t('Fshi Imazhin', 'Delete Image')}
+                                                  >
+                                                     <X className="w-2.5 h-2.5" />
+                                                  </button>
+                                               )}
+                                            </div>
+                                         ) : isOnlineEditing ? (
+                                            <label className="cursor-pointer hover:text-accent-500 p-1 rounded opacity-60 hover:opacity-100 transition-opacity" title={t('Ngarko imazh (PNG/JPEG/JPG)', 'Upload image (PNG/JPEG/JPG)')}>
+                                               <input
+                                                  type="file"
+                                                  accept="image/png, image/jpeg, .png, .jpeg, .jpg"
+                                                  className="hidden"
+                                                  onClick={() => { externalNavUntilRef.current = Date.now() + 60000; }}
+                                                  onChange={(e) => { if (e.target.files?.[0]) handleOnlineRowMediaUpload(rIdx, 'image', e.target.files[0]); e.target.value = ''; }}
+                                               />
+                                               <ImagePlus className="w-3.5 h-3.5 text-zinc-500 hover:text-accent-500" />
+                                            </label>
+                                         ) : null}
+
+                                         {r.audio ? (
+                                            <div className="flex items-center gap-0.5 shrink-0">
+                                               <button
+                                                  type="button"
+                                                  onClick={(e) => {
+                                                     e.stopPropagation();
+                                                     toggleInlineRowAudio(`online-${r.id || rIdx}`, String(r.audio), r.audioName || `audio_row_${rIdx + 1}.mp3`, r.audioMime, {
+                                                        rowId: r.id,
+                                                        rowIndex: rIdx,
+                                                        sourceScope: 'online',
+                                                        readOnly: !isOnlineEditing,
+                                                        onDelete: () => handleOnlineRowMediaRemove(rIdx, 'audio')
+                                                     });
+                                                  }}
+                                                  className={`p-1 rounded transition-colors ${playingRowAudioKey === `online-${r.id || rIdx}` ? 'bg-amber-500 text-black' : 'bg-indigo-500/15 text-indigo-400 hover:bg-indigo-500 hover:text-white'}`}
+                                                  title={`${r.audioName || 'Audio'} — ${t('Luaj / Ndalo Audio', 'Play / Pause Audio')}`}
+                                               >
+                                                  {playingRowAudioKey === `online-${r.id || rIdx}` ? <Pause className="w-3 h-3" /> : <Play className="w-3 h-3" />}
+                                               </button>
+                                               <button
+                                                  type="button"
+                                                  onClick={(e) => {
+                                                     e.stopPropagation();
+                                                     openAudioPlayerModal(`online-${r.id || rIdx}`, String(r.audio), r.audioName || `audio_row_${rIdx + 1}.mp3`, r.audioMime, {
+                                                        rowId: r.id,
+                                                        rowIndex: rIdx,
+                                                        sourceScope: 'online',
+                                                        title: r.audioName || `${t('Rrjeshti', 'Row')} #${rIdx + 1}`,
+                                                        readOnly: !isOnlineEditing,
+                                                        onDelete: () => handleOnlineRowMediaRemove(rIdx, 'audio')
+                                                     });
+                                                  }}
+                                                  className={`p-1 rounded transition-colors ${activeAudioTrack?.rowKey === `online-${r.id || rIdx}` ? 'bg-emerald-600 text-white' : 'bg-emerald-500/15 text-emerald-500 hover:bg-emerald-600 hover:text-white'}`}
+                                                  title={t('Audio Player (Luaj, Shkarko, Fshi)', 'Audio Player (Play, Download, Delete)')}
+                                               >
+                                                  <Music className="w-3 h-3" />
+                                               </button>
+                                            </div>
+                                         ) : isOnlineEditing ? (
+                                            <label className="cursor-pointer p-1 rounded opacity-60 hover:opacity-100 text-zinc-500 hover:text-indigo-500 transition-all shrink-0" title={t('Ngarko audio (MP3/M4A/AMR)', 'Upload audio (MP3/M4A/AMR)')}>
+                                               <input
+                                                  type="file"
+                                                  accept="audio/*,.mp3,.m4a,.amr,.mp4,.aac,.3gp"
+                                                  className="hidden"
+                                                  onClick={() => { externalNavUntilRef.current = Date.now() + 180000; }}
+                                                  onChange={(e) => { if (e.target.files?.[0]) handleOnlineRowMediaUpload(rIdx, 'audio', e.target.files[0]); e.target.value = ''; }}
+                                               />
+                                               <Music className="w-3.5 h-3.5" />
+                                            </label>
+                                         ) : null}
+                                      </div>
                                    </div>
                                    );
                                 })}
@@ -11438,7 +12563,7 @@ const exportChatResponseToPdf = async () => {
                                     });
                                     setDocuments(updatedDocs);
                                     latestDocsRef.current = updatedDocs;
-                                    localStorage.setItem('grid_notepad_documents_v2', JSON.stringify(updatedDocs));
+                                    saveDocsLocalSafe(updatedDocs);
                                     setCustomLabels(mergedLocalLabels);
                                     latestCustomLabelsRef.current = mergedLocalLabels;
                                     localStorage.setItem('customLabels', JSON.stringify(mergedLocalLabels));
@@ -12353,7 +13478,7 @@ const exportChatResponseToPdf = async () => {
                         name: backupName,
                         type: 'file',
                         size: `${(backupContent.length / 1024).toFixed(1)} KB`,
-                        date: new Date().toLocaleString(language === 'en' ? 'en-US' : 'sq-AL'),
+                        date: new Date().toLocaleString(dateLocale),
                         content: backupContent
                       }];
                       return {
@@ -12595,7 +13720,7 @@ const exportChatResponseToPdf = async () => {
                             { id: 'filled', label: t('Me shënime', 'Filled') },
                             { id: 'locked', label: t('Të kyçura', 'Locked') },
                             { id: 'unlocked', label: t('Të lira', 'Unlocked') },
-                            { id: 'images', label: t('Me imazhe', 'Images') }
+                            { id: 'images', label: t('Me Media (Foto/Audio)', 'Media (Img/Audio)', 'Πολυμέσα (Εικόνα/Ήχος)') }
                          ] as const).map(f => (
                             <button
                                key={f.id}
@@ -13315,7 +14440,7 @@ const exportChatResponseToPdf = async () => {
                         const updatedDocs = documents.filter(d => d.id !== id);
                         setDocuments(updatedDocs);
                         latestDocsRef.current = updatedDocs;
-                        localStorage.setItem('grid_notepad_documents_v2', JSON.stringify(updatedDocs));
+                        saveDocsLocalSafe(updatedDocs);
                         setCloudDocs(prev => prev.filter(d => d.id !== id));
                         markPendingSync([id]);
                         if (activeDocId === id) {
@@ -14621,7 +15746,7 @@ const exportChatResponseToPdf = async () => {
                         setDocuments(prevDocs => {
                            const next = [...prevDocs, newDoc];
                            latestDocsRef.current = next;
-                           localStorage.setItem('grid_notepad_documents_v2', JSON.stringify(next));
+                           saveDocsLocalSafe(next);
                            markPendingSync();
                            syncWithGoogleCloud(next, true);
                            return next;
@@ -14836,7 +15961,7 @@ const exportChatResponseToPdf = async () => {
                            setDocuments(prevDocs => {
                               const next = [...prevDocs, newDoc];
                               latestDocsRef.current = next;
-                              localStorage.setItem('grid_notepad_documents_v2', JSON.stringify(next));
+                              saveDocsLocalSafe(next);
                               markPendingSync();
                               syncWithGoogleCloud(next, true);
                               return next;
@@ -15249,43 +16374,9 @@ const exportChatResponseToPdf = async () => {
                        )}
                     </div>
                  ) : (
-                   <div className="flex flex-col gap-4">
-                       <div className={`p-4 rounded-xl text-sm leading-relaxed ${isDark ? "bg-zinc-800 text-zinc-300" : "bg-zinc-50 text-zinc-700"}`}>
-                          {t('Përshëndetje! Jam Asistenti juaj AI. Mund të analizoj të gjithë bllokun tuaj aktual, çfarëdo lloj të dhënash të keni në të (llogaritje për kg/arka, ditë pune, emra, raporte spërkatjesh, medikamente, etj). Më kërkoni t\'i analizoj apo përmbledh sipas dëshirës!', 'Hello! I am your AI Assistant. I can analyze your entire current notepad, whatever data you have in it (calculations, work days, names, spray reports, medicines, etc). Ask me to analyze or summarize as you like!')}
-                       </div>
-                       
-                       <div className="flex flex-col gap-2 mt-4">
-                          <span className={`text-xs font-semibold uppercase tracking-wider ${isDark ? "text-zinc-500" : "text-zinc-400"}`}>{t('Sugjerime të Shpejta', 'Quick Suggestions')}</span>
-                          <button 
-                             onClick={() => {
-                                 const p = t('Analizo të gjitha listat dhe shënimet, bëj llogaritjet e plota dhe më gjenero një arkivë raport PDF me detaje dhe tabela.', 'Analyze all lists and notes, run full calculations, and generate a detailed PDF archive report with tables.');
-                                 setAiChatInput(p);
-                                 askAi(p);
-                             }}
-                             className={`text-left p-3 rounded-lg text-sm transition-colors border ${isDark ? "bg-zinc-800 border-zinc-700 hover:bg-zinc-700" : "bg-white border-zinc-200 hover:bg-zinc-50 text-zinc-800"}`}
-                          >
-                             📄 {t('Bëj llogaritë & gjenero arkivë PDF me detaje', 'Calculate & generate detailed PDF archive')}
-                          </button>
-                          <button 
-                             onClick={() => {
-                                 const p = t('Të lutem analizo këtë bllok dhe më nxirr një raport të plotë bazuar në të dhënat që përmban.', 'Please analyze this notebook and generate a complete report based on its data.');
-                                 setAiChatInput(p);
-                                 askAi(p);
-                             }}
-                             className={`text-left p-3 rounded-lg text-sm transition-colors border ${isDark ? "bg-zinc-800 border-zinc-700 hover:bg-zinc-700" : "bg-white border-zinc-200 hover:bg-zinc-50 text-zinc-800"}`}
-                          >
-                             📊 {t('Më nxirr një raport të detajuar', 'Generate a detailed report')}
-                          </button>
-                          <button 
-                             onClick={() => {
-                                 const p = t('Pastro rrjeshtat që janë absolutisht të njëjtë dhe fshi rrjeshtat komplet bosh nëse ndodhen mes të dhënave, duke më ripërditësuar listën.', 'Clean exact duplicate rows and remove completely empty rows inside the data, then update the list.');
-                                 setAiChatInput(p);
-                                 askAi(p);
-                             }}
-                             className={`text-left p-3 rounded-lg text-sm transition-colors border ${isDark ? "bg-zinc-800 border-zinc-700 hover:bg-zinc-700" : "bg-white border-zinc-200 hover:bg-zinc-50 text-zinc-800"}`}
-                          >
-                             ✨ {t('Pastro duplikatet dhe rrjeshtat bosh', 'Clean duplicates and empty rows')}
-                          </button>
+                   <div className="flex items-center justify-center min-h-[160px]">
+                       <div className={`px-5 py-4 rounded-2xl text-sm sm:text-base font-medium text-center border ${isDark ? "bg-zinc-800/80 border-zinc-700 text-zinc-200" : "bg-zinc-50 border-zinc-200 text-zinc-700"}`}>
+                          {t("Përshëndetje, si mund t'ju ndihmoj?", 'Hello, how can I help you?', 'Γεια σας, πώς μπορώ να σας βοηθήσω;')}
                        </div>
                    </div>
                 )}
@@ -16231,7 +17322,7 @@ const exportChatResponseToPdf = async () => {
                                </span>
                             </div>
                             <p className={`text-[11px] leading-snug font-medium ${isDark ? 'text-zinc-400' : 'text-zinc-500'}`}>
-                               {(language === 'en' ? ENGLISH_WEEKDAYS_FULL : ALBANIAN_WEEKDAYS_FULL)[liveNow.getDay()]}, {liveNow.getDate()} {(language === 'en' ? ENGLISH_MONTHS : ALBANIAN_MONTHS)[liveNow.getMonth()]} {liveNow.getFullYear()} · {t('Sinkronizuar me orën e pajisjes', 'Synced with device clock')}
+                               {calWeekdaysFull[liveNow.getDay()]}, {liveNow.getDate()} {calMonths[liveNow.getMonth()]} {liveNow.getFullYear()} · {t('Sinkronizuar me orën e pajisjes', 'Synced with device clock')}
                                {calendarSettings.alarmsMuted && (
                                   <span className="text-amber-500 font-bold"> · {t('Alarmet në Pauzë', 'Alarms Muted')}</span>
                                )}
@@ -16576,7 +17667,7 @@ const exportChatResponseToPdf = async () => {
                                      }`}
                                      title={t('Kliko për të zgjedhur shpejt Muajin dhe Vitin', 'Tap to jump quickly to any Month & Year')}
                                   >
-                                     <span>{(language === 'en' ? ENGLISH_MONTHS : ALBANIAN_MONTHS)[month]} {year}</span>
+                                     <span>{calMonths[month]} {year}</span>
                                   </button>
                                   <button
                                      type="button"
@@ -16623,7 +17714,7 @@ const exportChatResponseToPdf = async () => {
                                      </button>
                                   </div>
                                   <div className="grid grid-cols-3 sm:grid-cols-4 gap-1.5">
-                                     {(language === 'en' ? ENGLISH_MONTHS : ALBANIAN_MONTHS).map((mLabel, mIdx) => (
+                                     {calMonths.map((mLabel, mIdx) => (
                                         <button
                                            key={mIdx}
                                            type="button"
@@ -16646,7 +17737,7 @@ const exportChatResponseToPdf = async () => {
 
                             {/* Full 42-Cell (6x7) Monthly Calendar Block (Mon - Sun) */}
                             <div className="grid grid-cols-7 gap-1 text-center">
-                               {(language === 'en' ? ENGLISH_WEEKDAYS_MON_SHORT : ALBANIAN_WEEKDAYS_MON_SHORT).map((wd) => (
+                               {calWeekdaysMonShort.map((wd) => (
                                   <div key={wd} className="py-1 text-[10px] font-extrabold uppercase tracking-wider text-zinc-500">
                                      {wd}
                                   </div>
@@ -16692,7 +17783,7 @@ const exportChatResponseToPdf = async () => {
                             <div className={`p-3 rounded-2xl border space-y-2.5 ${isDark ? 'bg-zinc-950/70 border-zinc-800' : 'bg-zinc-50 border-zinc-200'}`}>
                                <div className="flex flex-wrap items-center justify-between gap-2">
                                   <div className="text-xs font-extrabold">
-                                     📅 {(language === 'en' ? ENGLISH_WEEKDAYS_FULL : ALBANIAN_WEEKDAYS_FULL)[selDateObj.getDay()]}, {selDateObj.getDate()} {(language === 'en' ? ENGLISH_MONTHS : ALBANIAN_MONTHS)[selDateObj.getMonth()]} {selDateObj.getFullYear()}
+                                     📅 {calWeekdaysFull[selDateObj.getDay()]}, {selDateObj.getDate()} {calMonths[selDateObj.getMonth()]} {selDateObj.getFullYear()}
                                   </div>
                                   <button
                                      type="button"
@@ -17205,7 +18296,7 @@ const exportChatResponseToPdf = async () => {
                                                  else newDocs.push(docItem);
                                                  setDocuments(newDocs);
                                                  latestDocsRef.current = newDocs;
-                                                 localStorage.setItem('grid_notepad_documents_v2', JSON.stringify(newDocs));
+                                                 saveDocsLocalSafe(newDocs);
                                                  if (Array.isArray(docItem.tags) && docItem.tags.length > 0) {
                                                     const nextLabels = mergeAllLabels(latestCustomLabelsRef.current, docItem.tags, newDocs);
                                                     setCustomLabels(nextLabels);
@@ -17466,7 +18557,7 @@ const exportChatResponseToPdf = async () => {
                                    else newDocs.push(cDoc);
                                    setDocuments(newDocs);
                                    latestDocsRef.current = newDocs;
-                                   localStorage.setItem('grid_notepad_documents_v2', JSON.stringify(newDocs));
+                                   saveDocsLocalSafe(newDocs);
                                    if (Array.isArray(cDoc.tags) && cDoc.tags.length > 0) {
                                       const nextLabels = mergeAllLabels(latestCustomLabelsRef.current, cDoc.tags, newDocs);
                                       setCustomLabels(nextLabels);
@@ -17902,7 +18993,7 @@ const exportChatResponseToPdf = async () => {
                      <div className="min-w-0">
                         <h3 className="text-sm sm:text-base font-extrabold truncate flex items-center gap-2">
                            {t('Rreth NoteBook3 & Privatësia', 'About NoteBook3 & Privacy')}
-                           <span className="px-2 py-0.5 rounded-full text-[10px] font-mono font-black bg-emerald-500/15 text-emerald-500 border border-emerald-500/30">v1.5.2</span>
+                           <span className="px-2 py-0.5 rounded-full text-[10px] font-mono font-black bg-emerald-500/15 text-emerald-500 border border-emerald-500/30">v1.5.4</span>
                         </h3>
                         <p className={`text-[11px] truncate ${isDark ? 'text-zinc-400' : 'text-zinc-500'}`}>
                            com.notebook3.app · {t('Gati për Google Play & GitHub APK', 'Google Play & GitHub APK Ready')}
@@ -17917,10 +19008,10 @@ const exportChatResponseToPdf = async () => {
                {/* 4 Tabs */}
                <div className={`px-3 py-2 border-b flex gap-1.5 overflow-x-auto scrollbar-hide shrink-0 ${isDark ? 'border-zinc-800 bg-zinc-900' : 'border-zinc-200 bg-white'}`}>
                   {([
-                     { id: 'info', label: t('Info App', 'App Info') },
-                     { id: 'privacy', label: t('Privatësia', 'Privacy Policy') },
-                     { id: 'permissions', label: t('Lejet (Permissions)', 'Permissions') },
-                     { id: 'playstore', label: t('Play Store & APK', 'Play Store & APK') }
+                     { id: 'info', label: t('Info App', 'App Info', 'Πληροφορίες App') },
+                     { id: 'privacy', label: t('Privatësia', 'Privacy Policy', 'Απόρρητο') },
+                     { id: 'permissions', label: t('Lejet (Permissions)', 'Permissions', 'Άδειες') },
+                     { id: 'playstore', label: t('Play Store & APK', 'Play Store & APK', 'Play Store & APK') }
                   ] as const).map((tb) => (
                      <button
                         key={tb.id}
@@ -17988,7 +19079,7 @@ const exportChatResponseToPdf = async () => {
                         <div className="grid grid-cols-2 gap-2.5">
                            <div className={`p-3 rounded-xl border ${isDark ? 'bg-zinc-950/60 border-zinc-800' : 'bg-white border-zinc-200'}`}>
                               <div className="text-[10px] font-bold uppercase text-zinc-500">{t('Versioni', 'Version')}</div>
-                              <div className="text-sm font-black mt-0.5">1.5.2</div>
+                              <div className="text-sm font-black mt-0.5">1.5.4</div>
                            </div>
                            <div className={`p-3 rounded-xl border ${isDark ? 'bg-zinc-950/60 border-zinc-800' : 'bg-white border-zinc-200'}`}>
                               <div className="text-[10px] font-bold uppercase text-zinc-500">{t('ID e Paketës', 'Package ID')}</div>
@@ -18024,8 +19115,9 @@ const exportChatResponseToPdf = async () => {
                            type="button"
                            onClick={() => {
                               const policyText = t(
-                                 'NoteBook3 (com.notebook3.app) v1.5.2 — Publikues: Genti83 (në bashkëpunim me Gemini Studio). Politikë Privatësie: Offline-First, zero reklama/gjurmues, zero READ_CALENDAR ose MANAGE_EXTERNAL_STORAGE. Sinkronizimi Firebase/GitHub Gist dhe funksionet AI përdoren vetëm me kërkesë të përdoruesit, me të drejtë të plotë për fshirje të dhënash (Settings -> App Reset).',
-                                 'NoteBook3 (com.notebook3.app) v1.5.2 — Publisher: Genti83 (in collaboration with Gemini Studio). Privacy Policy: Offline-First, zero ads/trackers, no READ_CALENDAR or MANAGE_EXTERNAL_STORAGE. Optional cloud sync and AI features require explicit user action, with full user data deletion via Settings -> App Reset.'
+                                 'NoteBook3 (com.notebook3.app) v1.5.4 — Publikues: Genti83 (në bashkëpunim me Gemini Studio). Politikë Privatësie: Offline-First, zero reklama/gjurmues, zero READ_CALENDAR ose MANAGE_EXTERNAL_STORAGE. Sinkronizimi Firebase/GitHub Gist dhe funksionet AI përdoren vetëm me kërkesë të përdoruesit, me të drejtë të plotë për fshirje të dhënash (Settings -> App Reset).',
+                                 'NoteBook3 (com.notebook3.app) v1.5.4 — Publisher: Genti83 (in collaboration with Gemini Studio). Privacy Policy: Offline-First, zero ads/trackers, no READ_CALENDAR or MANAGE_EXTERNAL_STORAGE. Optional cloud sync and AI features require explicit user action, with full user data deletion via Settings -> App Reset.',
+                                 'NoteBook3 (com.notebook3.app) v1.5.4 — Εκδότης: Genti83 (σε συνεργασία με Gemini Studio). Πολιτική Απορρήτου: Offline-First, μηδέν διαφημίσεις/ιχνηλάτες, χωρίς READ_CALENDAR ή MANAGE_EXTERNAL_STORAGE. Ο συγχρονισμός Firebase/GitHub Gist και οι λειτουργίες AI ενεργοποιούνται μόνο από τον χρήστη, με πλήρη διαγραφή δεδομένων (Ρυθμίσεις -> Επαναφορά).'
                               );
                               navigator.clipboard.writeText(policyText);
                               showToast(t('✓ Politika e Privatësisë u kopjua!', '✓ Privacy Policy copied!'));
@@ -18338,10 +19430,32 @@ const exportChatResponseToPdf = async () => {
                        </div>
 
                        <div className="h-px w-full my-1 border-b border-zinc-500/20"></div>
-                       <h4 className="px-4 py-2 font-bold mb-1 text-xs uppercase tracking-wider text-accent-500">{t('Gjuha / Language', 'Language / Gjuha')}</h4>
-                       <button onClick={() => { const next = language === 'sq' ? 'en' : 'sq'; setLanguage(next); localStorage.setItem('grid_lang', next); showToast(next === 'en' ? 'Language switched to English' : 'Gjuha u kalua në Shqip'); }} className={`flex items-center gap-3 px-4 py-2.5 text-sm text-left font-medium transition-colors hover:bg-accent-500 hover:text-white`}>
-                           <Settings className="w-4 h-4 shrink-0" /> {t('Gjuha: Shqip (Kliko për Anglisht)', 'Language: English (Tap for Albanian)')}
-                       </button>
+                       <h4 className="px-4 py-2 font-bold mb-1 text-xs uppercase tracking-wider text-accent-500">{t('Gjuha / Language / Γλώσσα', 'Language / Gjuha / Γλώσσα', 'Γλώσσα / Language / Gjuha')}</h4>
+                       <div className="px-4 pb-2.5 grid grid-cols-3 gap-1.5">
+                          {([
+                             { id: 'sq', label: 'Shqip', toastMsg: 'Gjuha u kalua në Shqip' },
+                             { id: 'en', label: 'English', toastMsg: 'Language switched to English' },
+                             { id: 'el', label: 'Ελληνικά', toastMsg: 'Η γλώσσα άλλαξε σε Ελληνικά' }
+                          ] as const).map((langOpt) => (
+                             <button
+                                key={langOpt.id}
+                                type="button"
+                                onClick={() => {
+                                   setLanguage(langOpt.id);
+                                   localStorage.setItem('grid_lang', langOpt.id);
+                                   localStorage.setItem('language', langOpt.id);
+                                   showToast(langOpt.toastMsg);
+                                }}
+                                className={`h-9 rounded-xl border text-xs font-bold transition-all ${
+                                   language === langOpt.id
+                                      ? 'bg-accent-600 text-white border-accent-500 shadow-sm'
+                                      : isDark ? 'bg-zinc-800 border-zinc-700 text-zinc-300 hover:bg-zinc-700' : 'bg-zinc-100 border-zinc-300 text-zinc-800 hover:bg-zinc-200'
+                                }`}
+                             >
+                                {langOpt.label}
+                             </button>
+                          ))}
+                       </div>
                        <div className="h-px w-full my-1 border-b border-zinc-500/20"></div>
                        <h4 className="px-4 py-2 font-bold mb-1 text-xs uppercase tracking-wider text-purple-500">{t('Editimi në Masë (Batch)', 'Bulk Editing (Batch)')}</h4>
                        <button onClick={handleCapitalizeTitles} className={`flex items-center gap-3 px-4 py-2.5 text-sm text-left font-medium transition-colors hover:bg-purple-600 hover:text-white`}>
@@ -18354,7 +19468,7 @@ const exportChatResponseToPdf = async () => {
                        <h4 className="px-4 py-2 font-bold mb-1 text-xs uppercase tracking-wider text-accent-500">{t('Siguria & Aksesi', 'Security & Access')}</h4>
                        <div className="flex items-center justify-between px-4 py-2.5 hover:bg-accent-500/10 transition-colors">
                            <div className="flex items-center gap-3 text-sm font-medium">
-                               <Lock className="w-4 h-4 shrink-0 text-accent-500" /> Password (ON / OFF)
+                               <Lock className="w-4 h-4 shrink-0 text-accent-500" /> {t('Fjalëkalimi (ON / OFF)', 'Password (ON / OFF)', 'Κωδικός (ON / OFF)')}
                            </div>
                            <button onClick={() => {
                                if (localStorage.getItem('grid_notepad_pin')) {
@@ -18588,7 +19702,7 @@ const exportChatResponseToPdf = async () => {
                            <span className="flex items-center gap-3">
                               <ShieldCheck className="w-4 h-4 shrink-0" /> {t('Rreth App, Privatësia & Lejet', 'About App, Privacy & Permissions')}
                            </span>
-                           <span className="text-[10px] font-mono opacity-80">v1.5.2</span>
+                           <span className="text-[10px] font-mono opacity-80">v1.5.4</span>
                        </button>
                        <button
                           onClick={() => {
@@ -19302,13 +20416,13 @@ const exportChatResponseToPdf = async () => {
   // ACTIVE DOCUMENT VIEW
   const activeDocMeta = documents.find(d => d.id === activeDocId);
   const isDocReadOnly = Boolean(activeDocMeta?.isReadOnly);
-  const hasRowContent = (r: GridRow) => Boolean(headers.some((_, c) => String(r[`col${c + 1}`] || '').trim()) || r.image);
+  const hasRowContent = (r: GridRow) => Boolean(headers.some((_, c) => String(r[`col${c + 1}`] || '').trim()) || r.image || r.audio);
   const filledRowsCount = rows.filter(hasRowContent).length;
   const visibleRowsList = rows.map((r, rIndex) => ({ r, rIndex })).filter(({ r }) => {
      if (rowFilter === 'filled' && !hasRowContent(r)) return false;
      if (rowFilter === 'locked' && !(r.status === 'ok' || r.status === 'blue' || r.status === 'yellow' || r.status === 'x' || r.status === 'lock')) return false;
      if (rowFilter === 'unlocked' && (r.status === 'ok' || r.status === 'blue' || r.status === 'yellow' || r.status === 'x' || r.status === 'lock')) return false;
-     if (rowFilter === 'images' && !r.image) return false;
+     if (rowFilter === 'images' && !r.image && !r.audio) return false;
      if (!docSearch.trim()) return true;
      const q = docSearch.toLowerCase();
      return headers.some((_, c) => (r[`col${c + 1}`] || '').toString().toLowerCase().includes(q));
@@ -19351,6 +20465,7 @@ const exportChatResponseToPdf = async () => {
                     readOnly={isDocReadOnly}
                     onChange={(val: string) => {
                        if (isDocReadOnly) return;
+                       lastUserTypingTsRef.current = Date.now();
                        setTitle(val);
                        updateActiveDocumentState(val, rows, headers);
                     }}
@@ -19727,6 +20842,7 @@ const exportChatResponseToPdf = async () => {
                   initialValue={h}
                   onChange={(val: string) => {
                       if (isDocReadOnly) return;
+                      lastUserTypingTsRef.current = Date.now();
                       const newH = [...headers];
                       newH[i] = val;
                       setHeaders(newH);
@@ -19739,10 +20855,10 @@ const exportChatResponseToPdf = async () => {
                 />
               </div>
             ))}
-            <div className={`w-16 shrink-0 border-l flex items-center justify-center text-xs font-bold ${
+            <div className={`w-24 shrink-0 border-l flex items-center justify-center text-[10px] font-bold uppercase tracking-wider ${
               isDark ? "bg-zinc-950 border-zinc-800 text-zinc-500" : "bg-white border-zinc-200 text-zinc-500"
             }`}>
-              IMG
+              {t('MEDIA', 'MEDIA', 'ΜΕΣΑ')}
             </div>
           </div>
           {/* GRID BODY */}
@@ -19923,14 +21039,15 @@ const exportChatResponseToPdf = async () => {
                     </div>
                   ))}
                   
-                  {/* Image Column */}
-                  <div className={`w-16 shrink-0 border-l relative p-1 flex items-center justify-center group/img ${
+                  {/* Media Column (Image PNG/JPEG/JPG + Audio MP3/M4A/AMR) */}
+                  <div className={`w-24 shrink-0 border-l relative px-1 py-0.5 flex items-center justify-center gap-1 group/img ${
                       isDark ? "border-zinc-800" : "border-zinc-200"
                   }`}>
+                     {/* IMAGE SLOT */}
                      {r.image ? (
                         <div 
-                          className={`w-full h-full relative cursor-pointer flex items-center justify-center p-0.5 transition-all ${selectedRows.has(rIndex) ? 'ring-2 ring-blue-500 rounded bg-blue-500/20' : ''}`}
-                          onPointerDown={(e) => {
+                          className={`w-10 h-7 relative cursor-pointer flex items-center justify-center p-0.5 transition-all shrink-0 ${selectedRows.has(rIndex) ? 'ring-2 ring-blue-500 rounded bg-blue-500/20' : ''}`}
+                          onPointerDown={() => {
                              if (isRowMoveMode) return;
                              isLongPress.current[rIndex] = false;
                              pressTimers.current[rIndex] = setTimeout(() => {
@@ -19943,37 +21060,89 @@ const exportChatResponseToPdf = async () => {
                                  showToast(t("Imazhi (Rrjeshti) u zgjodh!", "Row image selected!"));
                              }, 2000);
                           }}
-                          onPointerUp={(e) => {
+                          onPointerUp={() => {
                              if (pressTimers.current[rIndex]) clearTimeout(pressTimers.current[rIndex]);
                              if (isRowMoveMode) return;
                              if (!isLongPress.current[rIndex]) {
+                                 setPreviewImageMeta({
+                                     fileName: r.imageName || `img_row_${rIndex + 1}.png`,
+                                     readOnly: isDocReadOnly,
+                                     onDelete: () => removeImage(rIndex)
+                                 });
                                  setPreviewImage(r.image as string);
                              }
                           }}
-                          onPointerLeave={(e) => {
+                          onPointerLeave={() => {
                              if (pressTimers.current[rIndex]) clearTimeout(pressTimers.current[rIndex]);
                           }}
-                          onPointerCancel={(e) => {
+                          onPointerCancel={() => {
                              if (pressTimers.current[rIndex]) clearTimeout(pressTimers.current[rIndex]);
                           }}
+                          title={r.imageName || t('Kliko për parashikim, shkarkim ose fshirje', 'Tap to preview, download or delete')}
                         >
-                           <img src={r.image} className="w-full h-full object-cover rounded opacity-80 hover:opacity-100 transition-opacity ring-1 ring-zinc-500/30" alt="Row upload" />
+                           <img src={r.image} className="w-full h-full object-cover rounded opacity-85 hover:opacity-100 transition-opacity ring-1 ring-zinc-500/30" alt="Row upload" />
                            {!isDocReadOnly && (
-                             <button onClick={(e) => { e.stopPropagation(); removeImage(rIndex); }} className="absolute -top-1.5 -right-1.5 bg-red-500 text-white rounded-full p-0.5 opacity-0 group-hover/img:opacity-100 shadow-lg scale-90 hover:scale-110 transition-all">
-                                 <X className="w-3 h-3" />
+                             <button onClick={(e) => { e.stopPropagation(); removeImage(rIndex); }} className="absolute -top-1 -right-1 bg-red-600 text-white rounded-full p-0.5 opacity-0 group-hover/img:opacity-100 shadow-lg scale-90 hover:scale-110 transition-all" title={t('Fshi Imazhin', 'Delete Image')}>
+                                 <X className="w-2.5 h-2.5" />
                              </button>
                            )}
                         </div>
                      ) : !isDocReadOnly ? (
-                        <div className="w-full h-full flex flex-col items-center justify-center opacity-30 hover:opacity-100 transition-all rounded gap-1.5 relative group/imgbtn">
-                           <label className="cursor-pointer hover:text-accent-500 w-full flex justify-center items-center h-1/2" title={t("Ngarko imazh (JPG/PNG)", "Upload image (JPG/PNG)")}>
-                             <input type="file" accept="image/png, image/jpeg" className="hidden" onClick={() => { externalNavUntilRef.current = Date.now() + 60000; }} onChange={(e) => { if (e.target.files && e.target.files[0]) handleImageUpload(rIndex, e.target.files[0]); }} />
-                             <ImagePlus className="w-4 h-4 text-zinc-500" />
+                        <div className="flex items-center justify-center gap-0.5 opacity-45 hover:opacity-100 transition-opacity">
+                           <label className="cursor-pointer hover:text-accent-500 p-1 rounded" title={t("Ngarko imazh (PNG/JPEG/JPG)", "Upload image (PNG/JPEG/JPG)")}>
+                             <input type="file" accept="image/png, image/jpeg, .png, .jpeg, .jpg" className="hidden" onClick={() => { externalNavUntilRef.current = Date.now() + 60000; }} onChange={(e) => { if (e.target.files && e.target.files[0]) handleImageUpload(rIndex, e.target.files[0]); e.target.value = ''; }} />
+                             <ImagePlus className="w-3.5 h-3.5 text-zinc-500 hover:text-accent-500" />
                            </label>
-                           <button onClick={() => generatePlaceholderImage(rIndex)} className="text-zinc-500 hover:text-teal-500 transition-colors" title={t("Gjenero Imazh Placeholder", "Generate Placeholder Image")}>
-                             <Sparkles className="w-4 h-4" />
+                           <button type="button" onClick={() => generatePlaceholderImage(rIndex)} className="p-0.5 text-zinc-500 hover:text-teal-500 transition-colors" title={t("Gjenero Imazh Placeholder", "Generate Placeholder Image")}>
+                             <Sparkles className="w-3 h-3" />
                            </button>
                         </div>
+                     ) : null}
+
+                     {/* AUDIO SLOT (MP3 / M4A / AMR) */}
+                     {r.audio ? (
+                        <div className="flex items-center gap-0.5 shrink-0">
+                           <button
+                             type="button"
+                             onClick={(e) => {
+                                e.stopPropagation();
+                                toggleInlineRowAudio(`local-${r.id || rIndex}`, String(r.audio), r.audioName || `audio_row_${rIndex + 1}.mp3`, r.audioMime, {
+                                  rowId: r.id,
+                                  rowIndex: rIndex,
+                                  sourceScope: 'local',
+                                  readOnly: isDocReadOnly,
+                                  onDelete: () => removeAudio(rIndex)
+                                });
+                             }}
+                             className={`p-1 rounded transition-colors ${playingRowAudioKey === `local-${r.id || rIndex}` ? 'bg-amber-500 text-black' : 'bg-indigo-500/15 text-indigo-400 hover:bg-indigo-500 hover:text-white'}`}
+                             title={`${r.audioName || 'Audio'} — ${t('Luaj / Ndalo Audio', 'Play / Pause Audio')}`}
+                           >
+                             {playingRowAudioKey === `local-${r.id || rIndex}` ? <Pause className="w-3 h-3" /> : <Play className="w-3 h-3" />}
+                           </button>
+                           <button
+                             type="button"
+                             onClick={(e) => {
+                                e.stopPropagation();
+                                openAudioPlayerModal(`local-${r.id || rIndex}`, String(r.audio), r.audioName || `audio_row_${rIndex + 1}.mp3`, r.audioMime, {
+                                  rowId: r.id,
+                                  rowIndex: rIndex,
+                                  sourceScope: 'local',
+                                  title: r.audioName || `${t('Rrjeshti', 'Row')} #${rIndex + 1}`,
+                                  readOnly: isDocReadOnly,
+                                  onDelete: () => removeAudio(rIndex)
+                                });
+                             }}
+                             className={`p-1 rounded transition-colors ${activeAudioTrack?.rowKey === `local-${r.id || rIndex}` ? 'bg-emerald-600 text-white' : 'bg-emerald-500/15 text-emerald-500 hover:bg-emerald-600 hover:text-white'}`}
+                             title={t('Audio Player (Luaj, Shkarko, Fshi)', 'Audio Player (Play, Download, Delete)')}
+                           >
+                             <Music className="w-3 h-3" />
+                           </button>
+                        </div>
+                     ) : !isDocReadOnly ? (
+                        <label className="cursor-pointer p-1 rounded opacity-45 hover:opacity-100 text-zinc-500 hover:text-indigo-500 transition-all shrink-0" title={t("Ngarko audio (MP3/M4A/AMR)", "Upload audio (MP3/M4A/AMR)")}>
+                           <input type="file" accept="audio/*,.mp3,.m4a,.amr,.mp4,.aac,.3gp" className="hidden" onClick={() => { externalNavUntilRef.current = Date.now() + 180000; }} onChange={(e) => { if (e.target.files && e.target.files[0]) handleAudioUpload(rIndex, e.target.files[0]); e.target.value = ''; }} />
+                           <Music className="w-3.5 h-3.5" />
+                        </label>
                      ) : null}
                   </div>
                 </div>
@@ -20078,7 +21247,15 @@ const exportChatResponseToPdf = async () => {
                            const updatedDocs = documents.map(d => {
                                if (d.id === pd.documentId) {
                                    const newRowsWithImages = pd.newRows.map((nr: any, idx: number) => {
-                                       return { ...nr, image: d.rows[idx]?.image || null };
+                                       const prevRow = d.rows[idx];
+                                       return {
+                                         ...nr,
+                                         image: prevRow?.image || '',
+                                         imageName: prevRow?.imageName || '',
+                                         audio: prevRow?.audio || '',
+                                         audioName: prevRow?.audioName || '',
+                                         audioMime: prevRow?.audioMime || ''
+                                       };
                                    });
                                    if (activeDocId === d.id) {
                                       setRows(newRowsWithImages);
@@ -20092,7 +21269,7 @@ const exportChatResponseToPdf = async () => {
                            });
                            setDocuments(updatedDocs);
                            latestDocsRef.current = updatedDocs;
-                           localStorage.setItem('grid_notepad_documents_v2', JSON.stringify(updatedDocs));
+                           saveDocsLocalSafe(updatedDocs);
                            markPendingSync();
                            showToast(t("Struktura u përditësua nga AI!", "Structure updated by AI!"));
                            
@@ -20169,12 +21346,292 @@ const exportChatResponseToPdf = async () => {
       )}
       {/* IMAGE PREVIEW MODAL */}
       {previewImage && (
-         <div className="fixed inset-0 z-[70] flex items-center justify-center overflow-y-auto bg-black/90 p-3 sm:p-4 animate-in fade-in" onClick={() => setPreviewImage(null)}>
-            <div className="relative max-w-5xl w-full h-full flex items-center justify-center" onClick={e => e.stopPropagation()}>
-               <img src={previewImage} className="max-w-full max-h-[90dvh] object-contain rounded-lg" alt="Preview Full" />
-               <button onClick={() => setPreviewImage(null)} className="absolute top-4 right-4 p-2 bg-red-600 hover:bg-red-500 text-white rounded-full shadow-lg transition-colors">
-                  <X className="w-6 h-6" />
+         <div className="fixed inset-0 z-[560] flex items-center justify-center overflow-y-auto bg-black/90 p-3 sm:p-4 animate-in fade-in" onClick={() => { setPreviewImage(null); setPreviewImageMeta(null); }}>
+            <div className="relative max-w-5xl w-full flex flex-col items-center justify-center gap-3" onClick={e => e.stopPropagation()}>
+               <div className="w-full max-w-2xl flex items-center justify-between gap-2 px-3 py-2 rounded-2xl bg-zinc-900/90 border border-zinc-700 text-white">
+                  <span className="text-xs font-bold truncate">{previewImageMeta?.fileName || t('Imazhi i Rrjeshtit', 'Row Image')}</span>
+                  <div className="flex items-center gap-2 shrink-0">
+                     <button
+                        type="button"
+                        onClick={() => handleDownloadRowMedia(previewImage, previewImageMeta?.fileName || 'notebook_image.png', 'image')}
+                        className="px-3 py-1.5 rounded-xl bg-emerald-600 hover:bg-emerald-500 text-white text-xs font-bold flex items-center gap-1.5"
+                     >
+                        <Download className="w-3.5 h-3.5" /> {t('Shkarko', 'Download', 'Λήψη')}
+                     </button>
+                     {previewImageMeta?.onDelete && !previewImageMeta.readOnly && (
+                        <button
+                           type="button"
+                           onClick={() => {
+                              const delFn = previewImageMeta.onDelete;
+                              setPreviewImage(null);
+                              setPreviewImageMeta(null);
+                              delFn?.();
+                           }}
+                           className="px-3 py-1.5 rounded-xl bg-red-600 hover:bg-red-500 text-white text-xs font-bold flex items-center gap-1.5"
+                        >
+                           <Trash2 className="w-3.5 h-3.5" /> {t('Fshi', 'Delete', 'Διαγραφή')}
+                        </button>
+                     )}
+                     <button type="button" onClick={() => { setPreviewImage(null); setPreviewImageMeta(null); }} className="p-1.5 bg-red-600 hover:bg-red-500 text-white rounded-xl transition-colors" title={t('Mbyll', 'Close')}>
+                        <X className="w-4 h-4" />
+                     </button>
+                  </div>
+               </div>
+               <img src={previewImage} className="max-w-full max-h-[80dvh] object-contain rounded-xl border border-white/10" alt="Preview Full" />
+            </div>
+         </div>
+      )}
+      {/* FLOATING MINI AUDIO PLAYER BAR (WHEN MINIMIZED / INLINE PLAYBACK) */}
+      {activeAudioTrack && !isAudioModalOpen && (
+         <div className={`fixed bottom-3 left-1/2 -translate-x-1/2 z-[120] w-[calc(100vw-24px)] max-w-lg rounded-2xl border px-3 py-2 shadow-2xl backdrop-blur-md transition-all animate-in fade-in slide-in-from-bottom-3 ${isDark ? "bg-zinc-900/95 border-indigo-500/40 text-zinc-100" : "bg-white/95 border-indigo-300 text-zinc-900"}`}>
+            <div className="flex items-center gap-2">
+               <button
+                  type="button"
+                  onClick={toggleAudioPlayPause}
+                  className={`p-2 rounded-xl shrink-0 transition-colors ${playingRowAudioKey === activeAudioTrack.rowKey ? 'bg-amber-500 text-black hover:bg-amber-400' : 'bg-indigo-600 text-white hover:bg-indigo-500'}`}
+                  title={playingRowAudioKey === activeAudioTrack.rowKey ? t('Ndalo', 'Pause') : t('Luaj', 'Play')}
+               >
+                  {playingRowAudioKey === activeAudioTrack.rowKey ? <Pause className="w-4 h-4" /> : <Play className="w-4 h-4" />}
                </button>
+               <div className="flex-1 min-w-0">
+                  <div className="flex items-center justify-between gap-2">
+                     <span className="text-xs font-bold truncate">{activeAudioTrack.title}</span>
+                     <span className="text-[10px] font-mono text-zinc-500 shrink-0">
+                        {formatAudioTime(audioCurrentTime)} / {formatAudioTime(audioDuration)}
+                     </span>
+                  </div>
+                  <input
+                     type="range"
+                     min={0}
+                     max={audioDuration > 0 ? audioDuration : 100}
+                     step={0.1}
+                     value={audioDuration > 0 ? Math.min(audioCurrentTime, audioDuration) : 0}
+                     onChange={(e) => seekAudioTo(parseFloat(e.target.value))}
+                     className="w-full h-1.5 mt-1 accent-indigo-500 cursor-pointer"
+                  />
+               </div>
+               <div className="flex items-center gap-1 shrink-0">
+                  {audioPlaylist.length > 1 && (
+                     <>
+                        <button type="button" onClick={() => stepAudioTrack(-1)} className="p-1.5 rounded-lg hover:bg-zinc-500/15 transition-colors" title={t('Përpara', 'Previous track')}>
+                           <SkipBack className="w-3.5 h-3.5" />
+                        </button>
+                        <button type="button" onClick={() => stepAudioTrack(1)} className="p-1.5 rounded-lg hover:bg-zinc-500/15 transition-colors" title={t('Tjetri', 'Next track')}>
+                           <SkipForward className="w-3.5 h-3.5" />
+                        </button>
+                     </>
+                  )}
+                  <button
+                     type="button"
+                     onClick={() => setIsAudioModalOpen(true)}
+                     className="p-1.5 rounded-xl bg-indigo-500/15 text-indigo-400 hover:bg-indigo-600 hover:text-white transition-colors"
+                     title={t('Zgjero Player', 'Expand Player')}
+                  >
+                     <Maximize2 className="w-3.5 h-3.5" />
+                  </button>
+                  <button
+                     type="button"
+                     onClick={stopAndCloseAudioPlayer}
+                     className="p-1.5 rounded-xl bg-red-600 hover:bg-red-500 text-white transition-colors"
+                     title={t('Ndalo & Mbyll', 'Stop & Close')}
+                  >
+                     <X className="w-3.5 h-3.5" />
+                  </button>
+               </div>
+            </div>
+         </div>
+      )}
+
+      {/* FULL BUILT-IN AUDIO PLAYER MODAL */}
+      {activeAudioTrack && isAudioModalOpen && (
+         <div className="fixed inset-0 z-[560] flex items-center justify-center overflow-y-auto bg-black/80 backdrop-blur-sm p-3 sm:p-4 animate-in fade-in" onClick={() => setIsAudioModalOpen(false)}>
+            <div onClick={e => e.stopPropagation()} className={`w-full max-w-md max-w-[calc(100vw-24px)] rounded-2xl border p-4 sm:p-5 shadow-2xl space-y-3.5 ${isDark ? "bg-zinc-900 border-zinc-700 text-zinc-100" : "bg-white border-zinc-200 text-zinc-900"}`}>
+               {/* Header */}
+               <div className="flex items-center justify-between gap-2 border-b border-zinc-500/20 pb-2.5">
+                  <div className="flex items-center gap-2.5 min-w-0">
+                     <div className={`p-2.5 rounded-xl shrink-0 ${playingRowAudioKey === activeAudioTrack.rowKey ? 'bg-amber-500/20 text-amber-400 animate-pulse' : 'bg-indigo-500/15 text-indigo-500'}`}>
+                        <Music className="w-4 h-4" />
+                     </div>
+                     <div className="min-w-0">
+                        <div className="flex items-center gap-1.5">
+                           <span className="text-[10px] font-extrabold uppercase tracking-wider text-indigo-400">
+                              {t('Audio Player', 'Audio Player')}
+                           </span>
+                           {audioPlaylist.length > 1 && (
+                              <span className="text-[10px] font-mono text-zinc-500">
+                                 ({Math.max(1, audioPlaylist.findIndex(x => x.rowKey === activeAudioTrack.rowKey) + 1)}/{audioPlaylist.length})
+                              </span>
+                           )}
+                        </div>
+                        <h3 className="text-sm font-extrabold truncate">{activeAudioTrack.title}</h3>
+                        <p className="text-[11px] text-zinc-500 truncate">
+                           {activeAudioTrack.fileName} · {formatBytesReadable(activeAudioTrack.sizeBytes)}
+                        </p>
+                     </div>
+                  </div>
+                  <div className="flex items-center gap-1.5 shrink-0">
+                     <button
+                        type="button"
+                        onClick={() => setIsAudioModalOpen(false)}
+                        className="p-1.5 rounded-xl bg-blue-600 hover:bg-blue-500 text-white transition-colors"
+                        title={t('Minimizo Player', 'Minimize Player')}
+                     >
+                        <Minimize2 className="w-4 h-4" />
+                     </button>
+                     <button
+                        type="button"
+                        onClick={stopAndCloseAudioPlayer}
+                        className="p-1.5 rounded-xl bg-red-600 hover:bg-red-500 text-white transition-colors"
+                        title={t('Ndalo & Mbyll', 'Stop & Close')}
+                     >
+                        <X className="w-4 h-4" />
+                     </button>
+                  </div>
+               </div>
+
+               {/* Interactive Timeline & Seek Slider */}
+               <div className={`rounded-2xl border p-3.5 space-y-3 ${isDark ? "bg-zinc-950/60 border-zinc-800" : "bg-zinc-50 border-zinc-200"}`}>
+                  <div className="space-y-1">
+                     <input
+                        type="range"
+                        min={0}
+                        max={audioDuration > 0 ? audioDuration : 100}
+                        step={0.1}
+                        value={audioDuration > 0 ? Math.min(audioCurrentTime, audioDuration) : 0}
+                        onChange={(e) => seekAudioTo(parseFloat(e.target.value))}
+                        className="w-full h-2 accent-indigo-500 cursor-pointer rounded-lg"
+                     />
+                     <div className="flex items-center justify-between text-[11px] font-mono text-zinc-500">
+                        <span>{formatAudioTime(audioCurrentTime)}</span>
+                        <span className="text-[10px] font-sans font-bold uppercase text-indigo-400">
+                           {playingRowAudioKey === activeAudioTrack.rowKey ? t('Po luhet', 'Playing') : t('Në pauzë', 'Paused')}
+                        </span>
+                        <span>{formatAudioTime(audioDuration)}</span>
+                     </div>
+                  </div>
+
+                  {/* Primary Transport Controls */}
+                  <div className="flex items-center justify-center gap-2 sm:gap-3">
+                     <button
+                        type="button"
+                        disabled={audioPlaylist.length <= 1}
+                        onClick={() => stepAudioTrack(-1)}
+                        className={`p-2 rounded-xl transition-colors ${audioPlaylist.length <= 1 ? 'opacity-30 cursor-not-allowed' : (isDark ? 'bg-zinc-800 hover:bg-zinc-700 text-zinc-200' : 'bg-white border border-zinc-200 hover:bg-zinc-100 text-zinc-700')}`}
+                        title={t('Audio e mëparshme', 'Previous track')}
+                     >
+                        <SkipBack className="w-4 h-4" />
+                     </button>
+                     <button
+                        type="button"
+                        onClick={() => skipAudioBy(-10)}
+                        className={`px-2.5 py-2 rounded-xl text-[11px] font-bold transition-colors ${isDark ? 'bg-zinc-800 hover:bg-zinc-700 text-zinc-200' : 'bg-white border border-zinc-200 hover:bg-zinc-100 text-zinc-700'}`}
+                        title={t('Prapa 10 sekonda', 'Back 10s')}
+                     >
+                        -10s
+                     </button>
+                     <button
+                        type="button"
+                        onClick={toggleAudioPlayPause}
+                        className={`p-3.5 rounded-2xl shadow-lg transition-all active:scale-95 ${playingRowAudioKey === activeAudioTrack.rowKey ? 'bg-amber-500 text-black hover:bg-amber-400' : 'bg-indigo-600 text-white hover:bg-indigo-500'}`}
+                        title={playingRowAudioKey === activeAudioTrack.rowKey ? t('Ndalo', 'Pause') : t('Luaj', 'Play')}
+                     >
+                        {playingRowAudioKey === activeAudioTrack.rowKey ? <Pause className="w-5 h-5" /> : <Play className="w-5 h-5" />}
+                     </button>
+                     <button
+                        type="button"
+                        onClick={() => skipAudioBy(10)}
+                        className={`px-2.5 py-2 rounded-xl text-[11px] font-bold transition-colors ${isDark ? 'bg-zinc-800 hover:bg-zinc-700 text-zinc-200' : 'bg-white border border-zinc-200 hover:bg-zinc-100 text-zinc-700'}`}
+                        title={t('Përpara 10 sekonda', 'Forward 10s')}
+                     >
+                        +10s
+                     </button>
+                     <button
+                        type="button"
+                        disabled={audioPlaylist.length <= 1}
+                        onClick={() => stepAudioTrack(1)}
+                        className={`p-2 rounded-xl transition-colors ${audioPlaylist.length <= 1 ? 'opacity-30 cursor-not-allowed' : (isDark ? 'bg-zinc-800 hover:bg-zinc-700 text-zinc-200' : 'bg-white border border-zinc-200 hover:bg-zinc-100 text-zinc-700')}`}
+                        title={t('Audio tjetër', 'Next track')}
+                     >
+                        <SkipForward className="w-4 h-4" />
+                     </button>
+                  </div>
+
+                  {/* Speed & Volume Bar */}
+                  <div className="flex items-center justify-between gap-3 pt-1 border-t border-zinc-500/15">
+                     <button
+                        type="button"
+                        onClick={cycleAudioSpeed}
+                        className={`px-2.5 py-1 rounded-lg text-[11px] font-mono font-bold transition-colors ${isDark ? 'bg-zinc-800 hover:bg-zinc-700 text-indigo-300' : 'bg-white border border-zinc-200 hover:bg-zinc-100 text-indigo-600'}`}
+                        title={t('Shpejtësia e dëgjimit', 'Playback Speed')}
+                     >
+                        {audioPlaybackRate}x
+                     </button>
+                     <div className="flex items-center gap-2 flex-1 max-w-[180px]">
+                        <button
+                           type="button"
+                           onClick={toggleAudioMute}
+                           className="p-1 rounded-lg hover:bg-zinc-500/15 text-zinc-400 hover:text-zinc-200 transition-colors"
+                           title={t('Hesht / Hap zërin', 'Mute / Unmute')}
+                        >
+                           {isAudioMuted || audioVolume === 0 ? <VolumeX className="w-4 h-4 text-red-400" /> : <Volume2 className="w-4 h-4" />}
+                        </button>
+                        <input
+                           type="range"
+                           min={0}
+                           max={1}
+                           step={0.05}
+                           value={isAudioMuted ? 0 : audioVolume}
+                           onChange={(e) => changeAudioVolume(parseFloat(e.target.value))}
+                           className="w-full h-1.5 accent-indigo-500 cursor-pointer"
+                        />
+                     </div>
+                  </div>
+               </div>
+
+               {(audioPlayerError || /\.amr$/i.test(activeAudioTrack.fileName) || (activeAudioTrack.mime || '').toLowerCase().includes('amr')) && (
+                  <p className="text-[11px] text-amber-500 bg-amber-500/10 border border-amber-500/20 rounded-xl px-3 py-2">
+                     {t(
+                        'Shënim: Formati .AMR mund të mos mbështetet direkt nga disa shfletues; klikoni "Shkarko" për ta dëgjuar në telefon.',
+                        'Note: Some browsers cannot decode .AMR inline; tap "Download" to play with your device media player.',
+                        'Σημείωση: Ορισμένα προγράμματα περιήγησης δεν αναπαράγουν .AMR απευθείας· πατήστε «Λήψη» για αναπαραγωγή στη συσκευή.'
+                     )}
+                  </p>
+               )}
+
+               <div className="flex flex-wrap justify-between items-center gap-2 pt-2 border-t border-zinc-500/15">
+                  <button
+                     type="button"
+                     onClick={() => setIsAudioModalOpen(false)}
+                     className="px-3 py-2 rounded-xl bg-blue-600 hover:bg-blue-500 text-white text-xs font-bold flex items-center gap-1.5"
+                  >
+                     <Minimize2 className="w-3.5 h-3.5" /> {t('Minimizo', 'Minimize')}
+                  </button>
+                  <div className="flex items-center gap-2 ml-auto">
+                     <button
+                        type="button"
+                        onClick={() => handleDownloadRowMedia(activeAudioTrack.dataUrl, activeAudioTrack.fileName, 'audio')}
+                        className="px-3.5 py-2 rounded-xl bg-emerald-600 hover:bg-emerald-500 text-white text-xs font-bold flex items-center gap-1.5"
+                     >
+                        <Download className="w-3.5 h-3.5" /> {t('Shkarko', 'Download', 'Λήψη')}
+                     </button>
+                     {activeAudioTrack.onDelete && !activeAudioTrack.readOnly && (
+                        <button
+                           type="button"
+                           onClick={() => {
+                              const delFn = activeAudioTrack.onDelete;
+                              stopAndCloseAudioPlayer();
+                              delFn?.();
+                           }}
+                           className="px-3.5 py-2 rounded-xl bg-red-600 hover:bg-red-500 text-white text-xs font-bold flex items-center gap-1.5"
+                        >
+                           <Trash2 className="w-3.5 h-3.5" /> {t('Fshi', 'Delete', 'Διαγραφή')}
+                        </button>
+                     )}
+                     <button type="button" onClick={stopAndCloseAudioPlayer} className="px-3.5 py-2 rounded-xl bg-red-600 hover:bg-red-500 text-white text-xs font-bold">
+                        {t('Mbyll', 'Close')}
+                     </button>
+                  </div>
+               </div>
             </div>
          </div>
       )}
@@ -20220,6 +21677,7 @@ const exportChatResponseToPdf = async () => {
                       value={modalText}
                       onChange={(e) => {
                           const val = e.target.value;
+                          lastUserTypingTsRef.current = Date.now();
                           setModalText(val);
                           updateCell(activeCell.rIndex, activeCell.colKey, val);
                       }}
@@ -20237,6 +21695,9 @@ const exportChatResponseToPdf = async () => {
                                   ? `cursor-default ${isDark ? "text-amber-400/90" : "text-amber-600/90"}`
                                   : isDark ? "text-zinc-200 placeholder-zinc-700" : "text-zinc-800 placeholder-zinc-400"
                       }`}
+                      autoCorrect="off"
+                      autoCapitalize="off"
+                      autoComplete="off"
                       spellCheck={false}
                     />
                 </div>
@@ -20359,7 +21820,7 @@ const exportChatResponseToPdf = async () => {
                                 : 'border-red-500/30 text-red-500'
                           }`}
                        >
-                          {calcLiveResult.ok ? `= ${calcLiveResult.value}` : calcLiveResult.error}
+                          {calcLiveResult.ok ? `= ${calcLiveResult.value}` : (calcLiveResult.error === 'Ndalohet ÷ 0' ? t('Ndalohet ÷ 0', 'Division by 0 not allowed', 'Απαγορεύεται ÷ 0') : t('Gabim', 'Error', 'Σφάλμα'))}
                        </div>
                     )}
                  </div>
