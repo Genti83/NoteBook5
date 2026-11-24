@@ -10,7 +10,7 @@ import {
   LogIn, Maximize2, Minus, Monitor, Moon, Paintbrush, Palette, RotateCcw, 
   Smartphone, Sparkles, Sun, Tag, Terminal, Type, UploadCloud, User,
   RemoveFormatting, Database, ImageMinus, ImagePlus, HardDrive, Menu, MoreVertical,
-  ZoomIn, ZoomOut, AlignLeft, AlignCenter, AlignRight, Italic,
+  ZoomIn, ZoomOut, AlignLeft, AlignCenter, AlignRight, Italic, Underline,
   Undo2, Redo2, Pin, Filter, ArrowUp, ArrowDown, ArrowUpDown, CopyPlus, SlidersHorizontal, Shield, ShieldCheck, Replace,
   Bell, BellRing, Fingerprint, Clock, AlarmClock, Volume2, VolumeX, ChevronLeft, CheckCircle2, Circle, Repeat, ExternalLink, ShieldAlert, Info, Music,
   SkipBack, SkipForward, Minimize2
@@ -64,6 +64,7 @@ import {
   loadDocsFromIdb,
   hasIdbMediaMarkers,
   readAudioFileAsDataUrlSafe,
+  readFileAsDataUrlSafe,
   dataUrlToPlayableSrc,
   estimateDataUrlSizeBytes,
   formatBytesReadable,
@@ -172,11 +173,24 @@ export interface GridRow {
   audio?: string;
   audioName?: string;
   audioMime?: string;
+  pdf?: string;
+  pdfName?: string;
+  pdfSize?: number;
+  pdfGistOmitted?: boolean;
   col1?: string;
   col2?: string;
   col3?: string;
   col4?: string;
   [key: string]: any;
+}
+export interface PadNote {
+  id: string;
+  title: string;
+  content: string;
+  color?: string;
+  pinned?: boolean;
+  createdAt: string;
+  updatedAt: string;
 }
 export interface GridDocument {
   id: string;
@@ -188,6 +202,7 @@ export interface GridDocument {
   textColor?: string;
   pinned?: boolean;
   isReadOnly?: boolean;
+  autoGrowRows?: boolean;
   createdAt: string;
   updatedAt: string;
   userId?: string;
@@ -294,16 +309,17 @@ interface HeaderInputProps {
   readOnly?: boolean;
 }
 function HeaderInput({ initialValue, onChange, className, placeholder, readOnly }: HeaderInputProps) {
-  const [val, setVal] = React.useState(initialValue);
+  const [val, setVal] = React.useState(initialValue || "");
   const isFocusedRef = React.useRef(false);
-  const lastEmittedRef = React.useRef(initialValue);
+  const isComposingRef = React.useRef(false);
+  const lastEmittedRef = React.useRef(initialValue || "");
   const prevInitialRef = React.useRef(initialValue || "");
 
   React.useEffect(() => {
     const incoming = initialValue || "";
     if (incoming === prevInitialRef.current) return;
     prevInitialRef.current = incoming;
-    if (!isFocusedRef.current && incoming !== lastEmittedRef.current) {
+    if (!isFocusedRef.current && !isComposingRef.current && incoming !== lastEmittedRef.current) {
       setVal(incoming);
       lastEmittedRef.current = incoming;
     }
@@ -323,23 +339,31 @@ function HeaderInput({ initialValue, onChange, className, placeholder, readOnly 
       value={val}
       readOnly={readOnly}
       onFocus={() => { isFocusedRef.current = true; }}
+      onCompositionStart={() => { isComposingRef.current = true; }}
       onChange={(e) => {
         if (readOnly) return;
         const newVal = e.target.value;
         setVal(newVal);
-        emitVal(newVal);
+        const composing = isComposingRef.current || Boolean((e.nativeEvent as any)?.isComposing);
+        if (!composing) {
+          emitVal(newVal);
+        }
       }}
       onCompositionEnd={(e) => {
+        isComposingRef.current = false;
         const finalVal = (e.target as HTMLInputElement).value;
         setVal(finalVal);
         emitVal(finalVal);
       }}
       onBlur={(e) => {
         isFocusedRef.current = false;
-        emitVal(e.currentTarget.value);
+        isComposingRef.current = false;
+        const finalVal = e.currentTarget.value;
+        setVal(finalVal);
+        emitVal(finalVal);
       }}
       onKeyDown={(e) => {
-        if (e.key === "Enter") {
+        if (e.key === "Enter" && !isComposingRef.current) {
           emitVal(e.currentTarget.value);
           (e.target as HTMLInputElement).blur();
         }
@@ -363,28 +387,81 @@ interface CellInputProps {
   readOnly?: boolean;
   startHold?: () => void;
   stopHold?: () => void;
+  autoLineHeight?: boolean;
   className?: string;
   style?: React.CSSProperties;
 }
-function CellInput({ initialValue, onChange, onFocus, onBlur, dataRowIndex, dataColKey, readOnly, startHold, stopHold, className, style }: CellInputProps) {
+function CellInput({ initialValue, onChange, onFocus, onBlur, dataRowIndex, dataColKey, readOnly, startHold, stopHold, autoLineHeight = true, className, style }: CellInputProps) {
   const [val, setVal] = React.useState(initialValue || "");
+  const [detectedLines, setDetectedLines] = React.useState<number>(1);
+  const textareaRef = React.useRef<HTMLTextAreaElement | null>(null);
   const isFocusedRef = React.useRef(false);
+  const isComposingRef = React.useRef(false);
   const lastEmittedRef = React.useRef(initialValue || "");
   const prevInitialRef = React.useRef(initialValue || "");
   React.useEffect(() => {
     const incoming = initialValue || "";
     if (incoming === prevInitialRef.current) return;
     prevInitialRef.current = incoming;
-    if (!isFocusedRef.current && incoming !== lastEmittedRef.current) {
+    if (!isFocusedRef.current && !isComposingRef.current && incoming !== lastEmittedRef.current) {
       setVal(incoming);
       lastEmittedRef.current = incoming;
     }
   }, [initialValue]);
+  const lastWidthRef = React.useRef<number>(0);
+  const baseLineHeight = typeof style?.lineHeight === 'number' ? style.lineHeight : (parseFloat(String(style?.lineHeight || '1.35')) || 1.35);
+  const adaptiveLineHeight = autoLineHeight && detectedLines >= 2
+    ? Math.max(baseLineHeight, detectedLines >= 3 ? 1.48 : 1.4)
+    : baseLineHeight;
+  const recalcSize = React.useCallback(() => {
+    const el = textareaRef.current;
+    if (!el) return;
+    el.style.height = '';
+    if (!val) {
+      setDetectedLines(prev => (prev !== 1 ? 1 : prev));
+      return;
+    }
+    const computed = typeof window !== 'undefined' ? window.getComputedStyle(el) : null;
+    const fontSizePx = computed ? (parseFloat(computed.fontSize) || 12) : 12;
+    const padTop = computed ? (parseFloat(computed.paddingTop) || 0) : 0;
+    const padBot = computed ? (parseFloat(computed.paddingBottom) || 0) : 0;
+    const fullCellH = el.clientHeight || Math.ceil(fontSizePx * baseLineHeight + padTop + padBot);
+    el.style.height = 'auto';
+    const naturalScrollH = el.scrollHeight;
+    const lineHeightPx = Math.max(fontSizePx * baseLineHeight, 12);
+    const contentHeight = Math.max(0, naturalScrollH - padTop - padBot);
+    const estLines = Math.max(1, Math.round(contentHeight / lineHeightPx));
+    setDetectedLines(prev => (prev !== estLines ? estLines : prev));
+    if (naturalScrollH > fullCellH + 2 || (estLines >= 2 && naturalScrollH > Math.ceil(lineHeightPx + padTop + padBot) + 2)) {
+      el.style.height = `${Math.max(naturalScrollH, fullCellH)}px`;
+    } else {
+      el.style.height = '';
+    }
+  }, [val, baseLineHeight]);
+  React.useLayoutEffect(() => {
+    recalcSize();
+  }, [val, style?.fontSize, style?.fontWeight, style?.fontFamily, style?.lineHeight, autoLineHeight, recalcSize]);
+  React.useEffect(() => {
+    const el = textareaRef.current;
+    if (!el || typeof ResizeObserver === 'undefined') return;
+    lastWidthRef.current = el.clientWidth;
+    const ro = new ResizeObserver(() => {
+      if (!textareaRef.current) return;
+      const w = textareaRef.current.clientWidth;
+      if (Math.abs(w - lastWidthRef.current) > 1) {
+        lastWidthRef.current = w;
+        recalcSize();
+      }
+    });
+    ro.observe(el);
+    return () => ro.disconnect();
+  }, [recalcSize]);
   const handleChange = (e: React.ChangeEvent<HTMLTextAreaElement>) => {
     if (readOnly) return;
     const newVal = e.target.value;
     setVal(newVal);
-    if (newVal !== lastEmittedRef.current) {
+    const composing = isComposingRef.current || Boolean((e.nativeEvent as any)?.isComposing);
+    if (!composing && newVal !== lastEmittedRef.current) {
       lastEmittedRef.current = newVal;
       onChange(newVal);
     }
@@ -397,9 +474,11 @@ function CellInput({ initialValue, onChange, onFocus, onBlur, dataRowIndex, data
   };
   return (
     <textarea
+      ref={textareaRef}
       value={val}
       data-row-index={dataRowIndex}
       data-col-key={dataColKey}
+      onCompositionStart={() => { isComposingRef.current = true; }}
       onChange={handleChange}
       onFocus={(e) => {
         isFocusedRef.current = true;
@@ -407,7 +486,9 @@ function CellInput({ initialValue, onChange, onFocus, onBlur, dataRowIndex, data
       }}
       onBlur={(e) => {
         isFocusedRef.current = false;
+        isComposingRef.current = false;
         const finalVal = e.currentTarget.value;
+        setVal(finalVal);
         if (!readOnly && finalVal !== lastEmittedRef.current) {
           lastEmittedRef.current = finalVal;
           onChange(finalVal);
@@ -415,6 +496,7 @@ function CellInput({ initialValue, onChange, onFocus, onBlur, dataRowIndex, data
         if (onBlur) onBlur(e);
       }}
       onCompositionEnd={(e) => {
+        isComposingRef.current = false;
         if (readOnly) return;
         const finalVal = (e.target as HTMLTextAreaElement).value;
         setVal(finalVal);
@@ -433,8 +515,201 @@ function CellInput({ initialValue, onChange, onFocus, onBlur, dataRowIndex, data
       onPointerLeave={handlePointerUp}
       onPointerCancel={handlePointerUp}
       className={className}
-      style={style}
+      style={{ ...style, lineHeight: adaptiveLineHeight, overflow: 'hidden' }}
       rows={1}
+    />
+  );
+}
+function ImeSafeInput({
+  value,
+  onChangeValue,
+  onFocus,
+  onBlur,
+  ...rest
+}: Omit<React.InputHTMLAttributes<HTMLInputElement>, 'value' | 'onChange'> & {
+  value: string;
+  onChangeValue: (val: string) => void;
+}) {
+  const [localVal, setLocalVal] = React.useState(value || '');
+  const isFocusedRef = React.useRef(false);
+  const isComposingRef = React.useRef(false);
+  const lastEmittedRef = React.useRef(value || '');
+  const prevExternalRef = React.useRef(value || '');
+
+  React.useEffect(() => {
+    const incoming = value || '';
+    if (incoming === prevExternalRef.current) return;
+    prevExternalRef.current = incoming;
+    if (!isFocusedRef.current && !isComposingRef.current && incoming !== lastEmittedRef.current) {
+      setLocalVal(incoming);
+      lastEmittedRef.current = incoming;
+    }
+  }, [value]);
+
+  return (
+    <input
+      {...rest}
+      value={localVal}
+      onFocus={(e) => {
+        isFocusedRef.current = true;
+        onFocus?.(e);
+      }}
+      onCompositionStart={() => {
+        isComposingRef.current = true;
+      }}
+      onChange={(e) => {
+        const nextVal = e.target.value;
+        setLocalVal(nextVal);
+        const composing = isComposingRef.current || Boolean((e.nativeEvent as any)?.isComposing);
+        if (!composing && nextVal !== lastEmittedRef.current) {
+          lastEmittedRef.current = nextVal;
+          onChangeValue(nextVal);
+        }
+      }}
+      onCompositionEnd={(e) => {
+        isComposingRef.current = false;
+        const finalVal = (e.target as HTMLInputElement).value;
+        setLocalVal(finalVal);
+        if (finalVal !== lastEmittedRef.current) {
+          lastEmittedRef.current = finalVal;
+          onChangeValue(finalVal);
+        }
+      }}
+      onBlur={(e) => {
+        isFocusedRef.current = false;
+        isComposingRef.current = false;
+        const finalVal = e.currentTarget.value;
+        setLocalVal(finalVal);
+        if (finalVal !== lastEmittedRef.current) {
+          lastEmittedRef.current = finalVal;
+          onChangeValue(finalVal);
+        }
+        onBlur?.(e);
+      }}
+    />
+  );
+}
+function ImeSafeTextarea({
+  value,
+  onChangeValue,
+  onFocus,
+  onBlur,
+  autoResize = false,
+  autoLineHeight = true,
+  syncRevision,
+  style,
+  ...rest
+}: Omit<React.TextareaHTMLAttributes<HTMLTextAreaElement>, 'value' | 'onChange'> & {
+  value: string;
+  onChangeValue: (val: string) => void;
+  autoResize?: boolean;
+  autoLineHeight?: boolean;
+  syncRevision?: number;
+}) {
+  const [localVal, setLocalVal] = React.useState(value || '');
+  const [detectedLines, setDetectedLines] = React.useState<number>(1);
+  const textareaRef = React.useRef<HTMLTextAreaElement | null>(null);
+  const isFocusedRef = React.useRef(false);
+  const isComposingRef = React.useRef(false);
+  const lastEmittedRef = React.useRef(value || '');
+  const prevExternalRef = React.useRef(value || '');
+  const lastSyncRevRef = React.useRef(syncRevision);
+
+  React.useEffect(() => {
+    const incoming = value || '';
+    if (syncRevision !== undefined && syncRevision !== lastSyncRevRef.current) {
+      lastSyncRevRef.current = syncRevision;
+      prevExternalRef.current = incoming;
+      lastEmittedRef.current = incoming;
+      setLocalVal(incoming);
+      return;
+    }
+    if (incoming === prevExternalRef.current) return;
+    prevExternalRef.current = incoming;
+    if (!isFocusedRef.current && !isComposingRef.current && incoming !== lastEmittedRef.current) {
+      setLocalVal(incoming);
+      lastEmittedRef.current = incoming;
+    }
+  }, [value, syncRevision]);
+
+  const baseLineHeight = typeof style?.lineHeight === 'number' ? style.lineHeight : (parseFloat(String(style?.lineHeight || '1.35')) || 1.35);
+  const adaptiveLineHeight = autoResize && autoLineHeight && detectedLines >= 2
+    ? Math.max(baseLineHeight, detectedLines >= 3 ? 1.48 : 1.4)
+    : style?.lineHeight;
+
+  const recalcSize = React.useCallback(() => {
+    if (!autoResize) return;
+    const el = textareaRef.current;
+    if (!el) return;
+    el.style.height = '';
+    if (!localVal) {
+      setDetectedLines(prev => (prev !== 1 ? 1 : prev));
+      return;
+    }
+    const computed = typeof window !== 'undefined' ? window.getComputedStyle(el) : null;
+    const fontSizePx = computed ? (parseFloat(computed.fontSize) || 12) : 12;
+    const padTop = computed ? (parseFloat(computed.paddingTop) || 0) : 0;
+    const padBot = computed ? (parseFloat(computed.paddingBottom) || 0) : 0;
+    const fullCellH = el.clientHeight || Math.ceil(fontSizePx * baseLineHeight + padTop + padBot);
+    el.style.height = 'auto';
+    const naturalScrollH = el.scrollHeight;
+    const lineHeightPx = Math.max(fontSizePx * baseLineHeight, 12);
+    const contentHeight = Math.max(0, naturalScrollH - padTop - padBot);
+    const estLines = Math.max(1, Math.round(contentHeight / lineHeightPx));
+    setDetectedLines(prev => (prev !== estLines ? estLines : prev));
+    if (naturalScrollH > fullCellH + 2 || (estLines >= 2 && naturalScrollH > Math.ceil(lineHeightPx + padTop + padBot) + 2)) {
+      el.style.height = `${Math.max(naturalScrollH, fullCellH)}px`;
+    } else {
+      el.style.height = '';
+    }
+  }, [autoResize, localVal, baseLineHeight]);
+
+  React.useLayoutEffect(() => {
+    recalcSize();
+  }, [localVal, style?.fontSize, style?.lineHeight, autoLineHeight, recalcSize]);
+
+  return (
+    <textarea
+      {...rest}
+      ref={textareaRef}
+      value={localVal}
+      style={autoResize ? { ...style, lineHeight: adaptiveLineHeight, overflow: 'hidden' } : style}
+      onFocus={(e) => {
+        isFocusedRef.current = true;
+        onFocus?.(e);
+      }}
+      onCompositionStart={() => {
+        isComposingRef.current = true;
+      }}
+      onChange={(e) => {
+        const nextVal = e.target.value;
+        setLocalVal(nextVal);
+        const composing = isComposingRef.current || Boolean((e.nativeEvent as any)?.isComposing);
+        if (!composing && nextVal !== lastEmittedRef.current) {
+          lastEmittedRef.current = nextVal;
+          onChangeValue(nextVal);
+        }
+      }}
+      onCompositionEnd={(e) => {
+        isComposingRef.current = false;
+        const finalVal = (e.target as HTMLTextAreaElement).value;
+        setLocalVal(finalVal);
+        if (finalVal !== lastEmittedRef.current) {
+          lastEmittedRef.current = finalVal;
+          onChangeValue(finalVal);
+        }
+      }}
+      onBlur={(e) => {
+        isFocusedRef.current = false;
+        isComposingRef.current = false;
+        const finalVal = e.currentTarget.value;
+        setLocalVal(finalVal);
+        if (finalVal !== lastEmittedRef.current) {
+          lastEmittedRef.current = finalVal;
+          onChangeValue(finalVal);
+        }
+        onBlur?.(e);
+      }}
     />
   );
 }
@@ -697,7 +972,7 @@ export function Notepad() {
   const [saveDirectoryHandle, setSaveDirectoryHandle] = React.useState<any>(null);
   const [nativeSaveDirectoryUri, setNativeSaveDirectoryUri] = React.useState<string | null>(() => localStorage.getItem('native_save_directory_uri'));
   const [backupModal, setBackupModal] = React.useState<boolean>(false);
-  const [mainTab, setMainTab] = React.useState<'lista' | 'etiketa'>('lista');
+  const [mainTab, setMainTab] = React.useState<'lista' | 'etiketa' | 'pad'>('lista');
   const [catalogSearch, setCatalogSearch] = React.useState<string>('');
   const [selectedTag, setSelectedTag] = React.useState<string | null>(null);
   const [transferDocId, setTransferDocId] = React.useState<string | null>(null);
@@ -754,8 +1029,9 @@ export function Notepad() {
     let tItems = onlineTrashItems;
     let nColor = onlineNotesColor;
     let tColorMode = textColorMode;
+    let pNotes: PadNote[] | null = null;
     if (!rawContent) {
-      return { documents: docs, blueText: bText, secretList: sList, customLabels: labels, trashItems: tItems, notesColor: nColor, textColorMode: tColorMode };
+      return { documents: docs, blueText: bText, secretList: sList, customLabels: labels, trashItems: tItems, notesColor: nColor, textColorMode: tColorMode, padNotes: pNotes };
     }
     try {
       const parsed = JSON.parse(rawContent);
@@ -769,10 +1045,79 @@ export function Notepad() {
         if (Array.isArray(parsed.trashItems)) tItems = parsed.trashItems;
         if (parsed.notesColor !== undefined) nColor = parsed.notesColor;
         if (parsed.textColorMode !== undefined) tColorMode = parsed.textColorMode;
+        if (Array.isArray(parsed.padNotes)) pNotes = parsed.padNotes;
       }
       labels = mergeAllLabels(Array.isArray(labels) ? labels : [], [], docs);
     } catch (e) {}
-    return { documents: docs, blueText: bText, secretList: sList, customLabels: labels, trashItems: Array.isArray(tItems) ? tItems : [], notesColor: nColor, textColorMode: tColorMode };
+    return { documents: docs, blueText: bText, secretList: sList, customLabels: labels, trashItems: Array.isArray(tItems) ? tItems : [], notesColor: nColor, textColorMode: tColorMode, padNotes: pNotes };
+  };
+  const restoreDocsOmittedMedia = async (docsInput: GridDocument[]): Promise<GridDocument[]> => {
+    const docsArr = Array.isArray(docsInput) ? docsInput : [];
+    const localMatchMap = new Map<string, GridDocument>();
+    (latestDocsRef.current || []).forEach((ld) => { if (ld?.id) localMatchMap.set(ld.id, ld); });
+    const needsIdbLookup = docsArr.some((gd: any) =>
+      Array.isArray(gd?.rows) && gd.rows.some((gr: any) =>
+        (gr && !gr.audio && (gr.audioGistOmitted || gr.audioName)) ||
+        (gr && !gr.image && gr.imageName) ||
+        (gr && !gr.pdf && (gr.pdfGistOmitted || gr.pdfName)) ||
+        (typeof gr?.audio === 'string' && gr.audio.startsWith('__idb_media__:')) ||
+        (typeof gr?.image === 'string' && gr.image.startsWith('__idb_media__:')) ||
+        (typeof gr?.pdf === 'string' && gr.pdf.startsWith('__idb_media__:'))
+      )
+    );
+    const idbMatchMap = new Map<string, GridDocument>();
+    if (needsIdbLookup) {
+      try {
+        const idbDocs = await loadDocsFromIdb();
+        if (Array.isArray(idbDocs)) {
+          idbDocs.forEach((idDoc) => { if (idDoc?.id) idbMatchMap.set(idDoc.id, idDoc); });
+        }
+      } catch {}
+    }
+    return docsArr.map((gd: any) => {
+      const localMatch = gd?.id ? (localMatchMap.get(gd.id) || idbMatchMap.get(gd.id)) : null;
+      const idbMatch = gd?.id ? idbMatchMap.get(gd.id) : null;
+      if ((!localMatch && !idbMatch) || !Array.isArray(gd?.rows)) return gd;
+      const restoredRows = gd.rows.map((gr: any, idx: number) => {
+        if (!gr) return gr;
+        let nextRow = gr;
+        const needAudio = !nextRow.audio || String(nextRow.audio).startsWith('__idb_media__:') || String(nextRow.audio).startsWith('__fschunk__:');
+        if (needAudio && (nextRow.audioGistOmitted || nextRow.audioName || String(nextRow.audio || '').startsWith('__idb_media__:'))) {
+          const lr =
+            localMatch?.rows?.find((x: any) => (nextRow.id && x?.id === nextRow.id) || (nextRow.audioName && x?.audioName === nextRow.audioName)) ||
+            idbMatch?.rows?.find((x: any) => (nextRow.id && x?.id === nextRow.id) || (nextRow.audioName && x?.audioName === nextRow.audioName)) ||
+            localMatch?.rows?.[idx] ||
+            idbMatch?.rows?.[idx];
+          if (lr?.audio && typeof lr.audio === 'string' && !lr.audio.startsWith('__idb_media__:')) {
+            nextRow = { ...nextRow, audio: lr.audio, audioName: nextRow.audioName || lr.audioName, audioMime: nextRow.audioMime || lr.audioMime };
+          }
+        }
+        const needImage = !nextRow.image || String(nextRow.image).startsWith('__idb_media__:') || String(nextRow.image).startsWith('__fschunk__:');
+        if (needImage && (nextRow.imageName || String(nextRow.image || '').startsWith('__idb_media__:'))) {
+          const lrImg =
+            localMatch?.rows?.find((x: any) => (nextRow.id && x?.id === nextRow.id) || (nextRow.imageName && x?.imageName === nextRow.imageName)) ||
+            idbMatch?.rows?.find((x: any) => (nextRow.id && x?.id === nextRow.id) || (nextRow.imageName && x?.imageName === nextRow.imageName)) ||
+            localMatch?.rows?.[idx] ||
+            idbMatch?.rows?.[idx];
+          if (lrImg?.image && typeof lrImg.image === 'string' && !lrImg.image.startsWith('__idb_media__:')) {
+            nextRow = { ...nextRow, image: lrImg.image, imageName: nextRow.imageName || lrImg.imageName };
+          }
+        }
+        const needPdf = !nextRow.pdf || String(nextRow.pdf).startsWith('__idb_media__:') || String(nextRow.pdf).startsWith('__fschunk__:');
+        if (needPdf && (nextRow.pdfGistOmitted || nextRow.pdfName || String(nextRow.pdf || '').startsWith('__idb_media__:'))) {
+          const lrPdf =
+            localMatch?.rows?.find((x: any) => (nextRow.id && x?.id === nextRow.id) || (nextRow.pdfName && x?.pdfName === nextRow.pdfName)) ||
+            idbMatch?.rows?.find((x: any) => (nextRow.id && x?.id === nextRow.id) || (nextRow.pdfName && x?.pdfName === nextRow.pdfName)) ||
+            localMatch?.rows?.[idx] ||
+            idbMatch?.rows?.[idx];
+          if (lrPdf?.pdf && typeof lrPdf.pdf === 'string' && !lrPdf.pdf.startsWith('__idb_media__:')) {
+            nextRow = { ...nextRow, pdf: lrPdf.pdf, pdfName: nextRow.pdfName || lrPdf.pdfName, pdfSize: nextRow.pdfSize || lrPdf.pdfSize };
+          }
+        }
+        return nextRow;
+      });
+      return { ...gd, rows: restoredRows };
+    });
   };
   const viewGistContent = async (gistIdOverride?: string, openModal = true) => {
     const gId = gistIdOverride || gistId || localStorage.getItem('grid_notepad_gist_id');
@@ -794,11 +1139,25 @@ export function Notepad() {
       if (!file) throw new Error(t("Skedari nuk u gjet në këtë Gist.", "File not found in this Gist."));
       
       const content = file.truncated ? await (await fetch(file.raw_url)).text() : file.content;
-      setGistViewerContent(content);
       const parsed = parseGistBackupJson(content);
+      const restoredDocs = await restoreDocsOmittedMedia(parsed.documents);
+      const idToken = auth.currentUser ? await auth.currentUser.getIdToken(true).catch(() => null) : null;
+      const finalDocs = await hydrateServerMediaRefs(restoredDocs, idToken);
+      const hydratedContent = JSON.stringify({
+        documents: finalDocs,
+        blueText: parsed.blueText || '',
+        secretList: Array.isArray(parsed.secretList) ? parsed.secretList : [],
+        customLabels: mergeAllLabels(Array.isArray(parsed.customLabels) ? parsed.customLabels : [], [], finalDocs),
+        trashItems: sanitizeTrashItems(Array.isArray(parsed.trashItems) ? parsed.trashItems : []),
+        notesColor: parsed.notesColor || 'default',
+        textColorMode: parsed.textColorMode || textColorMode,
+        padNotes: Array.isArray(parsed.padNotes) ? parsed.padNotes : latestPadNotesRef.current
+      });
+      setGistViewerContent(hydratedContent);
+      gistViewerContentRef.current = hydratedContent;
       setOnlineBlueText(parsed.blueText || '');
       setOnlineSecretList(Array.isArray(parsed.secretList) ? parsed.secretList : []);
-      setOnlineCustomLabels(mergeAllLabels(Array.isArray(parsed.customLabels) ? parsed.customLabels : [], [], parsed.documents));
+      setOnlineCustomLabels(mergeAllLabels(Array.isArray(parsed.customLabels) ? parsed.customLabels : [], [], finalDocs));
       setOnlineTrashItems(sanitizeTrashItems(Array.isArray(parsed.trashItems) ? parsed.trashItems : []));
       setOnlineNotesColor(parsed.notesColor || 'default');
       if (openModal) {
@@ -1071,11 +1430,12 @@ export function Notepad() {
     labels: string[],
     secrets: any[],
     bText: string,
-    trashList: TrashItem[] = []
+    trashList: TrashItem[] = [],
+    pads: PadNote[] = latestPadNotesRef.current
   ): string => {
     const lines: string[] = [];
     lines.push(`# NoteBook3 — Manual & Cloud Backup`);
-    lines.push(`> Përditësuar: ${new Date().toISOString()} • Lista: ${docsToBackup.length} • Etiketa: ${labels.length} • Sekrete: ${secrets.length} • Kosh: ${trashList.length}`);
+    lines.push(`> Përditësuar: ${new Date().toISOString()} • Lista: ${docsToBackup.length} • Etiketa: ${labels.length} • Pad: ${pads.length} • Sekrete: ${secrets.length} • Kosh: ${trashList.length}`);
     lines.push('');
     lines.push(`## Etiketat (${labels.length})`);
     if (labels.length === 0) {
@@ -1115,6 +1475,15 @@ export function Notepad() {
       }
       lines.push('');
     }
+    if (pads.length > 0) {
+      lines.push('');
+      lines.push(`## Pad (${pads.length})`);
+      pads.forEach((p, idx) => {
+        lines.push(`### ${idx + 1}. ${p.title || 'Pad pa titull'}`);
+        if (p.content) lines.push(p.content);
+        lines.push('');
+      });
+    }
     if (trashList.length > 0) {
       lines.push(`## Listat në Kosh (${trashList.length})`);
       trashList.forEach((tr, idx) => {
@@ -1153,26 +1522,33 @@ export function Notepad() {
           const finalTrashItems = sanitizeTrashItems(rawTrash);
           const finalNotesColor = notesColorOverride !== undefined ? notesColorOverride : (isOnlineEditor ? onlineNotesColor : latestNotesColorRef.current);
           const finalTextColorMode = textColorModeOverride !== undefined ? textColorModeOverride : latestTextColorModeRef.current;
-          // GitHub Gist API rejects >10MB files; preserve text/rows/images/small audio and omit oversized >1.5MB audio blobs (stored safely in IndexedDB, Server Cloud & Firestore)
+          // GitHub Gist API rejects >10MB files; preserve text/rows/images/small audio+pdf and omit oversized >1.5MB media blobs (stored safely in IndexedDB, Server Cloud & Firestore)
           let gistSafeDocs = (Array.isArray(docsToBackup) ? docsToBackup : []).map((d: any) => {
             if (!d || !Array.isArray(d.rows)) return d;
             let rowChanged = false;
             const nextRows = d.rows.map((r: any) => {
               if (!r || typeof r !== 'object') return r;
+              let nextR = r;
               if (typeof r.audio === 'string' && r.audio.length > 1500000) {
                 rowChanged = true;
-                return { ...r, audio: '', audioGistOmitted: true };
+                nextR = { ...nextR, audio: '', audioGistOmitted: true };
               }
-              return r;
+              if (typeof r.pdf === 'string' && r.pdf.length > 1500000) {
+                rowChanged = true;
+                nextR = { ...nextR, pdf: '', pdfGistOmitted: true };
+              }
+              return nextR;
             });
             return rowChanged ? { ...d, rows: nextRows } : d;
           });
-          let backupData = {
+          const finalPadNotes = Array.isArray(latestPadNotesRef.current) ? latestPadNotesRef.current : [];
+          let backupData: any = {
             documents: gistSafeDocs,
             blueText: finalBlueText,
             secretList: finalSecretList,
             customLabels: finalCustomLabels,
             trashItems: finalTrashItems,
+            padNotes: finalPadNotes,
             notesColor: finalNotesColor,
             textColorMode: finalTextColorMode,
             textSize: latestTextSizeRef.current,
@@ -1190,6 +1566,8 @@ export function Notepad() {
                     ...r,
                     audio: typeof r?.audio === 'string' && r.audio.length > 100000 ? '' : r?.audio,
                     audioGistOmitted: typeof r?.audio === 'string' && r.audio.length > 100000 ? true : r?.audioGistOmitted,
+                    pdf: typeof r?.pdf === 'string' && r.pdf.length > 100000 ? '' : r?.pdf,
+                    pdfGistOmitted: typeof r?.pdf === 'string' && r.pdf.length > 100000 ? true : r?.pdfGistOmitted,
                     image: typeof r?.image === 'string' && r.image.length > 250000 ? '' : r?.image,
                   }))
                 : [],
@@ -1197,7 +1575,7 @@ export function Notepad() {
             backupData = { ...backupData, documents: gistSafeDocs };
             content = JSON.stringify(backupData);
           }
-          const markdownSummary = buildGistMarkdownSummary(docsToBackup, finalCustomLabels, finalSecretList, finalBlueText, finalTrashItems);
+          const markdownSummary = buildGistMarkdownSummary(docsToBackup, finalCustomLabels, finalSecretList, finalBlueText, finalTrashItems, finalPadNotes);
           let method = 'POST';
           let url = 'https://api.github.com/gists';
           
@@ -1326,6 +1704,14 @@ export function Notepad() {
               latestTextWeightRef.current = parsedData.textWeight;
               localStorage.setItem('grid_notepad_text_weight', String(parsedData.textWeight));
             }
+            if (Array.isArray(parsedData.padNotes)) {
+              const mergedPads = mergePadNotesList(latestPadNotesRef.current, parsedData.padNotes);
+              setPadNotes(mergedPads);
+              latestPadNotesRef.current = mergedPads;
+              try {
+                localStorage.setItem('grid_notepad_pads_v1', JSON.stringify(mergedPads));
+              } catch {}
+            }
             if (parsedData.pin && !localStorage.getItem('grid_notepad_pin')) {
               localStorage.setItem('grid_notepad_pin', parsedData.pin);
             }
@@ -1333,31 +1719,17 @@ export function Notepad() {
               localStorage.setItem('grid_notepad_settings_updated_at', parsedData.settingsUpdatedAt);
             }
           }
-          // Preserve any local >1.5MB audio blobs if Gist backup omitted oversized audio
-          const existingLocalById = new Map<string, GridDocument>();
-          (latestDocsRef.current || []).forEach((ld) => { if (ld?.id) existingLocalById.set(ld.id, ld); });
-          parsedDocs = (Array.isArray(parsedDocs) ? parsedDocs : []).map((gd: any) => {
-            const localMatch = gd?.id ? existingLocalById.get(gd.id) : null;
-            if (!localMatch || !Array.isArray(gd?.rows)) return gd;
-            const restoredRows = gd.rows.map((gr: any, idx: number) => {
-              if (gr && !gr.audio && (gr.audioGistOmitted || gr.audioName)) {
-                const lr = localMatch.rows?.find((x) => (gr.id && x.id === gr.id) || (gr.audioName && x.audioName === gr.audioName)) || localMatch.rows?.[idx];
-                if (lr?.audio) {
-                  return { ...gr, audio: lr.audio, audioName: gr.audioName || lr.audioName, audioMime: gr.audioMime || lr.audioMime };
-                }
-              }
-              return gr;
-            });
-            return { ...gd, rows: restoredRows };
-          });
+          // Preserve any local >1.5MB audio/image blobs if Gist backup omitted oversized media
+          parsedDocs = await restoreDocsOmittedMedia(Array.isArray(parsedDocs) ? parsedDocs : []);
           setDocuments(parsedDocs);
           latestDocsRef.current = parsedDocs;
           setCloudDocs(parsedDocs);
+          cloudDocsRef.current = parsedDocs;
           saveDocsLocalSafe(parsedDocs);
           if (activeDocIdRef.current) {
              const curr = parsedDocs.find((d: any) => d.id === activeDocIdRef.current);
              if (curr) {
-                 if (Date.now() - lastUserTypingTsRef.current >= 4500) {
+                 if (Date.now() - lastUserTypingTsRef.current >= 15000) {
                     setRows(curr.rows);
                     setHeaders(curr.headers);
                     setTitle(curr.title);
@@ -1540,10 +1912,29 @@ export function Notepad() {
     const saved = parseInt(localStorage.getItem('grid_default_cols') || '4', 10);
     return saved >= 2 && saved <= 8 ? saved : 4;
   });
-  const [defaultNewDocRows, setDefaultNewDocRows] = React.useState<number>(() => {
+  const [defaultNewDocRowMode, setDefaultNewDocRowMode] = React.useState<'90' | '120' | '150' | 'auto'>(() => {
+    const mode = localStorage.getItem('grid_default_row_mode');
+    if (mode === '90' || mode === '120' || mode === '150' || mode === 'auto') return mode;
     const saved = parseInt(localStorage.getItem('grid_default_rows') || '90', 10);
-    return saved >= 20 && saved <= 200 ? saved : 90;
+    if (saved === 120) return '120';
+    if (saved === 150) return '150';
+    return '90';
   });
+  const [defaultNewDocRows, setDefaultNewDocRows] = React.useState<number>(() => {
+    const mode = localStorage.getItem('grid_default_row_mode');
+    if (mode === 'auto') return 1;
+    if (mode === '120') return 120;
+    if (mode === '150') return 150;
+    const saved = parseInt(localStorage.getItem('grid_default_rows') || '90', 10);
+    return saved === 120 || saved === 150 ? saved : 90;
+  });
+  const applyDefaultNewDocRowMode = (mode: '90' | '120' | '150' | 'auto') => {
+    setDefaultNewDocRowMode(mode);
+    localStorage.setItem('grid_default_row_mode', mode);
+    const numRows = mode === 'auto' ? 1 : parseInt(mode, 10);
+    setDefaultNewDocRows(numRows);
+    localStorage.setItem('grid_default_rows', String(numRows));
+  };
   const [colStatsSnapshot, setColStatsSnapshot] = React.useState<{
     colIdx: number;
     header: string;
@@ -1622,9 +2013,20 @@ export function Notepad() {
     const v = parseFloat(localStorage.getItem("grid_notepad_line_height") || "1.3");
     return Number.isFinite(v) && v >= 1.0 && v <= 2.2 ? v : 1.3;
   });
+  const [autoLineHeight, setAutoLineHeight] = React.useState<boolean>(() => localStorage.getItem("grid_notepad_auto_line_height") !== "false");
   const [cellDensity, setCellDensity] = React.useState<'compact' | 'normal' | 'spacious'>(() => {
     const saved = localStorage.getItem("grid_notepad_cell_density");
     return saved === 'compact' || saved === 'spacious' ? saved : 'normal';
+  });
+  const [textLetterSpacing, setTextLetterSpacing] = React.useState<number>(() => {
+    const v = parseFloat(localStorage.getItem("grid_notepad_letter_spacing") || "0");
+    return Number.isFinite(v) && v >= 0 && v <= 3 ? v : 0;
+  });
+  const [textUnderline, setTextUnderline] = React.useState<boolean>(() => localStorage.getItem("grid_notepad_text_underline") === "true");
+  const [textTabularNums, setTextTabularNums] = React.useState<boolean>(() => localStorage.getItem("grid_notepad_text_tabular") === "true");
+  const [gridBorderStyle, setGridBorderStyle] = React.useState<'normal' | 'strong' | 'minimal'>(() => {
+    const saved = localStorage.getItem("grid_notepad_border_style");
+    return saved === 'strong' || saved === 'minimal' ? saved : 'normal';
   });
   const updateTextFontFamily = (val: 'sans' | 'mono' | 'serif') => {
     setTextFontFamily(val);
@@ -1642,11 +2044,31 @@ export function Notepad() {
     setTextLineHeight(val);
     localStorage.setItem("grid_notepad_line_height", String(val));
   };
+  const updateAutoLineHeight = (val: boolean) => {
+    setAutoLineHeight(val);
+    localStorage.setItem("grid_notepad_auto_line_height", String(val));
+  };
   const updateCellDensity = (val: 'compact' | 'normal' | 'spacious') => {
     setCellDensity(val);
     localStorage.setItem("grid_notepad_cell_density", val);
   };
-  const applyTextTransformToEditableRows = (mode: 'upper' | 'lower' | 'capitalize' | 'trim') => {
+  const updateTextLetterSpacing = (val: number) => {
+    setTextLetterSpacing(val);
+    localStorage.setItem("grid_notepad_letter_spacing", String(val));
+  };
+  const updateTextUnderline = (val: boolean) => {
+    setTextUnderline(val);
+    localStorage.setItem("grid_notepad_text_underline", String(val));
+  };
+  const updateTextTabularNums = (val: boolean) => {
+    setTextTabularNums(val);
+    localStorage.setItem("grid_notepad_text_tabular", String(val));
+  };
+  const updateGridBorderStyle = (val: 'normal' | 'strong' | 'minimal') => {
+    setGridBorderStyle(val);
+    localStorage.setItem("grid_notepad_border_style", val);
+  };
+  const applyTextTransformToEditableRows = (mode: 'upper' | 'lower' | 'capitalize' | 'trim' | 'sentence' | 'appendEuro' | 'cleanLines') => {
     executeProtectedAction(() => {
       const targetSelectedOnly = selectedRows.size > 0;
       let changedCount = 0;
@@ -1656,6 +2078,20 @@ export function Notepad() {
         if (mode === 'lower') return s.toLowerCase();
         if (mode === 'capitalize') {
           return s.replace(/(^|\s+)(\S)/g, (_, sp, ch) => sp + ch.toUpperCase());
+        }
+        if (mode === 'sentence') {
+          const lowered = s.trim();
+          if (!lowered) return s;
+          return lowered.replace(/(^\s*|[.!?]\s+|\n\s*)(\S)/g, (_, pfx, ch) => pfx + ch.toUpperCase());
+        }
+        if (mode === 'appendEuro') {
+          const trimmed = s.trim();
+          if (!trimmed || trimmed.includes('€')) return s;
+          if (/^-?\d+([.,]\d+)?$/.test(trimmed)) return `${trimmed} €`;
+          return s;
+        }
+        if (mode === 'cleanLines') {
+          return s.split(/\r?\n/).map(ln => ln.replace(/[ \t]+/g, ' ').trim()).join('\n').trim();
         }
         return s.replace(/\s+/g, ' ').trim();
       };
@@ -1975,6 +2411,227 @@ export function Notepad() {
     readOnly?: boolean;
     onDelete?: () => void;
   } | null>(null);
+  const [previewPdf, setPreviewPdf] = useState<string | null>(null);
+  const [previewPdfMeta, setPreviewPdfMeta] = useState<{
+    fileName?: string;
+    sizeBytes?: number;
+    readOnly?: boolean;
+    onDelete?: () => void;
+  } | null>(null);
+  const [padNotes, setPadNotes] = useState<PadNote[]>(() => {
+    try {
+      const saved = localStorage.getItem('grid_notepad_pads_v1');
+      if (saved) {
+        const parsed = JSON.parse(saved);
+        return Array.isArray(parsed) ? parsed : [];
+      }
+    } catch {}
+    return [];
+  });
+  const latestPadNotesRef = useRef<PadNote[]>([]);
+  latestPadNotesRef.current = padNotes;
+  const [activePadId, setActivePadId] = useState<string | null>(null);
+  const [padSearch, setPadSearch] = useState<string>('');
+  const [padFindOpen, setPadFindOpen] = useState<boolean>(false);
+  const [padFindQuery, setPadFindQuery] = useState<string>('');
+  const [padReplaceQuery, setPadReplaceQuery] = useState<string>('');
+  const [newPadModal, setNewPadModal] = useState<{ isOpen: boolean; mode: 'create' | 'rename'; targetId?: string; value: string }>({ isOpen: false, mode: 'create', value: '' });
+  const [padToDelete, setPadToDelete] = useState<PadNote | null>(null);
+  const padUndoMapRef = useRef<Record<string, string[]>>({});
+  const padRedoMapRef = useRef<Record<string, string[]>>({});
+  const padLastUndoTsRef = useRef<number>(0);
+  const [padHistoryTick, setPadHistoryTick] = useState<number>(0);
+  const [padExternalSyncTick, setPadExternalSyncTick] = useState<number>(0);
+  const padAutoSyncTimerRef = useRef<any>(null);
+  const mergePadNotesList = (localPads: PadNote[] = [], remotePads: PadNote[] = []): PadNote[] => {
+    const map = new Map<string, PadNote>();
+    const normalize = (p: any): PadNote | null => {
+      if (!p || typeof p !== 'object' || !p.id) return null;
+      return {
+        id: String(p.id),
+        title: String(p.title || 'Pad pa titull').slice(0, 200),
+        content: typeof p.content === 'string' ? p.content : '',
+        color: typeof p.color === 'string' ? p.color : 'default',
+        pinned: Boolean(p.pinned),
+        createdAt: String(p.createdAt || new Date().toISOString()),
+        updatedAt: String(p.updatedAt || p.createdAt || new Date().toISOString()),
+      };
+    };
+    (Array.isArray(localPads) ? localPads : []).forEach((item) => {
+      const n = normalize(item);
+      if (n) map.set(n.id, n);
+    });
+    (Array.isArray(remotePads) ? remotePads : []).forEach((item) => {
+      const n = normalize(item);
+      if (!n) return;
+      const existing = map.get(n.id);
+      if (!existing) {
+        map.set(n.id, n);
+      } else {
+        const existingTs = new Date(existing.updatedAt || existing.createdAt || 0).getTime();
+        const incomingTs = new Date(n.updatedAt || n.createdAt || 0).getTime();
+        if (incomingTs >= existingTs) {
+          map.set(n.id, n);
+        }
+      }
+    });
+    return Array.from(map.values()).slice(0, 500);
+  };
+  const persistPadNotes = (nextPads: PadNote[], triggerSync = true) => {
+    setPadNotes(nextPads);
+    latestPadNotesRef.current = nextPads;
+    try {
+      localStorage.setItem('grid_notepad_pads_v1', JSON.stringify(nextPads));
+    } catch {}
+    markSettingsUpdated();
+    markPendingSync();
+    if (triggerSync && navigator.onLine) {
+      if (padAutoSyncTimerRef.current) clearTimeout(padAutoSyncTimerRef.current);
+      padAutoSyncTimerRef.current = setTimeout(() => {
+        syncWithGoogleCloud(latestDocsRef.current, true);
+      }, 1800);
+    }
+  };
+  const handleCreateOrRenamePad = () => {
+    const cleanTitle = newPadModal.value.trim();
+    if (!cleanTitle) {
+      showToast(t('Ju lutem shkruani një emër për Pad!', 'Please enter a Pad name!', 'Παρακαλούμε εισάγετε ένα όνομα για το Pad!'));
+      return;
+    }
+    const nowIso = new Date().toISOString();
+    if (newPadModal.mode === 'rename' && newPadModal.targetId) {
+      const next = latestPadNotesRef.current.map((p) =>
+        p.id === newPadModal.targetId ? { ...p, title: cleanTitle, updatedAt: nowIso } : p
+      );
+      persistPadNotes(next, true);
+      setNewPadModal({ isOpen: false, mode: 'create', value: '' });
+      showToast(t('✓ Emri i Pad u ndryshua!', '✓ Pad renamed!', '✓ Το όνομα του Pad άλλαξε!'));
+      return;
+    }
+    const newPad: PadNote = {
+      id: `pad-${Date.now()}-${Math.random().toString(36).slice(2, 6)}`,
+      title: cleanTitle,
+      content: '',
+      color: 'default',
+      pinned: false,
+      createdAt: nowIso,
+      updatedAt: nowIso,
+    };
+    const next = [newPad, ...latestPadNotesRef.current];
+    persistPadNotes(next, true);
+    setNewPadModal({ isOpen: false, mode: 'create', value: '' });
+    setActivePadId(newPad.id);
+    setMainTab('pad');
+    showToast(t('✓ Pad i ri u krijua dhe ruhet automatikisht!', '✓ New Pad created and auto-saved!', '✓ Δημιουργήθηκε νέο Pad και αποθηκεύεται αυτόματα!'));
+  };
+  const updateActivePadFields = (padId: string, patch: Partial<PadNote>, recordUndo = false) => {
+    const nowIso = new Date().toISOString();
+    lastUserTypingTsRef.current = Date.now();
+    const currentList = latestPadNotesRef.current;
+    const prevPad = currentList.find((p) => p.id === padId);
+    if (!prevPad) return;
+    if (recordUndo && typeof patch.content === 'string' && patch.content !== prevPad.content) {
+      const nowMs = Date.now();
+      if (nowMs - padLastUndoTsRef.current > 650) {
+        const stack = padUndoMapRef.current[padId] || [];
+        padUndoMapRef.current[padId] = [...stack.slice(-39), prevPad.content];
+        padRedoMapRef.current[padId] = [];
+        padLastUndoTsRef.current = nowMs;
+        setPadHistoryTick((v) => v + 1);
+      }
+    }
+    const nextList = currentList.map((p) => (p.id === padId ? { ...p, ...patch, updatedAt: nowIso } : p));
+    persistPadNotes(nextList, true);
+  };
+  const handlePadUndo = (padId: string) => {
+    const stack = padUndoMapRef.current[padId] || [];
+    if (stack.length === 0) return;
+    const curr = latestPadNotesRef.current.find((p) => p.id === padId);
+    if (!curr) return;
+    const previousContent = stack[stack.length - 1];
+    padUndoMapRef.current[padId] = stack.slice(0, -1);
+    padRedoMapRef.current[padId] = [...(padRedoMapRef.current[padId] || []).slice(-39), curr.content];
+    setPadHistoryTick((v) => v + 1);
+    setPadExternalSyncTick((v) => v + 1);
+    updateActivePadFields(padId, { content: previousContent }, false);
+  };
+  const handlePadRedo = (padId: string) => {
+    const stack = padRedoMapRef.current[padId] || [];
+    if (stack.length === 0) return;
+    const curr = latestPadNotesRef.current.find((p) => p.id === padId);
+    if (!curr) return;
+    const nextContent = stack[stack.length - 1];
+    padRedoMapRef.current[padId] = stack.slice(0, -1);
+    padUndoMapRef.current[padId] = [...(padUndoMapRef.current[padId] || []).slice(-39), curr.content];
+    setPadHistoryTick((v) => v + 1);
+    setPadExternalSyncTick((v) => v + 1);
+    updateActivePadFields(padId, { content: nextContent }, false);
+  };
+  const duplicatePadNote = (padItem: PadNote) => {
+    const nowIso = new Date().toISOString();
+    const copyPad: PadNote = {
+      ...padItem,
+      id: `pad-${Date.now()}-${Math.random().toString(36).slice(2, 6)}`,
+      title: `${padItem.title} (${t('Kopje', 'Copy', 'Αντίγραφο')})`,
+      pinned: false,
+      createdAt: nowIso,
+      updatedAt: nowIso,
+    };
+    persistPadNotes([copyPad, ...latestPadNotesRef.current], true);
+    showToast(t('✓ Pad u duplikua!', '✓ Pad duplicated!', '✓ Το Pad διπλασιάστηκε!'));
+  };
+  const executeDeletePadNote = (padId: string) => {
+    const next = latestPadNotesRef.current.filter((p) => p.id !== padId);
+    persistPadNotes(next, true);
+    if (activePadId === padId) {
+      setActivePadId(null);
+      setPadFindOpen(false);
+    }
+    setPadToDelete(null);
+    showToast(t('✓ Pad u fshi!', '✓ Pad deleted!', '✓ Το Pad διαγράφηκε!'));
+  };
+  const exportPadAsTxt = async (padItem: PadNote) => {
+    const textBody = `${padItem.title}\n${'='.repeat(Math.min(40, Math.max(8, padItem.title.length)))}\n\n${padItem.content || ''}`;
+    const blob = new Blob([textBody], { type: 'text/plain;charset=utf-8' });
+    const safeName = `${(padItem.title || 'Pad').replace(/[^a-zA-Z0-9._-]+/g, '_')}.txt`;
+    await handleDownload(blob, safeName, 'text/plain', padItem.title || 'Pad TXT');
+  };
+  const exportPadAsPdf = async (padItem: PadNote) => {
+    try {
+      const pdf = new jsPDF('p', 'mm', 'a4');
+      const margin = 14;
+      const maxW = 182;
+      let y = 18;
+      pdf.setFont('helvetica', 'bold');
+      pdf.setFontSize(16);
+      pdf.text(padItem.title || 'Pad', margin, y);
+      y += 7;
+      pdf.setFont('helvetica', 'normal');
+      pdf.setFontSize(9);
+      pdf.setTextColor(110);
+      pdf.text(`${t('Përditësuar', 'Updated', 'Ενημερώθηκε')}: ${safeFormatDate(padItem.updatedAt, 'dd/MM/yyyy HH:mm')}`, margin, y);
+      y += 6;
+      pdf.setDrawColor(210);
+      pdf.line(margin, y, margin + maxW, y);
+      y += 8;
+      pdf.setTextColor(30);
+      pdf.setFontSize(11);
+      const lines = pdf.splitTextToSize(padItem.content || ' ', maxW);
+      lines.forEach((ln: string) => {
+        if (y > 280) {
+          pdf.addPage();
+          y = 16;
+        }
+        pdf.text(ln, margin, y);
+        y += 5.5;
+      });
+      const pdfBlob = pdf.output('blob');
+      const safeName = `${(padItem.title || 'Pad').replace(/[^a-zA-Z0-9._-]+/g, '_')}.pdf`;
+      await handleDownload(pdfBlob, safeName, 'application/pdf', padItem.title || 'Pad PDF');
+    } catch {
+      showToast(t('Gabim gjatë krijimit të PDF!', 'Error generating PDF!', 'Σφάλμα δημιουργίας PDF!'));
+    }
+  };
   type AudioTrackItem = {
     rowKey: string;
     rowId?: string;
@@ -2003,7 +2660,11 @@ export function Notepad() {
   activeAudioTrackRef.current = activeAudioTrack;
   const audioPlaylistRef = useRef<AudioTrackItem[]>([]);
   audioPlaylistRef.current = audioPlaylist;
-  const onlineRowMediaRemoveRef = useRef<((rIdx: number, kind: 'image' | 'audio') => void) | null>(null);
+  const [resolvedMediaCache, setResolvedMediaCache] = useState<Record<string, string>>({});
+  const resolvedMediaCacheRef = useRef<Record<string, string>>({});
+  resolvedMediaCacheRef.current = resolvedMediaCache;
+  const resolvingMediaSetRef = useRef<Set<string>>(new Set());
+  const onlineRowMediaRemoveRef = useRef<((rIdx: number, kind: 'image' | 'audio' | 'pdf') => void) | null>(null);
   const uploadedServerMediaMapRef = useRef<Map<string, string>>(new Map());
   const firestoreSyncQueueRef = useRef<Promise<boolean>>(Promise.resolve(true));
   const lastUserTypingTsRef = useRef<number>(0);
@@ -2061,9 +2722,17 @@ export function Notepad() {
   const latestTextSizeRef = useRef<number>(12);
   const latestTextWeightRef = useRef<number>(400);
   const onlineViewRef = useRef<'cloud' | 'gist' | null>(null);
+  const selectedOnlineDocRef = useRef<GridDocument | null>(null);
+  const cloudDocsRef = useRef<GridDocument[]>([]);
+  const gistViewerContentRef = useRef<string | null>(null);
+  const latestTitleRef = useRef<string>('');
+  const latestHeadersRef = useRef<string[]>([]);
+  const latestColumnWidthsRef = useRef<number[]>([]);
+  const latestActiveTagsRef = useRef<string[]>([]);
   const pendingLocalSaveRef = useRef<any>(null);
   const suppressNextSettingsSyncRef = useRef<boolean>(false);
   const lastQuotaToastAtRef = useRef<number>(0);
+  const firestoreTransientPauseUntilRef = useRef<number>(0);
   const inFlightFirestoreSnapshotRef = useRef<Promise<{ docs: GridDocument[]; settings: any | null }> | null>(null);
   const lastFirestoreSnapshotCacheRef = useRef<{ ts: number; data: { docs: GridDocument[]; settings: any | null } } | null>(null);
   const externalNavUntilRef = useRef<number>(0);
@@ -2074,6 +2743,12 @@ export function Notepad() {
   const alarmLoopTimerRef = useRef<any>(null);
 
   onlineViewRef.current = onlineView;
+  selectedOnlineDocRef.current = selectedOnlineDoc;
+  gistViewerContentRef.current = gistViewerContent;
+  latestTitleRef.current = title;
+  latestHeadersRef.current = headers;
+  latestColumnWidthsRef.current = columnWidths;
+  latestActiveTagsRef.current = activeTags;
   latestCustomLabelsRef.current = customLabels;
   latestTrashItemsRef.current = trashItems;
   latestNotesColorRef.current = notesColor;
@@ -2098,6 +2773,30 @@ export function Notepad() {
       msg.includes('quota exceeded') ||
       msg.includes('daily write units')
     );
+  };
+  const isFirestoreTransientNetworkError = (err: any): boolean => {
+    const code = String(err?.code || '').toLowerCase();
+    const msg = String(err?.message || err || '').toLowerCase();
+    return (
+      code === 'unavailable' ||
+      code === 'deadline-exceeded' ||
+      code === 'aborted' ||
+      msg.includes('firestore-write-timeout') ||
+      msg.includes('deadline-exceeded') ||
+      msg.includes('client is offline') ||
+      msg.includes('failed to get document because the client is offline') ||
+      msg.includes('network error')
+    );
+  };
+  const isFirestorePausedNow = (): boolean => {
+    return isFirestoreQuotaPaused() || Date.now() < firestoreTransientPauseUntilRef.current;
+  };
+  const tripFirestoreTransientCooldown = (contextLabel: string, err?: any) => {
+    firestoreTransientPauseUntilRef.current = Date.now() + 30000;
+    pauseFirestoreNetwork();
+    const detail = err instanceof Error ? err.message : String(err || 'timeout');
+    console.warn(`Firestore transient pause (${contextLabel}):`, detail);
+    appendDebugLog(`⏳ [Firestore] Lidhja u ndërpre përkohësisht (${contextLabel}: ${detail}). Ruajtja vazhdon lokalisht, në Server & GitHub Gist.`);
   };
   const isFirestoreQuotaPaused = (): boolean => {
     try {
@@ -2141,7 +2840,9 @@ export function Notepad() {
             acc +
             (typeof r?.image === 'string' ? r.image.length : 0) +
             (typeof r?.audio === 'string' ? r.audio.length : 0) +
-            (typeof r?.audioName === 'string' ? r.audioName.length : 0),
+            (typeof r?.audioName === 'string' ? r.audioName.length : 0) +
+            (typeof r?.pdf === 'string' ? r.pdf.length : 0) +
+            (typeof r?.pdfName === 'string' ? r.pdfName.length : 0),
           0
         )
       : 0;
@@ -2239,14 +2940,21 @@ export function Notepad() {
       }
       if (type === 'list' && safeData && Array.isArray(safeData.rows)) {
         safeData.rows = safeData.rows.slice(0, 300).map((r: any, idx: number) => {
-          if (!r || typeof r !== 'object') return { id: `row-${idx}`, status: 'none', image: '' };
+          if (!r || typeof r !== 'object') return { id: `row-${idx}`, status: 'none', image: '', audio: '', pdf: '' };
           const rowCopy: Record<string, any> = {
             id: String(r.id || `row-${idx}`),
             status: String(r.status || 'none'),
-            image: ''
+            image: '',
+            audio: '',
+            pdf: ''
           };
           Object.keys(r).forEach(k => {
-            if (k !== 'image' && r[k] !== undefined) {
+            if (k === 'image' || k === 'audio' || k === 'pdf') {
+              const val = typeof r[k] === 'string' ? r[k] : '';
+              if (val.startsWith('__srvmedia__:') || val.startsWith('__idb_media__:')) {
+                rowCopy[k] = val.slice(0, 240);
+              }
+            } else if (r[k] !== undefined) {
               rowCopy[k] = r[k];
             }
           });
@@ -2287,7 +2995,7 @@ export function Notepad() {
   const buildTrashFromDoc = (docObj: GridDocument): TrashItem => {
     const cleanHeaders = Array.isArray(docObj.headers) ? docObj.headers : ['Kolona 1', 'Kolona 2', 'Kolona 3'];
     const usedRowsCount = Array.isArray(docObj.rows)
-      ? docObj.rows.filter(r => cleanHeaders.some((_, ci) => String(r?.[`col${ci + 1}`] || '').trim()) || (r?.status && r.status !== 'none') || r?.image || r?.audio).length
+      ? docObj.rows.filter(r => cleanHeaders.some((_, ci) => String(r?.[`col${ci + 1}`] || '').trim()) || (r?.status && r.status !== 'none') || r?.image || r?.audio || r?.pdf).length
       : 0;
     return {
       id: `trash-list-${docObj.id}-${Date.now()}-${Math.random().toString(36).slice(2, 6)}`,
@@ -2686,6 +3394,7 @@ const handleSaveLabelModal = () => {
   const [secretActiveTab, setSecretActiveTab] = useState<'editor' | 'list'>('editor');
   const secretFileInputRef = useRef<HTMLInputElement | null>(null);
   const [cloudDocs, setCloudDocs] = useState<GridDocument[]>([]);
+  cloudDocsRef.current = cloudDocs;
   const [isFetchingCloud, setIsFetchingCloud] = useState(false);
   const [selectedCloudDocIds, setSelectedCloudDocIds] = useState<string[]>([]);
   const [previewModalDoc, setPreviewModalDoc] = useState<GridDocument | null>(null);
@@ -2746,6 +3455,7 @@ const handleSaveLabelModal = () => {
      let mergedSecretList = [...latestSecretListRef.current];
      let mergedLabels = [...latestCustomLabelsRef.current];
      let mergedTrashItems = [...latestTrashItemsRef.current];
+     let mergedPadNotes = [...latestPadNotesRef.current];
      const pendingTrashDeletes = getPendingTrashDeletes();
      let mergedNotesColor = latestNotesColorRef.current;
      let mergedTextColorMode = latestTextColorModeRef.current;
@@ -2826,6 +3536,9 @@ const handleSaveLabelModal = () => {
               mergedTrashItems = mergeTrashItems(mergedTrashItems, remote.trashItems, pendingTrashDeletes);
            }
         }
+        if (Array.isArray(remote.padNotes)) {
+           mergedPadNotes = mergePadNotesList(mergedPadNotes, remote.padNotes);
+        }
         if (remote.notesColor && ((remoteIsNewer && !localIsDirty) || (remote.notesColor !== 'default' && mergedNotesColor === 'default'))) {
            mergedNotesColor = remote.notesColor;
         }
@@ -2877,6 +3590,11 @@ const handleSaveLabelModal = () => {
      latestTrashItemsRef.current = mergedTrashItems;
      setOnlineTrashItems(mergedTrashItems);
      localStorage.setItem(TRASH_ITEMS_KEY, JSON.stringify(mergedTrashItems));
+     setPadNotes(mergedPadNotes);
+     latestPadNotesRef.current = mergedPadNotes;
+     try {
+       localStorage.setItem('grid_notepad_pads_v1', JSON.stringify(mergedPadNotes));
+     } catch {}
      setNotesColor(mergedNotesColor);
      latestNotesColorRef.current = mergedNotesColor;
      localStorage.setItem('grid_notepad_notes_color', mergedNotesColor);
@@ -3036,10 +3754,13 @@ const handleSaveLabelModal = () => {
            status: String(r?.status || 'none'),
            image: typeof r?.image === 'string' ? r.image : '',
            audio: typeof r?.audio === 'string' ? r.audio : '',
+           pdf: typeof r?.pdf === 'string' ? r.pdf : '',
         };
         if (typeof r?.imageName === 'string' && r.imageName) cleanRow.imageName = String(r.imageName).slice(0, 160);
         if (typeof r?.audioName === 'string' && r.audioName) cleanRow.audioName = String(r.audioName).slice(0, 160);
         if (typeof r?.audioMime === 'string' && r.audioMime) cleanRow.audioMime = String(r.audioMime).slice(0, 80);
+        if (typeof r?.pdfName === 'string' && r.pdfName) cleanRow.pdfName = String(r.pdfName).slice(0, 160);
+        if (typeof r?.pdfSize === 'number' && Number.isFinite(r.pdfSize)) cleanRow.pdfSize = r.pdfSize;
         if (r?.textColor) cleanRow.textColor = String(r.textColor);
         if (r?.color) cleanRow.color = String(r.color);
         if (r && typeof r === 'object') {
@@ -3060,6 +3781,7 @@ const handleSaveLabelModal = () => {
         textColor: docObj.textColor ? String(docObj.textColor) : 'default',
         pinned: Boolean(docObj.pinned),
         isReadOnly: Boolean(docObj.isReadOnly),
+        autoGrowRows: Boolean(docObj.autoGrowRows),
         rows: cleanRows,
         createdAt: docObj.createdAt || new Date().toISOString(),
         updatedAt: docObj.updatedAt || new Date().toISOString(),
@@ -3081,29 +3803,64 @@ const handleSaveLabelModal = () => {
      } catch (e) {
         safeSecrets = [];
      }
-     const safeTrash = sanitizeTrashItems(trashItemsVal);
-     return stripUndefinedDeep({
-        userId: fsUid,
-        blueText: typeof blueTextVal === 'string' ? blueTextVal : '',
-        secretList: safeSecrets,
-        customLabels: Array.isArray(customLabelsVal) ? customLabelsVal.filter((v) => v != null).map((v) => String(v)) : [],
-        trashItems: safeTrash,
+     if (safeSecrets.length > 1000) safeSecrets = safeSecrets.slice(0, 1000);
+     let safeTrash = sanitizeTrashItems(trashItemsVal);
+     const rawPin = localStorage.getItem('grid_notepad_pin') || null;
+     const rawGistToken = gistToken || localStorage.getItem('grid_notepad_gist_token') || null;
+     const rawGistId = gistId || localStorage.getItem('grid_notepad_gist_id') || null;
+     const rawGeminiKey = userGeminiKey || localStorage.getItem('grid_notepad_gemini_key') || null;
+     let safePads: any[] = [];
+     try {
+        safePads = (Array.isArray(latestPadNotesRef.current) ? latestPadNotesRef.current : []).slice(0, 500).map((p: any) => ({
+           id: String(p?.id || ''),
+           title: String(p?.title || 'Pad pa titull').slice(0, 200),
+           content: typeof p?.content === 'string' ? p.content.slice(0, 80000) : '',
+           color: String(p?.color || 'default').slice(0, 40),
+           pinned: Boolean(p?.pinned),
+           createdAt: String(p?.createdAt || new Date().toISOString()),
+           updatedAt: String(p?.updatedAt || new Date().toISOString()),
+        }));
+     } catch (e) {
+        safePads = [];
+     }
+     const buildPayload = (trashList: TrashItem[], secretsList: any[], padsList: any[]) => stripUndefinedDeep({
+        userId: String(fsUid || '').slice(0, 128),
+        blueText: typeof blueTextVal === 'string' ? blueTextVal.slice(0, 100000) : '',
+        secretList: secretsList,
+        customLabels: Array.isArray(customLabelsVal) ? customLabelsVal.filter((v) => v != null).map((v) => String(v).slice(0, 200)).slice(0, 500) : [],
+        trashItems: trashList,
+        padNotes: padsList,
         notesColor: notesColorVal || 'default',
         textColorMode: textColorModeVal || 'default',
         textSize: Number.isFinite(latestTextSizeRef.current) ? latestTextSizeRef.current : (Number.isFinite(textSize) ? textSize : 12),
         textWeight: Number.isFinite(latestTextWeightRef.current) ? latestTextWeightRef.current : (Number.isFinite(textWeight) ? textWeight : 400),
-        pin: localStorage.getItem('grid_notepad_pin') || null,
-        gistToken: gistToken || localStorage.getItem('grid_notepad_gist_token') || null,
-        gistId: gistId || localStorage.getItem('grid_notepad_gist_id') || null,
-        geminiKey: userGeminiKey || localStorage.getItem('grid_notepad_gemini_key') || null,
+        pin: rawPin ? String(rawPin).slice(0, 100) : null,
+        gistToken: rawGistToken ? String(rawGistToken).slice(0, 200) : null,
+        gistId: rawGistId ? String(rawGistId).slice(0, 200) : null,
+        geminiKey: rawGeminiKey ? String(rawGeminiKey).slice(0, 200) : null,
         settingsUpdatedAt: getLocalSettingsUpdatedAt() || new Date().toISOString()
      });
+     let payload = buildPayload(safeTrash, safeSecrets, safePads);
+     if (JSON.stringify(payload).length > 750000) {
+        safeTrash = safeTrash.slice(0, 50).map((it) => ({
+           ...it,
+           data: it.type === 'list' && it.data ? { ...it.data, rows: [] } : it.data
+        }));
+        payload = buildPayload(safeTrash, safeSecrets, safePads);
+     }
+     if (JSON.stringify(payload).length > 750000) {
+        safeTrash = safeTrash.slice(0, 15);
+        safePads = safePads.slice(0, 200).map((p: any) => ({ ...p, content: String(p.content || '').slice(0, 3000) }));
+        payload = buildPayload(safeTrash, safeSecrets.slice(0, 300), safePads);
+     }
+     return payload;
   };
   const mergeDocsByUpdatedAt = (baseDocs: GridDocument[], incomingDocs: GridDocument[]): GridDocument[] => {
      const map = new Map<string, GridDocument>();
      baseDocs.forEach(d => {
         if (d && d.id) map.set(d.id, d);
      });
+     const isUsableMedia = (v: any) => typeof v === 'string' && v.length > 0 && !v.startsWith('__fschunk__:');
      incomingDocs.forEach(cDoc => {
         if (!cDoc || !cDoc.id) return;
         const existing = map.get(cDoc.id);
@@ -3112,8 +3869,26 @@ const handleSaveLabelModal = () => {
         } else {
            const existingTime = new Date(existing.updatedAt || existing.createdAt || 0).getTime();
            const incomingTime = new Date(cDoc.updatedAt || cDoc.createdAt || 0).getTime();
-           if (incomingTime > existingTime) {
-              map.set(cDoc.id, cDoc);
+           if (incomingTime >= existingTime) {
+              const mergedRows = Array.isArray(cDoc.rows) && Array.isArray(existing.rows)
+                 ? cDoc.rows.map((r: any, idx: number) => {
+                      if (!r) return r;
+                      const prevRow = existing.rows.find((er: any) => er && r.id && er.id === r.id) || existing.rows[idx];
+                      if (!prevRow) return r;
+                      let nextRow = r;
+                      if (!isUsableMedia(nextRow.image) && isUsableMedia(prevRow.image)) {
+                         nextRow = { ...nextRow, image: prevRow.image, imageName: nextRow.imageName || prevRow.imageName };
+                      }
+                      if (!isUsableMedia(nextRow.audio) && isUsableMedia(prevRow.audio)) {
+                         nextRow = { ...nextRow, audio: prevRow.audio, audioName: nextRow.audioName || prevRow.audioName, audioMime: nextRow.audioMime || prevRow.audioMime };
+                      }
+                      if (!isUsableMedia(nextRow.pdf) && isUsableMedia(prevRow.pdf)) {
+                         nextRow = { ...nextRow, pdf: prevRow.pdf, pdfName: nextRow.pdfName || prevRow.pdfName, pdfSize: nextRow.pdfSize || prevRow.pdfSize };
+                      }
+                      return nextRow;
+                   })
+                 : cDoc.rows;
+              map.set(cDoc.id, { ...cDoc, rows: mergedRows });
            }
         }
      });
@@ -3123,7 +3898,7 @@ const handleSaveLabelModal = () => {
      if (!auth.currentUser || !navigator.onLine) {
         return { docs: [], settings: null };
      }
-     if (isFirestoreQuotaPaused()) {
+     if (isFirestorePausedNow()) {
         return { docs: [], settings: null };
      }
      if (inFlightFirestoreSnapshotRef.current) {
@@ -3147,7 +3922,7 @@ const handleSaveLabelModal = () => {
      let sigsChanged = false;
 
      for (const candidateUid of candidateUids) {
-        if (isFirestoreQuotaPaused()) break;
+        if (isFirestorePausedNow()) break;
         try {
            const q = query(collection(db, 'documents'), where('userId', '==', candidateUid));
            const snaps = await getDocs(q);
@@ -3166,13 +3941,17 @@ const handleSaveLabelModal = () => {
               tripFirestoreQuotaCooldown(false);
               break;
            }
+           if (isFirestoreTransientNetworkError(err)) {
+              tripFirestoreTransientCooldown('documents/list', err);
+              break;
+           }
            try {
               handleFirestoreError(err, OperationType.LIST, 'documents');
            } catch (handledErr) {
               console.warn('Firestore documents read fallback:', handledErr);
            }
         }
-        if (!settingsData && !isFirestoreQuotaPaused()) {
+        if (!settingsData && !isFirestorePausedNow()) {
            try {
               const settingsSnap = await getDoc(doc(db, 'settings', candidateUid));
               if (settingsSnap.exists()) {
@@ -3186,6 +3965,10 @@ const handleSaveLabelModal = () => {
                  tripFirestoreQuotaCooldown(false);
                  break;
               }
+              if (isFirestoreTransientNetworkError(err)) {
+                 tripFirestoreTransientCooldown(`settings/${candidateUid}`, err);
+                 break;
+              }
               try {
                  handleFirestoreError(err, OperationType.GET, `settings/${candidateUid}`);
               } catch (handledErr) {
@@ -3196,12 +3979,12 @@ const handleSaveLabelModal = () => {
      }
      const needsChunkReassembly = Array.from(docsMap.values()).some((d) =>
         Array.isArray(d.rows) &&
-        d.rows.some((r) => (typeof r?.image === 'string' && r.image.startsWith('__fschunk__:')) || (typeof r?.audio === 'string' && r.audio.startsWith('__fschunk__:')))
+        d.rows.some((r) => (typeof r?.image === 'string' && r.image.startsWith('__fschunk__:')) || (typeof r?.audio === 'string' && r.audio.startsWith('__fschunk__:')) || (typeof r?.pdf === 'string' && r.pdf.startsWith('__fschunk__:')))
      );
-     if (needsChunkReassembly && !isFirestoreQuotaPaused()) {
+     if (needsChunkReassembly && !isFirestorePausedNow()) {
         const chunkGroups = new Map<string, Array<{ chunkIndex: number; totalChunks: number; data: string }>>();
         for (const candidateUid of candidateUids) {
-           if (isFirestoreQuotaPaused()) break;
+           if (isFirestorePausedNow()) break;
            try {
               const cq = query(collection(db, 'media_chunks'), where('userId', '==', candidateUid));
               const cSnaps = await getDocs(cq);
@@ -3218,13 +4001,17 @@ const handleSaveLabelModal = () => {
                  tripFirestoreQuotaCooldown(false);
                  break;
               }
+              if (isFirestoreTransientNetworkError(err)) {
+                 tripFirestoreTransientCooldown('media_chunks/list', err);
+                 break;
+              }
            }
         }
         docsMap.forEach((docItem) => {
            if (!Array.isArray(docItem.rows)) return;
            docItem.rows = docItem.rows.map((r) => {
               let nextRow = r;
-              (['image', 'audio'] as const).forEach((kind) => {
+              (['image', 'audio', 'pdf'] as const).forEach((kind) => {
                  const val = nextRow?.[kind];
                  if (typeof val === 'string' && val.startsWith('__fschunk__:')) {
                     const gKey = `${docItem.id}::${nextRow.id}::${kind}`;
@@ -3270,7 +4057,7 @@ const handleSaveLabelModal = () => {
   ): Promise<boolean> => {
      const runTask = async (): Promise<boolean> => {
      if (!auth.currentUser || !navigator.onLine) return false;
-     if (isFirestoreQuotaPaused()) {
+     if (isFirestorePausedNow()) {
         return false;
      }
      const fsUid = getFirestoreUid();
@@ -3291,7 +4078,7 @@ const handleSaveLabelModal = () => {
                  });
                  timer = setTimeout(() => {
                     reject(new Error('firestore-write-timeout'));
-                 }, 35000);
+                 }, 20000);
               })
            ]);
         } finally {
@@ -3301,11 +4088,11 @@ const handleSaveLabelModal = () => {
      };
 
      for (const delId of deletedDocIds) {
-        if (!delId || isFirestoreQuotaPaused()) continue;
+        if (!delId || isFirestorePausedNow()) continue;
         const safeDelId = String(delId).replace(/[^a-zA-Z0-9_\-\.:@]/g, '_').slice(0, 128);
         try {
            const docRef = doc(db, 'documents', safeDelId);
-           const existingSnap = await getDoc(docRef);
+           const existingSnap = await runFirestoreWriteWithQuotaGuard(getDoc(docRef));
            if (!existingSnap.exists()) {
               if (syncedSigs[safeDelId]) {
                  delete syncedSigs[safeDelId];
@@ -3325,6 +4112,11 @@ const handleSaveLabelModal = () => {
               return false;
            }
            ok = false;
+           if (isFirestoreTransientNetworkError(err)) {
+              tripFirestoreTransientCooldown(`documents/${safeDelId}`, err);
+              if (sigsDirty) saveSyncedFirestoreDocSigs(syncedSigs);
+              return false;
+           }
            try {
               handleFirestoreError(err, OperationType.DELETE, `documents/${safeDelId}`);
            } catch (handled) {
@@ -3334,7 +4126,7 @@ const handleSaveLabelModal = () => {
      }
 
      for (const docObj of docsToSync) {
-        if (!docObj || !docObj.id || isFirestoreQuotaPaused()) continue;
+        if (!docObj || !docObj.id || isFirestorePausedNow()) continue;
         const sanitized = sanitizeDocForFirestore(docObj, fsUid);
         const nextSig = computeFirestoreDocSig(sanitized);
         if (syncedSigs[sanitized.id] === nextSig) {
@@ -3350,14 +4142,14 @@ const handleSaveLabelModal = () => {
               const offloadedRows = sanitized.rows.map((r: any, rIdx: number) => {
                  let updatedRow = r;
                  const safeRowId = String(r?.id || `row-${rIdx}`).replace(/[^a-zA-Z0-9_\-\.:@]/g, '_').slice(0, 44);
-                 (['image', 'audio'] as const).forEach((kind) => {
+                 (['image', 'audio', 'pdf'] as const).forEach((kind) => {
                     const mediaVal = updatedRow?.[kind];
                     if (typeof mediaVal === 'string' && mediaVal.length > 50000 && !mediaVal.startsWith('__fschunk__:') && !mediaVal.startsWith('__srvmedia__:')) {
                        const totalChunks = Math.ceil(mediaVal.length / CHUNK_CHAR_LIMIT);
                        if (totalChunks <= 150) {
                           for (let ci = 0; ci < totalChunks; ci++) {
                              const sliceStr = mediaVal.slice(ci * CHUNK_CHAR_LIMIT, (ci + 1) * CHUNK_CHAR_LIMIT);
-                             const chunkId = `${docSlug}_${safeRowId}_${kind === 'image' ? 'i' : 'a'}_${ci}`.slice(0, 128);
+                             const chunkId = `${docSlug}_${safeRowId}_${kind === 'image' ? 'i' : kind === 'audio' ? 'a' : 'p'}_${ci}`.slice(0, 128);
                              chunkOps.push({
                                 chunkId,
                                 payload: {
@@ -3392,7 +4184,7 @@ const handleSaveLabelModal = () => {
                  try {
                     await execBatch();
                  } catch (batchErr) {
-                    if (isFirestoreQuotaError(batchErr)) throw batchErr;
+                    if (isFirestoreQuotaError(batchErr) || isFirestoreTransientNetworkError(batchErr)) throw batchErr;
                     await execBatch();
                  }
               }
@@ -3408,6 +4200,11 @@ const handleSaveLabelModal = () => {
               return false;
            }
            ok = false;
+           if (isFirestoreTransientNetworkError(err)) {
+              tripFirestoreTransientCooldown(`documents/${sanitized.id}`, err);
+              if (sigsDirty) saveSyncedFirestoreDocSigs(syncedSigs);
+              return false;
+           }
            try {
               handleFirestoreError(err, OperationType.WRITE, `documents/${sanitized.id}`);
            } catch (handled) {
@@ -3431,7 +4228,7 @@ const handleSaveLabelModal = () => {
      try {
         prevSettingsSig = localStorage.getItem(FIRESTORE_SYNCED_SETTINGS_KEY) || '';
      } catch (e) {}
-     if (nextSettingsSig !== prevSettingsSig && !isFirestoreQuotaPaused()) {
+     if (nextSettingsSig !== prevSettingsSig && !isFirestorePausedNow()) {
         try {
            await runFirestoreWriteWithQuotaGuard(setDoc(doc(db, 'settings', fsUid), settingsPayload, { merge: true }));
            try {
@@ -3443,6 +4240,10 @@ const handleSaveLabelModal = () => {
               return false;
            }
            ok = false;
+           if (isFirestoreTransientNetworkError(err)) {
+              tripFirestoreTransientCooldown(`settings/${fsUid}`, err);
+              return false;
+           }
            try {
               handleFirestoreError(err, OperationType.WRITE, `settings/${fsUid}`);
            } catch (handled) {
@@ -3491,7 +4292,7 @@ const handleSaveLabelModal = () => {
               nextRows.push(row);
               continue;
            }
-           for (const kind of ['image', 'audio'] as const) {
+           for (const kind of ['image', 'audio', 'pdf'] as const) {
               const val = row[kind];
               if (typeof val === 'string' && val.length > 1500000 && !val.startsWith(SRV_MEDIA_PREFIX) && !val.startsWith('__fschunk__:')) {
                  const mediaId = `${String(docObj.id || 'doc').replace(/[^a-zA-Z0-9_\-]/g, '_').slice(0, 28)}_${String(row.id || `r${rIdx}`).replace(/[^a-zA-Z0-9_\-]/g, '_').slice(0, 28)}_${kind}_${val.length}`;
@@ -3587,7 +4388,8 @@ const handleSaveLabelModal = () => {
         (d) => Array.isArray(d?.rows) && d.rows.some(
            (r: any) =>
               (typeof r?.image === 'string' && r.image.startsWith(SRV_MEDIA_PREFIX)) ||
-              (typeof r?.audio === 'string' && r.audio.startsWith(SRV_MEDIA_PREFIX))
+              (typeof r?.audio === 'string' && r.audio.startsWith(SRV_MEDIA_PREFIX)) ||
+              (typeof r?.pdf === 'string' && r.pdf.startsWith(SRV_MEDIA_PREFIX))
         )
      );
      if (!needsHydration) return docsInput;
@@ -3602,7 +4404,7 @@ const handleSaveLabelModal = () => {
         const nextRows: GridRow[] = [];
         for (const r of d.rows) {
            let nextRow = r;
-           for (const kind of ['image', 'audio'] as const) {
+           for (const kind of ['image', 'audio', 'pdf'] as const) {
               const val = nextRow?.[kind];
               if (typeof val === 'string' && val.startsWith(SRV_MEDIA_PREFIX)) {
                  const mediaId = val.slice(SRV_MEDIA_PREFIX.length);
@@ -3667,13 +4469,14 @@ const handleSaveLabelModal = () => {
      recognition.interimResults = false;
      recognition.onresult = (event: any) => {
         const transcript = event.results[0][0].transcript;
-        // Removed colMap, dynamic parsing used
-        
-        let newRows = [...rows];
-        const currentVal = newRows[rIndex][colKey as keyof GridRow] as string;
-        newRows[rIndex][colKey as keyof GridRow] = (currentVal + (currentVal ? ' ' : '') + transcript).trim();
+        lastUserTypingTsRef.current = Date.now();
+        const baseRows = latestRowsRef.current.length > 0 ? latestRowsRef.current : rows;
+        let newRows = [...baseRows];
+        const currentVal = (newRows[rIndex]?.[colKey as keyof GridRow] as string) || '';
+        newRows[rIndex] = { ...newRows[rIndex], [colKey]: (currentVal + (currentVal ? ' ' : '') + transcript).trim() };
+        latestRowsRef.current = newRows;
         setRows(newRows);
-        updateActiveDocumentState(title, newRows, headers);
+        updateActiveDocumentState(latestTitleRef.current || title, newRows, latestHeadersRef.current.length > 0 ? latestHeadersRef.current : headers);
         showToast(t("Teksti u shtua!", "Text added!"));
         setListeningCell(null);
      };
@@ -4734,12 +5537,15 @@ const exportChatResponseToPdf = async () => {
     const finalTextSize = latestTextSizeRef.current;
     const finalTextWeight = latestTextWeightRef.current;
 
+    const finalPadNotes = Array.isArray(latestPadNotesRef.current) ? latestPadNotesRef.current : [];
+
     // Protect cloud archive from accidental empty overwrite on a brand new device before initial restore
     const isFreshEmptyDevice =
       docs.length === 0 &&
       finalCustomLabels.length === 0 &&
       finalSecretList.length === 0 &&
       finalTrashItems.length === 0 &&
+      finalPadNotes.length === 0 &&
       !finalBlueText &&
       deletedDocIds.length === 0 &&
       !hasPendingSync();
@@ -4757,6 +5563,7 @@ const exportChatResponseToPdf = async () => {
       secretList: finalSecretList,
       customLabels: finalCustomLabels,
       trashItems: finalTrashItems,
+      padNotes: finalPadNotes,
       notesColor: finalNotesColor,
       textColorMode: finalTextColorMode,
       textSize: finalTextSize,
@@ -4884,6 +5691,7 @@ const exportChatResponseToPdf = async () => {
            secretList: finalSecrets,
            customLabels: finalLabels,
            trashItems: finalTrash,
+           padNotes: Array.isArray(latestPadNotesRef.current) ? latestPadNotesRef.current : [],
            notesColor: finalNotesColor,
            textColorMode
         }));
@@ -5585,6 +6393,14 @@ const exportChatResponseToPdf = async () => {
          if (Array.isArray(s.trashItems)) {
             restoredTrashAccum = mergeTrashItems(restoredTrashAccum, s.trashItems, getPendingTrashDeletes());
          }
+         if (Array.isArray(s.padNotes)) {
+            const mergedPads = mergePadNotesList(latestPadNotesRef.current, s.padNotes);
+            setPadNotes(mergedPads);
+            latestPadNotesRef.current = mergedPads;
+            try {
+              localStorage.setItem('grid_notepad_pads_v1', JSON.stringify(mergedPads));
+            } catch {}
+         }
          if (s.notesColor !== undefined) {
             setNotesColor(s.notesColor);
             setOnlineNotesColor(s.notesColor);
@@ -5647,7 +6463,7 @@ const exportChatResponseToPdf = async () => {
         saveDocsLocalSafe(mergedRemoteDocs);
         if (activeDocIdRef.current) {
           const curr = mergedRemoteDocs.find(x => x.id === activeDocIdRef.current);
-          if (curr && Date.now() - lastUserTypingTsRef.current >= 4500) {
+          if (curr && Date.now() - lastUserTypingTsRef.current >= 15000) {
             setRows(curr.rows);
             setHeaders(curr.headers);
             setTitle(curr.title);
@@ -5741,10 +6557,11 @@ const exportChatResponseToPdf = async () => {
 
     const fsRemote = await fetchFirestoreSnapshot();
     const hydratedServerDocs = await hydrateServerMediaRefs(serverJson?.documents || [], idToken);
-    const mergedOnlineDocs = mergeDocsByUpdatedAt(
+    const mergedRawDocs = mergeDocsByUpdatedAt(
        hydratedServerDocs,
        fsRemote.docs || []
     );
+    const mergedOnlineDocs = await restoreDocsOmittedMedia(mergedRawDocs);
 
     const pickedSettings = fsRemote.settings || serverJson;
     if (pickedSettings) {
@@ -5768,6 +6585,14 @@ const exportChatResponseToPdf = async () => {
 
     if (mergedOnlineDocs.length > 0 || pickedSettings) {
        setCloudDocs(mergedOnlineDocs);
+       cloudDocsRef.current = mergedOnlineDocs;
+       if (selectedOnlineDocRef.current && Date.now() - lastUserTypingTsRef.current >= 15000) {
+          const refreshedSel = mergedOnlineDocs.find((d) => d.id === selectedOnlineDocRef.current?.id);
+          if (refreshedSel) {
+             setSelectedOnlineDoc(refreshedSel);
+             selectedOnlineDocRef.current = refreshedSel;
+          }
+       }
        setIsFetchingCloud(false);
        return mergedOnlineDocs;
     }
@@ -5801,7 +6626,7 @@ const exportChatResponseToPdf = async () => {
      setNotesColor(onlineNotesColor || 'default');
      latestNotesColorRef.current = onlineNotesColor || 'default';
      localStorage.setItem('grid_notepad_notes_color', onlineNotesColor || 'default');
-     if (activeDocIdRef.current && Date.now() - lastUserTypingTsRef.current >= 4500) {
+     if (activeDocIdRef.current && Date.now() - lastUserTypingTsRef.current >= 15000) {
         const curr = cloudDocs.find(x => x.id === activeDocIdRef.current);
         if (curr) {
            setRows(curr.rows);
@@ -5941,30 +6766,57 @@ const exportChatResponseToPdf = async () => {
      }
   }, [loading, user]);
   useEffect(() => {
-     if (isFirestoreQuotaPaused()) {
+     if (isFirestorePausedNow()) {
        return;
      }
+     if (typeof navigator !== 'undefined' && !navigator.onLine) {
+       return;
+     }
+     let cancelled = false;
      async function testFirestoreConnection() {
        try {
          await resumeFirestoreNetwork();
          await getDocFromServer(doc(db, 'test', 'connection'));
        } catch (error) {
+         if (cancelled) return;
          if (isFirestoreQuotaError(error)) {
            tripFirestoreQuotaCooldown(false);
            return;
          }
          if (error instanceof Error && error.message.includes('the client is offline')) {
-           console.error("Please check your Firebase configuration.");
+           if (typeof navigator !== 'undefined' && !navigator.onLine) {
+             return;
+           }
+           await new Promise((resolve) => setTimeout(resolve, 1500));
+           if (cancelled || (typeof navigator !== 'undefined' && !navigator.onLine) || isFirestorePausedNow()) {
+             return;
+           }
+           try {
+             await resumeFirestoreNetwork();
+             await getDocFromServer(doc(db, 'test', 'connection'));
+           } catch (retryError) {
+             if (cancelled) return;
+             if (isFirestoreQuotaError(retryError)) {
+               tripFirestoreQuotaCooldown(false);
+               return;
+             }
+             if (retryError instanceof Error && retryError.message.includes('the client is offline')) {
+               console.error("Please check your Firebase configuration.");
+             }
+           }
          }
        }
      }
      testFirestoreConnection();
+     return () => {
+       cancelled = true;
+     };
   }, []);
   useEffect(() => {
      if (user) {
          const fetchCloudSettings = async () => {
             try {
-               if (isFirestoreQuotaPaused()) {
+               if (isFirestorePausedNow()) {
                   return;
                }
                if (hasPendingSync()) {
@@ -6018,6 +6870,14 @@ const exportChatResponseToPdf = async () => {
                      latestTrashItemsRef.current = mergedTrash;
                      localStorage.setItem(TRASH_ITEMS_KEY, JSON.stringify(mergedTrash));
                   }
+                  if (Array.isArray(data.padNotes)) {
+                     const mergedPads = mergePadNotesList(latestPadNotesRef.current, data.padNotes);
+                     setPadNotes(mergedPads);
+                     latestPadNotesRef.current = mergedPads;
+                     try {
+                        localStorage.setItem('grid_notepad_pads_v1', JSON.stringify(mergedPads));
+                     } catch {}
+                  }
                   if (data.notesColor !== undefined) {
                      setNotesColor(data.notesColor);
                      latestNotesColorRef.current = data.notesColor;
@@ -6050,9 +6910,11 @@ const exportChatResponseToPdf = async () => {
          const fetchCloudData = async () => {
            try {
                if (isFirestoreQuotaPaused()) return;
+               if (hasPendingSync() || Date.now() - lastUserTypingTsRef.current < 15000) return;
                const pendingDeletes = getPendingDeletes();
                const fsSnap = await fetchFirestoreSnapshot();
                if (isFirestoreQuotaPaused()) return;
+               if (hasPendingSync() || Date.now() - lastUserTypingTsRef.current < 15000) return;
                const fetched: GridDocument[] = fsSnap.docs.filter(d => d && !pendingDeletes.includes(d.id));
                let needsUpload = pendingDeletes.length > 0 || hasPendingSync();
                
@@ -6074,7 +6936,7 @@ const exportChatResponseToPdf = async () => {
                    saveDocsLocalSafe(newMerged);
                    
                    const currActiveId = activeDocIdRef.current;
-                   if (currActiveId) {
+                   if (currActiveId && Date.now() - lastUserTypingTsRef.current >= 15000) {
                        const currentViewingDoc = newMerged.find(x => x.id === currActiveId);
                        const oldViewingDoc = prevLocal.find(x => x.id === currActiveId);
                        if (currentViewingDoc && oldViewingDoc && currentViewingDoc.updatedAt !== oldViewingDoc.updatedAt) {
@@ -7043,7 +7905,7 @@ const exportChatResponseToPdf = async () => {
                              syncWithGoogleCloud(next, true);
                              return next;
                          });
-                         if (act.documentId === activeDocIdRef.current && Date.now() - lastUserTypingTsRef.current >= 4500) {
+                         if (act.documentId === activeDocIdRef.current && Date.now() - lastUserTypingTsRef.current >= 15000) {
                              if (act.newHeaders) setHeaders(act.newHeaders);
                              if (act.newColumnWidths) setColumnWidths(act.newColumnWidths);
                              if (act.newRows) setRows(act.newRows);
@@ -7065,27 +7927,27 @@ const exportChatResponseToPdf = async () => {
                              syncWithGoogleCloud(next, true);
                              return next;
                          });
-                         if (act.documentId === activeDocIdRef.current && act.newRows && Date.now() - lastUserTypingTsRef.current >= 4500) {
+                         if (act.documentId === activeDocIdRef.current && act.newRows && Date.now() - lastUserTypingTsRef.current >= 15000) {
                              setRows(act.newRows);
                          }
                          showToast(t("⚡ Agjenti Gemini korrigjoi rreshtat e bllokut automatikisht!", "⚡ Gemini agent updated list rows automatically!"));
-                      } else if (act.type === 'DELETE_DOCUMENT' && act.documentId) {
-                          const targetDoc = latestDocsRef.current.find(d => d.id === act.documentId);
-                          const nextTrash = targetDoc ? appendItemsToTrashState([buildTrashFromDoc(targetDoc)]) : latestTrashItemsRef.current;
-                          const next = latestDocsRef.current.filter(d => d.id !== act.documentId);
-                          setDocuments(next);
-                          latestDocsRef.current = next;
-                          saveDocsLocalSafe(next);
-                          markPendingSync([act.documentId]);
-                          syncWithGoogleCloud(next, true, undefined, undefined, undefined, [act.documentId], undefined, nextTrash);
-                          if (act.documentId === activeDocIdRef.current) {
-                              setActiveDocId(null);
-                          }
-                          showToast(t(
-                              `⚡ Autopilot fshiu dhe ruajti te Kosh-i dokumentin: ${act.title || act.documentId}`,
-                              `⚡ Autopilot moved document to Trash: ${act.title || act.documentId}`
-                          ));
-                      }
+                     } else if (act.type === 'DELETE_DOCUMENT' && act.documentId) {
+                         const targetDoc = latestDocsRef.current.find(d => d.id === act.documentId);
+                         const nextTrash = targetDoc ? appendItemsToTrashState([buildTrashFromDoc(targetDoc)]) : latestTrashItemsRef.current;
+                         const next = latestDocsRef.current.filter(d => d.id !== act.documentId);
+                         setDocuments(next);
+                         latestDocsRef.current = next;
+                         saveDocsLocalSafe(next);
+                         markPendingSync([act.documentId]);
+                         syncWithGoogleCloud(next, true, undefined, undefined, undefined, [act.documentId], undefined, nextTrash);
+                         if (act.documentId === activeDocIdRef.current) {
+                             setActiveDocId(null);
+                         }
+                         showToast(t(
+                             `⚡ Autopilot fshiu dhe ruajti te Kosh-i dokumentin: ${act.title || act.documentId}`,
+                             `⚡ Autopilot moved document to Trash: ${act.title || act.documentId}`
+                         ));
+                     }
                  });
               } else {
                  appendDebugLog(`🤖 [AI Autopilot] Analiza mbaroi: Nuk u gjet asnjë gabim apo boshllëk për të plotësuar.`);
@@ -7154,7 +8016,7 @@ const exportChatResponseToPdf = async () => {
      const handleCloudUpdate = (e: any) => {
          const docObj = e.detail;
          if (docObj && docObj.id === activeDocIdRef.current) {
-             if (Date.now() - lastUserTypingTsRef.current < 4500) return;
+             if (Date.now() - lastUserTypingTsRef.current < 15000) return;
              setRows(docObj.rows);
              setHeaders(docObj.headers);
              setTitle(docObj.title);
@@ -7317,6 +8179,7 @@ const exportChatResponseToPdf = async () => {
         cancelRowMoveMode();
      }
      setActiveDocId(null);
+     setActivePadId(null);
      setOnlineView(null);
      setMainTab('lista');
      setSelectedLabelFolder(null);
@@ -7367,7 +8230,11 @@ const exportChatResponseToPdf = async () => {
      const handleVisibilityChange = () => {
         if (document.visibilityState === 'hidden') {
            hiddenAtRef.current = Date.now();
-           if (hasPendingSync()) {
+           if (localSaveTimeout.current) {
+              clearTimeout(localSaveTimeout.current);
+              localSaveTimeout.current = null;
+           }
+           if (pendingLocalSaveRef.current || hasPendingSync()) {
               flushOfflineQueue();
            }
         } else if (document.visibilityState === 'visible') {
@@ -7580,11 +8447,12 @@ const exportChatResponseToPdf = async () => {
              });
           });
        if (!shouldHydrate) return;
+       if (Date.now() - lastUserTypingTsRef.current < 15000) return;
        setDocuments(idbDocs);
        latestDocsRef.current = idbDocs;
        if (activeDocIdRef.current) {
           const activeHydrated = idbDocs.find((d) => d.id === activeDocIdRef.current);
-          if (activeHydrated && Date.now() - lastUserTypingTsRef.current >= 3000) {
+          if (activeHydrated && Date.now() - lastUserTypingTsRef.current >= 15000) {
              setRows(activeHydrated.rows || []);
           }
        }
@@ -7743,12 +8611,29 @@ const exportChatResponseToPdf = async () => {
     }
   };
   const getEmptyRows = (customCount?: number) => {
-    const count = customCount ?? defaultNewDocRows;
-    return Array.from({length: count}, (_, i) => ({ 
-      id: `row-${i}`, status: 'none' as const, image: '' 
+    const count = customCount ?? (defaultNewDocRowMode === 'auto' ? 1 : defaultNewDocRows);
+    return Array.from({length: Math.max(1, count)}, (_, i) => ({ 
+      id: `row-${Date.now()}-${i}`, status: 'none' as const, image: '' 
     }));
   };
-  const updateActiveDocumentState = (newTitle: string, newRows: GridRow[], newHeaders: string[], newWidths: number[] = columnWidths, newTags: string[] = activeTags, newTextColor?: string, immediateSync = false) => {
+  const hasAnyRowData = (r: GridRow | undefined, colHeaders: string[] = headers): boolean => {
+    if (!r) return false;
+    const hasText = colHeaders.some((_, i) => String(r[`col${i+1}`] || '').trim().length > 0);
+    return Boolean(hasText || r.image || r.audio || r.pdf || (r.status && r.status !== 'none'));
+  };
+  const appendAutoRowIfNeeded = (candidateRows: GridRow[], docMeta?: GridDocument | null): GridRow[] => {
+    const isAuto = Boolean(docMeta?.autoGrowRows) || (defaultNewDocRowMode === 'auto' && candidateRows.length < 90);
+    if (!isAuto || candidateRows.length === 0 || candidateRows.length >= 500) return candidateRows;
+    const lastRow = candidateRows[candidateRows.length - 1];
+    if (hasAnyRowData(lastRow)) {
+      return [
+        ...candidateRows,
+        { id: `row-${Date.now()}-${Math.random().toString(36).slice(2, 6)}`, status: 'none' as const, image: '' }
+      ];
+    }
+    return candidateRows;
+  };
+  const updateActiveDocumentState = (newTitle: string, newRows: GridRow[], newHeaders: string[], newWidths: number[] = latestColumnWidthsRef.current, newTags: string[] = latestActiveTagsRef.current, newTextColor?: string, immediateSync = false, overrideAutoGrow?: boolean) => {
      const baseDocs = latestDocsRef.current.length > 0 ? latestDocsRef.current : documents;
      let updatedDocs = [...baseDocs];
      const existingDocIndex = updatedDocs.findIndex(d => d.id === activeDocId);
@@ -7765,7 +8650,8 @@ const exportChatResponseToPdf = async () => {
         tags: newTags,
         textColor: newTextColor !== undefined ? newTextColor : (existingDoc?.textColor || textColorMode || 'default'),
         pinned: Boolean(existingDoc?.pinned),
-        isReadOnly: Boolean(existingDoc?.isReadOnly)
+        isReadOnly: Boolean(existingDoc?.isReadOnly),
+        autoGrowRows: overrideAutoGrow !== undefined ? overrideAutoGrow : Boolean(existingDoc?.autoGrowRows)
      };
      if (existingDocIndex >= 0) {
         updatedDocs[existingDocIndex] = updatedDoc;
@@ -7781,7 +8667,8 @@ const exportChatResponseToPdf = async () => {
     const newTitle = t('Shënim i Paemërtuar', 'Untitled Note');
     const colCount = Math.max(2, Math.min(8, defaultNewDocCols));
     const newHeaders = Array.from({ length: colCount }, (_, idx) => `${t('Kolona', 'Column')} ${idx + 1}`);
-    const newRows = getEmptyRows(defaultNewDocRows);
+    const isAutoMode = defaultNewDocRowMode === 'auto';
+    const newRows = getEmptyRows(isAutoMode ? 1 : defaultNewDocRows);
     
     clearDocHistory();
     setRowFilter('all');
@@ -7804,7 +8691,8 @@ const exportChatResponseToPdf = async () => {
        tags: initialTags || [],
        textColor: textColorMode || 'default',
        pinned: false,
-       isReadOnly: false
+       isReadOnly: false,
+       autoGrowRows: isAutoMode
     };
     const baseDocs = latestDocsRef.current.length > 0 ? latestDocsRef.current : documents;
     const updatedDocs = [newDocObj, ...baseDocs];
@@ -7828,12 +8716,15 @@ const exportChatResponseToPdf = async () => {
     latestTextColorModeRef.current = docColor;
     localStorage.setItem('grid_notepad_text_color_mode', docColor);
     
-    const newRows = [...doc.rows];
-    const hasContent = (r: GridRow) => (doc.headers.some((_, i) => (r[`col${i+1}`] || '').toString().trim()) || r.image || r.audio) ? true : false;
-    if (newRows.length > 0) {
+    let newRows = [...(doc.rows || [])];
+    const hasContent = (r: GridRow) => (doc.headers.some((_, i) => (r[`col${i+1}`] || '').toString().trim()) || r.image || r.audio || r.pdf) ? true : false;
+    if (doc.autoGrowRows) {
+      const usedOnly = newRows.filter(r => hasContent(r) || (r.status && r.status !== 'none'));
+      newRows = [...usedOnly, { id: `row-${Date.now()}-auto-end`, status: 'none' as const, image: '' }];
+    } else if (newRows.length > 0) {
         const firstRowIsUsed = hasContent(newRows[0]) || (newRows[0].status && newRows[0].status !== 'none');
         if (firstRowIsUsed) {
-            const firstEmptyIndex = newRows.findIndex(r => !hasContent(r) && r.status === 'none' && !r.image && !r.audio);
+            const firstEmptyIndex = newRows.findIndex(r => !hasContent(r) && r.status === 'none' && !r.image && !r.audio && !r.pdf);
             if (firstEmptyIndex !== -1) {
                 const emptyRow = newRows.splice(firstEmptyIndex, 1)[0];
                 newRows.unshift(emptyRow);
@@ -7941,11 +8832,12 @@ const exportChatResponseToPdf = async () => {
        lastCellTypingSnapshotTsRef.current = now;
      }
      const baseRows = latestRowsRef.current.length === rows.length ? latestRowsRef.current : rows;
-     const newRows = [...baseRows];
-     newRows[rIndex] = { ...newRows[rIndex], [colKey]: value };
+     const updated = [...baseRows];
+     updated[rIndex] = { ...updated[rIndex], [colKey]: value };
+     const newRows = appendAutoRowIfNeeded(updated, currentDoc);
      latestRowsRef.current = newRows;
      setRows(newRows);
-     updateActiveDocumentState(title, newRows, headers);
+     updateActiveDocumentState(latestTitleRef.current || title, newRows, latestHeadersRef.current.length > 0 ? latestHeadersRef.current : headers);
   };
   const handleUndo = () => {
      if (undoStackRef.current.length === 0) return;
@@ -8119,7 +9011,19 @@ const exportChatResponseToPdf = async () => {
   };
   const handleTrimEmptyRowsInCurrentDoc = () => {
      if (isDocReadOnly) return;
-     const hasContent = (r: GridRow) => Boolean(headers.some((_, c) => String(r[`col${c + 1}`] || '').trim()) || r.image || r.audio || (r.status && r.status !== 'none'));
+     const currentDoc = documents.find(d => d.id === activeDocId);
+     const isAutoDoc = Boolean(currentDoc?.autoGrowRows) || defaultNewDocRowMode === 'auto';
+     const hasContent = (r: GridRow) => Boolean(headers.some((_, c) => String(r[`col${c + 1}`] || '').trim()) || r.image || r.audio || r.pdf || (r.status && r.status !== 'none'));
+     if (isAutoDoc) {
+       const usedAll = rows.filter(r => hasContent(r));
+       const nextRows = [...usedAll, { id: `row-${Date.now()}-auto-end`, status: 'none' as const, image: '' }];
+       pushUndoSnapshot();
+       setRows(nextRows);
+       setSelectedRows(new Set());
+       updateActiveDocumentState(title, nextRows, headers, columnWidths, activeTags, undefined, true, true);
+       showToast(t(`✓ Rreshtat bosh u pastruan (${rows.length} → ${nextRows.length}).`, `✓ Trimmed extra blank rows (${rows.length} → ${nextRows.length}).`));
+       return;
+     }
      const used = rows.filter((r, idx) => idx > 0 && hasContent(r));
      const firstEmpty = rows[0] && !hasContent(rows[0])
        ? rows[0]
@@ -8252,7 +9156,7 @@ const exportChatResponseToPdf = async () => {
   const isGridRowCompletelyEmpty = (r: GridRow | undefined, colCount: number): boolean => {
      if (!r) return true;
      const hasText = Array.from({ length: colCount }, (_, c) => String(r[`col${c + 1}`] || '').trim()).some(Boolean);
-     if (hasText || r.image || r.audio) return false;
+     if (hasText || r.image || r.audio || r.pdf) return false;
      if (r.status && r.status !== 'none') return false;
      return true;
   };
@@ -8268,8 +9172,9 @@ const exportChatResponseToPdf = async () => {
      // Only compact if at least one row below or above has data/status, avoiding churn on completely empty sheets
      const hasRemainingAfter = currRows.slice(rIndex + 1).some(r => !isGridRowCompletelyEmpty(r, headers.length));
      if (!hasRemainingAfter) return;
+     const isAutoDoc = Boolean(currentDoc?.autoGrowRows) || (defaultNewDocRowMode === 'auto' && currRows.length < 90);
      const nextRows = currRows.filter((_, idx) => idx !== rIndex);
-     const minCap = Math.max(defaultNewDocRows || 90, currRows.length);
+     const minCap = isAutoDoc ? 1 : Math.max(defaultNewDocRows || 90, currRows.length);
      while (nextRows.length < minCap) {
        nextRows.push({
          id: `row-${Date.now()}-${Math.random().toString(36).slice(2, 7)}`,
@@ -8289,6 +9194,85 @@ const exportChatResponseToPdf = async () => {
        return shifted;
      });
      updateActiveDocumentState(title, nextRows, headers, columnWidths, activeTags, undefined, true);
+  };
+  const handleSwitchActiveDocRowMode = (mode: '90' | '120' | '150' | 'auto') => {
+     if (!activeDocId) return;
+     const currentDoc = documents.find(d => d.id === activeDocId);
+     if (currentDoc?.isReadOnly) {
+       showToast(t('Dokumenti është Read-Only!', 'Document is Read-Only!'));
+       return;
+     }
+     pushUndoSnapshot();
+     if (mode === 'auto') {
+       const used = rows.filter(r => hasAnyRowData(r, headers));
+       const nextRows = [...used, { id: `row-${Date.now()}-auto-end`, status: 'none' as const, image: '' }];
+       latestRowsRef.current = nextRows;
+       setRows(nextRows);
+       setSelectedRows(new Set());
+       updateActiveDocumentState(title, nextRows, headers, columnWidths, activeTags, undefined, true, true);
+       showToast(t('✓ Dokumenti kaloi në sistemin Automatik të rreshtave!', '✓ Active note switched to Automatic rows!'));
+       return;
+     }
+     const targetCount = parseInt(mode, 10) || 90;
+     const nextRows = [...rows];
+     while (nextRows.length < targetCount) {
+       nextRows.push({ id: `row-${Date.now()}-${nextRows.length}`, status: 'none' as const, image: '' });
+     }
+     if (nextRows.length > targetCount) {
+       let i = nextRows.length - 1;
+       while (nextRows.length > targetCount && i > 0) {
+         if (!hasAnyRowData(nextRows[i], headers)) {
+           nextRows.splice(i, 1);
+         }
+         i--;
+       }
+     }
+     latestRowsRef.current = nextRows;
+     setRows(nextRows);
+     setSelectedRows(new Set());
+     updateActiveDocumentState(title, nextRows, headers, columnWidths, activeTags, undefined, true, false);
+     showToast(t(`✓ Dokumenti u vendos me ${nextRows.length} rreshta!`, `✓ Active note set to ${nextRows.length} rows!`));
+  };
+  const applyTextColorToSelectedRows = (colorId: string) => {
+     if (!activeDocId || selectedRows.size === 0) return;
+     const currentDoc = documents.find(d => d.id === activeDocId);
+     if (currentDoc?.isReadOnly) {
+       showToast(t('Dokumenti është Read-Only!', 'Document is Read-Only!'));
+       return;
+     }
+     pushUndoSnapshot();
+     const nextRows = rows.map((r, idx) => selectedRows.has(idx) ? { ...r, textColor: colorId } : r);
+     latestRowsRef.current = nextRows;
+     setRows(nextRows);
+     updateActiveDocumentState(title, nextRows, headers, columnWidths, activeTags, undefined, true);
+     showToast(t(`✓ Ngjyra e tekstit u vendos në ${selectedRows.size} rreshta!`, `✓ Text color applied to ${selectedRows.size} selected row(s)!`));
+  };
+  const clearSelectedRowsContent = () => {
+     if (!activeDocId || selectedRows.size === 0) return;
+     const currentDoc = documents.find(d => d.id === activeDocId);
+     if (currentDoc?.isReadOnly) {
+       showToast(t('Dokumenti është Read-Only!', 'Document is Read-Only!'));
+       return;
+     }
+     executeProtectedAction(() => {
+       pushUndoSnapshot();
+       let clearedCount = 0;
+       const nextRows = rows.map((r, idx) => {
+         if (!selectedRows.has(idx)) return r;
+         const isLocked = r.status === 'ok' || r.status === 'blue' || r.status === 'yellow' || r.status === 'x' || r.status === 'lock';
+         if (isLocked) return r;
+         clearedCount++;
+         return { id: r.id, status: 'none' as const, image: '' };
+       });
+       if (clearedCount === 0) {
+         showToast(t('Rrjeshtat e zgjedhur janë të kyçur. Shkyçini fillimisht!', 'Selected rows are locked. Unlock them first!'));
+         return;
+       }
+       latestRowsRef.current = nextRows;
+       setRows(nextRows);
+       updateActiveDocumentState(title, nextRows, headers, columnWidths, activeTags, undefined, true);
+       showToast(t(`✓ U pastruan ${clearedCount} rreshta të pa-kyçur!`, `✓ Cleared ${clearedCount} unlocked row(s)!`));
+     });
   };
   const startRowMoveMode = () => {
      const currentDoc = documents.find(d => d.id === activeDocId);
@@ -8498,22 +9482,162 @@ const exportChatResponseToPdf = async () => {
      }
      return { blob: new Blob([bytes], { type: mimeType }), mimeType };
   };
-  const handleDownloadRowMedia = async (dataUrl: string, fileName: string, kind: 'image' | 'audio') => {
+  const resolveMediaDataUrl = async (rawVal: string, rowId?: string, fileName?: string): Promise<string | null> => {
+     if (!rawVal || typeof rawVal !== 'string') return null;
+     if (rawVal.startsWith('data:') || rawVal.startsWith('http') || rawVal.startsWith('blob:')) {
+       return rawVal;
+     }
+     const cached = resolvedMediaCacheRef.current[rawVal];
+     if (cached) return cached;
+     if (rawVal.startsWith('__srvmedia__:')) {
+       const mediaId = rawVal.slice('__srvmedia__:'.length);
+       const idToken = auth.currentUser ? await auth.currentUser.getIdToken(true).catch(() => null) : null;
+       const fetched = await fetchSingleServerMediaById(mediaId, idToken);
+       if (fetched) {
+         setResolvedMediaCache((prev) => ({ ...prev, [rawVal]: fetched }));
+         return fetched;
+       }
+       return null;
+     }
+     if (rawVal.startsWith('__idb_media__:')) {
+       const findMatchInDocs = (docsArr: GridDocument[] | null | undefined): string | null => {
+         if (!Array.isArray(docsArr)) return null;
+         for (const d of docsArr) {
+           if (!Array.isArray(d?.rows)) continue;
+           const mr = d.rows.find((rx: any) =>
+             (rowId && rx?.id === rowId) ||
+             (fileName && ((rx?.imageName && rx.imageName === fileName) || (rx?.audioName && rx.audioName === fileName)))
+           );
+           if (mr?.image && typeof mr.image === 'string' && !mr.image.startsWith('__idb_media__:') && !mr.image.startsWith('__fschunk__:')) {
+             return mr.image;
+           }
+           if (mr?.audio && typeof mr.audio === 'string' && !mr.audio.startsWith('__idb_media__:') && !mr.audio.startsWith('__fschunk__:')) {
+             return mr.audio;
+           }
+         }
+         return null;
+       };
+       const localHit = findMatchInDocs(latestDocsRef.current);
+       if (localHit) {
+         setResolvedMediaCache((prev) => ({ ...prev, [rawVal]: localHit }));
+         return localHit;
+       }
+       try {
+         const idbDocs = await loadDocsFromIdb();
+         const idbHit = findMatchInDocs(idbDocs);
+         if (idbHit) {
+           setResolvedMediaCache((prev) => ({ ...prev, [rawVal]: idbHit }));
+           return idbHit;
+         }
+       } catch {}
+       return null;
+     }
+     return null;
+  };
+  const getDisplayImageSrc = (rawVal?: string): string => {
+     if (!rawVal || typeof rawVal !== 'string') return '';
+     if (rawVal.startsWith('__fschunk__:')) return '';
+     if (rawVal.startsWith('__srvmedia__:') || rawVal.startsWith('__idb_media__:')) {
+       return resolvedMediaCache[rawVal] || '';
+     }
+     return rawVal;
+  };
+  const openRowImagePreview = async (
+     rawVal: string,
+     meta: { fileName?: string; readOnly?: boolean; onDelete?: () => void; rowId?: string }
+  ) => {
+     if (!rawVal || rawVal.startsWith('__fschunk__:')) {
+       showToast(t("Imazhi po ngarkohet nga Cloud, provoni pas pak.", "Image is loading from Cloud, please retry shortly."));
+       return;
+     }
+     setPreviewImageMeta({
+       fileName: meta.fileName,
+       readOnly: meta.readOnly,
+       onDelete: meta.onDelete
+     });
+     const direct = getDisplayImageSrc(rawVal);
+     if (direct) {
+       setPreviewImage(direct);
+       return;
+     }
+     showToast(t("Imazhi po shkarkohet nga Cloud...", "Loading image from Cloud..."));
+     const resolved = await resolveMediaDataUrl(rawVal, meta.rowId, meta.fileName);
+     if (resolved) {
+       setPreviewImage(resolved);
+     } else {
+       setPreviewImageMeta(null);
+       showToast(t("Nuk u arrit të ngarkohet imazhi nga Cloud.", "Could not load image from Cloud."));
+     }
+  };
+  const openRowPdfPreview = async (
+     rawVal: string,
+     meta: { fileName?: string; sizeBytes?: number; readOnly?: boolean; onDelete?: () => void; rowId?: string }
+  ) => {
+     if (!rawVal || rawVal.startsWith('__fschunk__:')) {
+       showToast(t("PDF po ngarkohet nga Cloud, provoni pas pak.", "PDF is loading from Cloud, please retry shortly.", "Το PDF φορτώνεται από το Cloud, δοκιμάστε ξανά σε λίγο."));
+       return;
+     }
+     let finalDataUrl = rawVal;
+     if (rawVal.startsWith('__srvmedia__:') || rawVal.startsWith('__idb_media__:')) {
+       showToast(t("PDF po shkarkohet nga Cloud...", "Loading PDF from Cloud...", "Φόρτωση PDF από το Cloud..."));
+       const resolved = await resolveMediaDataUrl(rawVal, meta.rowId, meta.fileName);
+       if (!resolved) {
+         showToast(t("Nuk u arrit të hapet PDF nga Cloud.", "Could not load PDF from Cloud.", "Δεν ήταν δυνατή η φόρτωση του PDF."));
+         return;
+       }
+       finalDataUrl = resolved;
+     }
+     setPreviewPdfMeta({
+       fileName: meta.fileName || 'dokument.pdf',
+       sizeBytes: meta.sizeBytes || estimateDataUrlSizeBytes(finalDataUrl),
+       readOnly: meta.readOnly,
+       onDelete: meta.onDelete,
+     });
+     setPreviewPdf(finalDataUrl);
+  };
+  useEffect(() => {
+     const candidateRows: any[] = [
+       ...(selectedOnlineDoc?.rows || []),
+       ...(rows || []),
+       ...(previewModalDoc?.rows || [])
+     ];
+     candidateRows.forEach((rItem: any) => {
+       const imgStr = typeof rItem?.image === 'string' ? rItem.image : '';
+       if (!imgStr || (!imgStr.startsWith('__srvmedia__:') && !imgStr.startsWith('__idb_media__:'))) return;
+       if (resolvedMediaCacheRef.current[imgStr] || resolvingMediaSetRef.current.has(imgStr)) return;
+       resolvingMediaSetRef.current.add(imgStr);
+       void resolveMediaDataUrl(imgStr, rItem?.id, rItem?.imageName).finally(() => {
+         resolvingMediaSetRef.current.delete(imgStr);
+       });
+     });
+  }, [selectedOnlineDoc, rows, previewModalDoc]);
+  const handleDownloadRowMedia = async (dataUrl: string, fileName: string, kind: 'image' | 'audio' | 'pdf') => {
      if (!dataUrl || dataUrl.startsWith('__fschunk__:')) {
        showToast(t("Skedari po sinkronizohet, provoni pas pak.", "Media file is still syncing, please retry shortly.", "Το αρχείο συγχρονίζεται ακόμα, δοκιμάστε σε λίγο."));
        return;
      }
+     let finalDataUrl = dataUrl;
+     if (finalDataUrl.startsWith('__srvmedia__:') || finalDataUrl.startsWith('__idb_media__:')) {
+       showToast(t("Skedari po shkarkohet nga Cloud...", "Fetching file from Cloud..."));
+       const resolved = await resolveMediaDataUrl(finalDataUrl, undefined, fileName);
+       if (!resolved) {
+         showToast(t("Skedari nuk u gjet në Cloud ose memorjen lokale.", "Media file could not be loaded."));
+         return;
+       }
+       finalDataUrl = resolved;
+     }
      try {
-       const fallbackMime = kind === 'image' ? 'image/jpeg' : 'audio/mpeg';
-       const { blob, mimeType } = dataUrlToBlob(dataUrl, fallbackMime);
+       const fallbackMime = kind === 'image' ? 'image/jpeg' : kind === 'pdf' ? 'application/pdf' : 'audio/mpeg';
+       const { blob, mimeType } = dataUrlToBlob(finalDataUrl, fallbackMime);
        const safeBase = (fileName || `${kind}_${Date.now()}`).replace(/[^a-zA-Z0-9._-]+/g, '_');
        const extFromMime =
+         mimeType.includes('pdf') ? 'pdf' :
          mimeType.includes('png') ? 'png' :
          mimeType.includes('jpeg') || mimeType.includes('jpg') ? 'jpg' :
          mimeType.includes('mp4') || mimeType.includes('m4a') ? 'm4a' :
          mimeType.includes('amr') ? 'amr' :
          mimeType.includes('mpeg') || mimeType.includes('mp3') ? 'mp3' :
-         (kind === 'image' ? 'jpg' : 'mp3');
+         (kind === 'image' ? 'jpg' : kind === 'pdf' ? 'pdf' : 'mp3');
        const finalName = /\.[a-z0-9]{2,5}$/i.test(safeBase) ? safeBase : `${safeBase}.${extFromMime}`;
        await handleDownload(blob, finalName, mimeType, finalName);
      } catch {
@@ -8867,10 +9991,12 @@ const exportChatResponseToPdf = async () => {
                  dataUrl = canvas.toDataURL('image/jpeg', 0.68);
                }
                pushUndoSnapshot();
+               const currentDoc = documents.find(d => d.id === activeDocId);
                const baseRows = latestRowsRef.current.length > rIndex ? latestRowsRef.current : rows;
-               const newRows = baseRows.map((rowItem, idx) =>
+               const updatedRows = baseRows.map((rowItem, idx) =>
                  idx === rIndex ? { ...rowItem, image: dataUrl, imageName: fileName } : rowItem
                );
+               const newRows = appendAutoRowIfNeeded(updatedRows, currentDoc);
                latestRowsRef.current = newRows;
                setRows(newRows);
                updateActiveDocumentState(title, newRows, headers, columnWidths, activeTags, undefined, true);
@@ -8943,10 +10069,12 @@ const exportChatResponseToPdf = async () => {
        }
        lastUserTypingTsRef.current = Date.now();
        pushUndoSnapshot();
+       const currentDoc = documents.find(d => d.id === activeDocId);
        const baseRows = latestRowsRef.current.length > rIndex ? latestRowsRef.current : rows;
-       const newRows = baseRows.map((rowItem, idx) =>
+       const updatedRows = baseRows.map((rowItem, idx) =>
          idx === rIndex ? { ...rowItem, audio: rawDataUrl, audioName: fileName, audioMime: normalizedMime } : rowItem
        );
+       const newRows = appendAutoRowIfNeeded(updatedRows, currentDoc);
        latestRowsRef.current = newRows;
        setRows(newRows);
        updateActiveDocumentState(title, newRows, headers, columnWidths, activeTags, undefined, true);
@@ -8982,44 +10110,82 @@ const exportChatResponseToPdf = async () => {
        'Ο ήχος διαγράφηκε και συγχρονίστηκε!'
      ));
   };
-  const generatePlaceholderImage = async (rIndex: number) => {
-      try {
-          const canvas = document.createElement('canvas');
-          canvas.width = 240;
-          canvas.height = 240;
-          const ctx = canvas.getContext('2d');
-          if (!ctx) return;
-          const palettes = [
-            ['#2563eb', '#1e40af'],
-            ['#059669', '#065f46'],
-            ['#d97706', '#92400e'],
-            ['#7c3aed', '#4c1d95'],
-            ['#e11d48', '#881337'],
-          ];
-          const [c1, c2] = palettes[rIndex % palettes.length];
-          const grad = ctx.createLinearGradient(0, 0, 240, 240);
-          grad.addColorStop(0, c1);
-          grad.addColorStop(1, c2);
-          ctx.fillStyle = grad;
-          ctx.fillRect(0, 0, 240, 240);
-          ctx.fillStyle = 'rgba(255,255,255,0.12)';
-          ctx.beginPath();
-          ctx.arc(190, 50, 70, 0, Math.PI * 2);
-          ctx.fill();
-          ctx.fillStyle = '#ffffff';
-          ctx.font = 'bold 28px sans-serif';
-          ctx.textAlign = 'center';
-          ctx.fillText(`#${rIndex + 1}`, 120, 128);
-          const dataUrl = canvas.toDataURL('image/png');
-          pushUndoSnapshot();
-          const newRows = [...rows];
-          newRows[rIndex].image = dataUrl;
-          setRows(newRows);
-          updateActiveDocumentState(title, newRows, headers, columnWidths, activeTags, undefined, true);
-          showToast(t("Imazhi u krijua!", "Image created!"));
-      } catch (err) {
-          showToast(t("Gabim gjatë krijimit të imazhit!", "Error creating image!"));
-      }
+  const handlePdfUpload = async (rIndex: number, file: File) => {
+     const fileName = file.name || `dokument_${rIndex + 1}.pdf`;
+     const lower = fileName.toLowerCase();
+     const rawType = (file.type || '').toLowerCase();
+     const isValidPdf = rawType === 'application/pdf' || rawType.includes('pdf') || lower.endsWith('.pdf');
+     if (!isValidPdf) {
+       showToast(t(
+         'Lejohen vetëm arkiva PDF!',
+         'Only PDF files are supported!',
+         'Υποστηρίζονται μόνο αρχεία PDF!'
+       ));
+       return;
+     }
+     if (file.size > 30 * 1024 * 1024) {
+       showToast(t(
+         'Skedari PDF është shumë i madh (maksimumi 30 MB)!',
+         'PDF file is too large (max 30 MB)!',
+         'Το αρχείο PDF είναι πολύ μεγάλο (μέγιστο 30 MB)!'
+       ));
+       return;
+     }
+     if (file.size > 5 * 1024 * 1024) {
+       showToast(t(
+         `Po ngarkohet PDF (${formatBytesReadable(file.size)})...`,
+         `Loading PDF (${formatBytesReadable(file.size)})...`
+       ));
+     }
+     try {
+       const rawDataUrl = await readFileAsDataUrlSafe(file, 'application/pdf');
+       if (!rawDataUrl) {
+         showToast(t('Gabim gjatë leximit të arkivit PDF!', 'Error reading PDF file!', 'Σφάλμα ανάγνωσης αρχείου PDF!'));
+         return;
+       }
+       lastUserTypingTsRef.current = Date.now();
+       pushUndoSnapshot();
+       const currentDoc = documents.find(d => d.id === activeDocId);
+       const baseRows = latestRowsRef.current.length > rIndex ? latestRowsRef.current : rows;
+       const updatedRows = baseRows.map((rowItem, idx) =>
+         idx === rIndex ? { ...rowItem, pdf: rawDataUrl, pdfName: fileName, pdfSize: file.size } : rowItem
+       );
+       const newRows = appendAutoRowIfNeeded(updatedRows, currentDoc);
+       latestRowsRef.current = newRows;
+       setRows(newRows);
+       updateActiveDocumentState(title, newRows, headers, columnWidths, activeTags, undefined, true);
+       if (file.size > 5 * 1024 * 1024) {
+         await saveDocsLocalSafeAsync(latestDocsRef.current);
+       }
+       showToast(t(
+         `✓ Arkivi PDF (${formatBytesReadable(file.size)}) u ngarkua dhe u sinkronizua!`,
+         `✓ PDF file (${formatBytesReadable(file.size)}) uploaded and synced!`,
+         `✓ Το PDF (${formatBytesReadable(file.size)}) μεταφορτώθηκε και συγχρονίστηκε!`
+       ));
+     } catch {
+       showToast(t('Gabim gjatë leximit të arkivit PDF!', 'Error reading PDF file!', 'Σφάλμα ανάγνωσης αρχείου PDF!'));
+     }
+  };
+  const removePdf = (rIndex: number) => {
+     executeProtectedAction(() => {
+       pushUndoSnapshot();
+       const baseRows = latestRowsRef.current.length > rIndex ? latestRowsRef.current : rows;
+       const newRows = baseRows.map((rowItem, idx) =>
+         idx === rIndex ? { ...rowItem, pdf: '', pdfName: '', pdfSize: 0 } : rowItem
+       );
+       latestRowsRef.current = newRows;
+       setRows(newRows);
+       if (previewPdfMeta) {
+         setPreviewPdf(null);
+         setPreviewPdfMeta(null);
+       }
+       updateActiveDocumentState(title, newRows, headers, columnWidths, activeTags, undefined, true);
+       showToast(t(
+         '✓ Arkivi PDF u fshi me PIN/Password dhe u sinkronizua!',
+         '✓ PDF deleted with PIN/Password and synced!',
+         '✓ Το PDF διαγράφηκε με PIN/Κωδικό και συγχρονίστηκε!'
+       ));
+     });
   };
   const toggleRowSelection = (rIndex: number) => {
     const newSel = new Set(selectedRows);
@@ -9040,7 +10206,9 @@ const exportChatResponseToPdf = async () => {
   };
   const handleClearAll = () => {
      pushUndoSnapshot();
-     const empty = getEmptyRows();
+     const currentDoc = documents.find(d => d.id === activeDocId);
+     const isAutoDoc = Boolean(currentDoc?.autoGrowRows) || defaultNewDocRowMode === 'auto';
+     const empty = getEmptyRows(isAutoDoc ? 1 : defaultNewDocRows);
      setRows(empty);
      setSelectedRows(new Set());
      setShowConfirmClear(false);
@@ -9049,13 +10217,15 @@ const exportChatResponseToPdf = async () => {
   };
   const handleDeleteSelected = () => {
      pushUndoSnapshot();
+     const currentDoc = documents.find(d => d.id === activeDocId);
+     const isAutoDoc = Boolean(currentDoc?.autoGrowRows) || (defaultNewDocRowMode === 'auto' && rows.length < 90);
      const nextRows: GridRow[] = [];
      let removedCount = 0;
      rows.forEach((r, index) => {
          if (selectedRows.has(index)) {
              if (index === 0) {
                  // Row 1 (index 0) is never removed from grid structure; clear its content cleanly
-                 nextRows.push({ id: r.id, status: 'none' as const, image: '', imageName: '', audio: '', audioName: '', audioMime: '' });
+                 nextRows.push({ id: r.id, status: 'none' as const, image: '', imageName: '', audio: '', audioName: '', audioMime: '', pdf: '', pdfName: '', pdfSize: 0 });
              } else {
                  removedCount++;
              }
@@ -9063,7 +10233,7 @@ const exportChatResponseToPdf = async () => {
              nextRows.push(r);
          }
      });
-     const targetLen = Math.max(defaultNewDocRows || 90, rows.length);
+     const targetLen = isAutoDoc ? 1 : Math.max(defaultNewDocRows || 90, rows.length);
      while (nextRows.length < targetLen) {
          nextRows.push({
              id: `row-${Date.now()}-${Math.random().toString(36).slice(2, 7)}`,
@@ -9071,10 +10241,11 @@ const exportChatResponseToPdf = async () => {
              image: ''
          });
      }
-     setRows(nextRows);
+     const finalRows = isAutoDoc ? appendAutoRowIfNeeded(nextRows, currentDoc) : nextRows;
+     setRows(finalRows);
      setSelectedRows(new Set());
      setShowConfirmDeleteSelected(false);
-     updateActiveDocumentState(title, nextRows, headers, columnWidths, activeTags, undefined, true);
+     updateActiveDocumentState(title, finalRows, headers, columnWidths, activeTags, undefined, true);
      showToast(
        removedCount > 0
          ? t(`✓ U hoqën ${removedCount} rrjeshta bosh dhe u ngjitën rrjeshtat (Rrjeshti 1 ruhet)!`, `✓ Removed ${removedCount} empty row(s) cleanly (Row 1 kept)!`)
@@ -9710,6 +10881,14 @@ const exportChatResponseToPdf = async () => {
                  latestSecretListRef.current = parsed.secretList;
                  localStorage.setItem('grid_notepad_secret_list', JSON.stringify(parsed.secretList));
               }
+              if (Array.isArray(parsed.padNotes)) {
+                 const restoredPads = mergePadNotesList(latestPadNotesRef.current, parsed.padNotes);
+                 setPadNotes(restoredPads);
+                 latestPadNotesRef.current = restoredPads;
+                 try {
+                    localStorage.setItem('grid_notepad_pads_v1', JSON.stringify(restoredPads));
+                 } catch {}
+              }
               if (parsed.notesColor !== undefined) {
                  setNotesColor(parsed.notesColor);
                  latestNotesColorRef.current = parsed.notesColor;
@@ -9891,6 +11070,7 @@ const exportChatResponseToPdf = async () => {
                     localStorage.removeItem('grid_notepad_blue');
                     localStorage.removeItem('grid_notepad_secret_list');
                     localStorage.removeItem('customLabels');
+                    localStorage.removeItem('grid_notepad_pads_v1');
                     localStorage.removeItem(TRASH_ITEMS_KEY);
                     localStorage.removeItem(PENDING_TRASH_DELETES_KEY);
                     
@@ -9900,6 +11080,9 @@ const exportChatResponseToPdf = async () => {
                     latestBlueTextRef.current = '';
                     setSecretList([]);
                     latestSecretListRef.current = [];
+                    setPadNotes([]);
+                    latestPadNotesRef.current = [];
+                    setActivePadId(null);
                     setCustomLabels([]);
                     latestCustomLabelsRef.current = [];
                     setTrashItems([]);
@@ -9926,6 +11109,7 @@ const exportChatResponseToPdf = async () => {
                    documents: docsSnapshot,
                    blueText: latestBlueTextRef.current,
                    secretList: latestSecretListRef.current,
+                   padNotes: latestPadNotesRef.current,
                    customLabels: latestCustomLabelsRef.current,
                    trashItems: latestTrashItemsRef.current,
                    notesColor: latestNotesColorRef.current,
@@ -9995,6 +11179,14 @@ const exportChatResponseToPdf = async () => {
                           localStorage.setItem(TRASH_ITEMS_KEY, JSON.stringify(nextTrash));
                           setTrashItems(nextTrash);
                           latestTrashItemsRef.current = nextTrash;
+                      }
+                      if (Array.isArray(jsonData.padNotes)) {
+                          const importedPads = mergePadNotesList([], jsonData.padNotes);
+                          try {
+                             localStorage.setItem('grid_notepad_pads_v1', JSON.stringify(importedPads));
+                          } catch {}
+                          setPadNotes(importedPads);
+                          latestPadNotesRef.current = importedPads;
                       }
                       if (jsonData.notesColor !== undefined) {
                           nextNotesColor = jsonData.notesColor;
@@ -10225,6 +11417,10 @@ const exportChatResponseToPdf = async () => {
        updateTextItalic(false);
        updateTextLineHeight(1.3);
        updateCellDensity('normal');
+       updateTextLetterSpacing(0);
+       updateTextUnderline(false);
+       updateTextTabularNums(false);
+       updateGridBorderStyle('normal');
        showToast(t("Parametrat vizualë u kthyen në vlerat fillestare!", "Visual settings reset to defaults!"));
        setShowOptionsMenu(false);
   };
@@ -10363,12 +11559,15 @@ const exportChatResponseToPdf = async () => {
      }
 
      const applyOnlineDocUpdate = (updatedDoc: GridDocument, syncImmediately = false, nextLabels?: string[]) => {
+        selectedOnlineDocRef.current = updatedDoc;
         setSelectedOnlineDoc(updatedDoc);
-        if (onlineView === 'cloud') {
-           const exists = cloudDocs.some(d => d.id === updatedDoc.id);
+        if (onlineViewRef.current === 'cloud' || onlineView === 'cloud') {
+           const currentList = cloudDocsRef.current;
+           const exists = currentList.some(d => d.id === updatedDoc.id);
            const updatedList = exists
-              ? cloudDocs.map(d => d.id === updatedDoc.id ? updatedDoc : d)
-              : [updatedDoc, ...cloudDocs];
+              ? currentList.map(d => d.id === updatedDoc.id ? updatedDoc : d)
+              : [updatedDoc, ...currentList];
+           cloudDocsRef.current = updatedList;
            setCloudDocs(updatedList);
            const overrides = nextLabels ? { docs: updatedList, customLabels: nextLabels } : { docs: updatedList };
            if (syncImmediately) {
@@ -10377,8 +11576,8 @@ const exportChatResponseToPdf = async () => {
            } else {
               scheduleOnlineManualSync(overrides);
            }
-        } else if (onlineView === 'gist') {
-           const currentParsed = parseGistBackupJson(gistViewerContent);
+        } else if (onlineViewRef.current === 'gist' || onlineView === 'gist') {
+           const currentParsed = parseGistBackupJson(gistViewerContentRef.current);
            const baseDocs = currentParsed.documents.length > 0 || gistId ? currentParsed.documents : docsList;
            const exists = baseDocs.some(d => d.id === updatedDoc.id);
            const updatedList = exists
@@ -10390,10 +11589,13 @@ const exportChatResponseToPdf = async () => {
               blueText: onlineBlueText,
               secretList: onlineSecretList,
               customLabels: labelsToUse,
+              trashItems: onlineTrashItems,
               notesColor: onlineNotesColor,
               textColorMode
            };
-           setGistViewerContent(JSON.stringify(finalObj));
+           const nextContent = JSON.stringify(finalObj);
+           gistViewerContentRef.current = nextContent;
+           setGistViewerContent(nextContent);
            const overrides = nextLabels ? { docs: updatedList, customLabels: labelsToUse } : { docs: updatedList };
            if (syncImmediately) {
               if (onlineSyncTimerRef.current) clearTimeout(onlineSyncTimerRef.current);
@@ -10574,87 +11776,100 @@ const exportChatResponseToPdf = async () => {
                (d.tags || []).some(t => t.toLowerCase().includes(q));
      }));
      const handleOnlineTitleChange = (val: string) => {
-        if (!selectedOnlineDoc) return;
+        const curDoc = selectedOnlineDocRef.current || selectedOnlineDoc;
+        if (!curDoc) return;
+        lastUserTypingTsRef.current = Date.now();
         const updatedDoc = {
-           ...selectedOnlineDoc,
+           ...curDoc,
            title: val,
            updatedAt: new Date().toISOString()
         };
         applyOnlineDocUpdate(updatedDoc, false);
      };
      const handleOnlineTagsChange = (val: string) => {
-        if (!selectedOnlineDoc) return;
+        const curDoc = selectedOnlineDocRef.current || selectedOnlineDoc;
+        if (!curDoc) return;
+        lastUserTypingTsRef.current = Date.now();
         const tags = val.split(',').map(t => t.trim()).filter(t => t !== '');
         const nextLabels = Array.from(new Set([...onlineCustomLabels, ...tags]));
         setOnlineCustomLabels(nextLabels);
         const updatedDoc = {
-           ...selectedOnlineDoc,
+           ...curDoc,
            tags,
            updatedAt: new Date().toISOString()
         };
         applyOnlineDocUpdate(updatedDoc, false, nextLabels);
      };
      const handleOnlineHeaderChange = (hIndex: number, val: string) => {
-        if (!selectedOnlineDoc) return;
-        const updatedHeaders = [...selectedOnlineDoc.headers];
+        const curDoc = selectedOnlineDocRef.current || selectedOnlineDoc;
+        if (!curDoc) return;
+        lastUserTypingTsRef.current = Date.now();
+        const updatedHeaders = [...curDoc.headers];
         updatedHeaders[hIndex] = val;
         const updatedDoc = {
-           ...selectedOnlineDoc,
+           ...curDoc,
            headers: updatedHeaders,
            updatedAt: new Date().toISOString()
         };
         applyOnlineDocUpdate(updatedDoc, false);
      };
      const handleOnlineCellChange = (rIndex: number, colKey: string, val: string) => {
-        if (!selectedOnlineDoc) return;
-        const updatedRows = selectedOnlineDoc.rows.map((r, idx) => {
+        const curDoc = selectedOnlineDocRef.current || selectedOnlineDoc;
+        if (!curDoc) return;
+        lastUserTypingTsRef.current = Date.now();
+        const updatedRows = curDoc.rows.map((r, idx) => {
            if (idx === rIndex) {
               return { ...r, [colKey]: val };
            }
            return r;
         });
         const updatedDoc = {
-           ...selectedOnlineDoc,
+           ...curDoc,
            rows: updatedRows,
            updatedAt: new Date().toISOString()
         };
         applyOnlineDocUpdate(updatedDoc, false);
      };
      const handleOnlineRowStatusChange = (rIndex: number, newStatus: string) => {
-        if (!selectedOnlineDoc) return;
-        const updatedRows = selectedOnlineDoc.rows.map((r, idx) =>
+        const curDoc = selectedOnlineDocRef.current || selectedOnlineDoc;
+        if (!curDoc) return;
+        const updatedRows = curDoc.rows.map((r, idx) =>
            idx === rIndex ? { ...r, status: newStatus } : r
         );
         const updatedDoc = {
-           ...selectedOnlineDoc,
+           ...curDoc,
            rows: updatedRows,
            updatedAt: new Date().toISOString()
         };
         applyOnlineDocUpdate(updatedDoc, true);
      };
      const handleOnlineRowTextColorChange = (rIndex: number, colorId: string) => {
-        if (!selectedOnlineDoc) return;
-        const updatedRows = selectedOnlineDoc.rows.map((r, idx) =>
+        const curDoc = selectedOnlineDocRef.current || selectedOnlineDoc;
+        if (!curDoc) return;
+        const updatedRows = curDoc.rows.map((r, idx) =>
            idx === rIndex ? { ...r, textColor: colorId } : r
         );
         const updatedDoc = {
-           ...selectedOnlineDoc,
+           ...curDoc,
            rows: updatedRows,
            updatedAt: new Date().toISOString()
         };
         applyOnlineDocUpdate(updatedDoc, true);
      };
      const handleOnlineDocTextColorChange = (colorId: string) => {
-        if (!selectedOnlineDoc) return;
+        const curDoc = selectedOnlineDocRef.current || selectedOnlineDoc;
+        if (!curDoc) return;
         const updatedDoc = {
-           ...selectedOnlineDoc,
+           ...curDoc,
            textColor: colorId,
            updatedAt: new Date().toISOString()
         };
         applyOnlineDocUpdate(updatedDoc, true);
      };
-     const handleOnlineRowMediaUpload = (rIdx: number, kind: 'image' | 'audio', file: File) => {
-        if (!selectedOnlineDoc) return;
+     const handleOnlineRowMediaUpload = (rIdx: number, kind: 'image' | 'audio' | 'pdf', file: File) => {
+        const docSnapshot = selectedOnlineDocRef.current || selectedOnlineDoc;
+        if (!docSnapshot) return;
+        const targetDocId = docSnapshot.id;
         const fileName = file.name || `${kind}_${rIdx + 1}`;
         const lower = fileName.toLowerCase();
         const rawType = (file.type || '').toLowerCase();
@@ -10682,16 +11897,64 @@ const exportChatResponseToPdf = async () => {
                  const isPng = rawType === 'image/png' || lower.endsWith('.png');
                  let dataUrl = isPng ? canvas.toDataURL('image/png') : canvas.toDataURL('image/jpeg', 0.68);
                  if (isPng && dataUrl.length > 350000) dataUrl = canvas.toDataURL('image/jpeg', 0.68);
-                 const updatedRows = selectedOnlineDoc.rows.map((r, idx) =>
+                 lastUserTypingTsRef.current = Date.now();
+                 const latestTargetDoc = (selectedOnlineDocRef.current?.id === targetDocId ? selectedOnlineDocRef.current : null)
+                    || cloudDocsRef.current.find(d => d.id === targetDocId)
+                    || docSnapshot;
+                 const updatedRows = latestTargetDoc.rows.map((r, idx) =>
                     idx === rIdx ? { ...r, image: dataUrl, imageName: fileName } : r
                  );
-                 const updatedDoc = { ...selectedOnlineDoc, rows: updatedRows, updatedAt: new Date().toISOString() };
+                 const updatedDoc = { ...latestTargetDoc, rows: updatedRows, updatedAt: new Date().toISOString() };
                  applyOnlineDocUpdate(updatedDoc, true);
                  showToast(t('✓ Imazhi u ngarkua dhe u sinkronizua në Cloud!', '✓ Image uploaded and synced to Cloud!', '✓ Η εικόνα μεταφορτώθηκε και συγχρονίστηκε στο Cloud!'));
               };
               img.src = String(ev.target?.result || '');
            };
            reader.readAsDataURL(file);
+        } else if (kind === 'pdf') {
+           const isValidPdf = rawType === 'application/pdf' || rawType.includes('pdf') || lower.endsWith('.pdf');
+           if (!isValidPdf) {
+              showToast(t('Lejohen vetëm arkiva PDF!', 'Only PDF files are supported!', 'Υποστηρίζονται μόνο αρχεία PDF!'));
+              return;
+           }
+           if (file.size > 30 * 1024 * 1024) {
+              showToast(t('Skedari PDF është shumë i madh (maksimumi 30 MB)!', 'PDF file is too large (max 30 MB)!', 'Το αρχείο PDF είναι πολύ μεγάλο (μέγιστο 30 MB)!'));
+              return;
+           }
+           if (file.size > 5 * 1024 * 1024) {
+              showToast(t(
+                 `Po ngarkohet PDF (${formatBytesReadable(file.size)})...`,
+                 `Loading PDF (${formatBytesReadable(file.size)})...`
+              ));
+           }
+           void (async () => {
+              try {
+                 const rawDataUrl = await readFileAsDataUrlSafe(file, 'application/pdf');
+                 if (!rawDataUrl) {
+                    showToast(t('Gabim gjatë leximit të arkivit PDF!', 'Error reading PDF file!', 'Σφάλμα ανάγνωσης αρχείου PDF!'));
+                    return;
+                 }
+                 lastUserTypingTsRef.current = Date.now();
+                 const latestTargetDoc = (selectedOnlineDocRef.current?.id === targetDocId ? selectedOnlineDocRef.current : null)
+                    || cloudDocsRef.current.find(d => d.id === targetDocId)
+                    || docSnapshot;
+                 const updatedRows = latestTargetDoc.rows.map((r, idx) =>
+                    idx === rIdx ? { ...r, pdf: rawDataUrl, pdfName: fileName, pdfSize: file.size } : r
+                 );
+                 const updatedDoc = { ...latestTargetDoc, rows: updatedRows, updatedAt: new Date().toISOString() };
+                 applyOnlineDocUpdate(updatedDoc, true);
+                 if (file.size > 5 * 1024 * 1024) {
+                    await saveDocsLocalSafeAsync(latestDocsRef.current);
+                 }
+                 showToast(t(
+                    `✓ Arkivi PDF (${formatBytesReadable(file.size)}) u ngarkua dhe u sinkronizua në Cloud!`,
+                    `✓ PDF (${formatBytesReadable(file.size)}) uploaded and synced to Cloud!`,
+                    `✓ Το PDF (${formatBytesReadable(file.size)}) μεταφορτώθηκε και συγχρονίστηκε στο Cloud!`
+                 ));
+              } catch {
+                 showToast(t('Gabim gjatë leximit të arkivit PDF!', 'Error reading PDF file!', 'Σφάλμα ανάγνωσης αρχείου PDF!'));
+              }
+           })();
         } else {
            const isValidAudio =
              rawType.startsWith('audio/') ||
@@ -10721,10 +11984,13 @@ const exportChatResponseToPdf = async () => {
                     return;
                  }
                  lastUserTypingTsRef.current = Date.now();
-                 const updatedRows = selectedOnlineDoc.rows.map((r, idx) =>
+                 const latestTargetDoc = (selectedOnlineDocRef.current?.id === targetDocId ? selectedOnlineDocRef.current : null)
+                    || cloudDocsRef.current.find(d => d.id === targetDocId)
+                    || docSnapshot;
+                 const updatedRows = latestTargetDoc.rows.map((r, idx) =>
                     idx === rIdx ? { ...r, audio: rawDataUrl, audioName: fileName, audioMime: normalizedMime } : r
                  );
-                 const updatedDoc = { ...selectedOnlineDoc, rows: updatedRows, updatedAt: new Date().toISOString() };
+                 const updatedDoc = { ...latestTargetDoc, rows: updatedRows, updatedAt: new Date().toISOString() };
                  applyOnlineDocUpdate(updatedDoc, true);
                  if (file.size > 5 * 1024 * 1024) {
                     await saveDocsLocalSafeAsync(latestDocsRef.current);
@@ -10740,21 +12006,43 @@ const exportChatResponseToPdf = async () => {
            })();
         }
      };
-     const handleOnlineRowMediaRemove = (rIdx: number, kind: 'image' | 'audio') => {
-        if (!selectedOnlineDoc) return;
-        const rowItem = selectedOnlineDoc.rows[rIdx];
-        const rowKey = `online-${rowItem?.id || rIdx}`;
-        if (kind === 'audio' && (activeAudioTrackRef.current?.rowKey === rowKey || playingRowAudioKey === rowKey)) {
-           stopAndCloseAudioPlayer();
+     const handleOnlineRowMediaRemove = (rIdx: number, kind: 'image' | 'audio' | 'pdf') => {
+        const execRemove = () => {
+           const curDoc = selectedOnlineDocRef.current || selectedOnlineDoc;
+           if (!curDoc) return;
+           const rowItem = curDoc.rows[rIdx];
+           const rowKey = `online-${rowItem?.id || rIdx}`;
+           if (kind === 'audio' && (activeAudioTrackRef.current?.rowKey === rowKey || playingRowAudioKey === rowKey)) {
+              stopAndCloseAudioPlayer();
+           }
+           if (kind === 'pdf' && previewPdfMeta) {
+              setPreviewPdf(null);
+              setPreviewPdfMeta(null);
+           }
+           const updatedRows = curDoc.rows.map((r, idx) =>
+              idx === rIdx
+                 ? (kind === 'image'
+                    ? { ...r, image: '', imageName: '' }
+                    : kind === 'pdf'
+                       ? { ...r, pdf: '', pdfName: '', pdfSize: 0 }
+                       : { ...r, audio: '', audioName: '', audioMime: '' })
+                 : r
+           );
+           const updatedDoc = { ...curDoc, rows: updatedRows, updatedAt: new Date().toISOString() };
+           applyOnlineDocUpdate(updatedDoc, true);
+           showToast(
+              kind === 'image'
+                 ? t('Imazhi u fshi!', 'Image deleted!')
+                 : kind === 'pdf'
+                    ? t('✓ Arkivi PDF u fshi me PIN/Password!', '✓ PDF deleted with PIN/Password!', '✓ Το PDF διαγράφηκε με PIN/Κωδικό!')
+                    : t('Audio u fshi!', 'Audio deleted!')
+           );
+        };
+        if (kind === 'pdf') {
+           executeProtectedAction(execRemove);
+        } else {
+           execRemove();
         }
-        const updatedRows = selectedOnlineDoc.rows.map((r, idx) =>
-           idx === rIdx
-              ? (kind === 'image' ? { ...r, image: '', imageName: '' } : { ...r, audio: '', audioName: '', audioMime: '' })
-              : r
-        );
-        const updatedDoc = { ...selectedOnlineDoc, rows: updatedRows, updatedAt: new Date().toISOString() };
-        applyOnlineDocUpdate(updatedDoc, true);
-        showToast(kind === 'image' ? t('Imazhi u fshi!', 'Image deleted!') : t('Audio u fshi!', 'Audio deleted!'));
      };
      onlineRowMediaRemoveRef.current = handleOnlineRowMediaRemove;
      const addOnlineRow = () => {
@@ -11575,10 +12863,10 @@ const exportChatResponseToPdf = async () => {
                                    </div>
                                    <div className="flex gap-2">
                                       <div className="flex-1 min-w-[120px]">
-                                         <input 
+                                         <ImeSafeInput 
                                             type="text"
                                             value={selectedOnlineDoc.title}
-                                            onChange={(e) => handleOnlineTitleChange(e.target.value)}
+                                            onChangeValue={handleOnlineTitleChange}
                                             className={`px-2 py-1 text-xs font-bold rounded border outline-none focus:border-accent-500 w-full ${
                                                isDark ? "bg-zinc-900 border-zinc-800 text-white" : "bg-white border-zinc-300 text-zinc-900"
                                             }`}
@@ -11586,10 +12874,10 @@ const exportChatResponseToPdf = async () => {
                                          />
                                       </div>
                                       <div className="flex-1 min-w-[120px]">
-                                         <input 
+                                         <ImeSafeInput 
                                             type="text"
                                             value={(selectedOnlineDoc.tags || []).join(', ')}
-                                            onChange={(e) => handleOnlineTagsChange(e.target.value)}
+                                            onChangeValue={handleOnlineTagsChange}
                                             className={`px-2 py-1 text-xs font-semibold rounded border outline-none focus:border-accent-500 w-full ${
                                                isDark ? "bg-zinc-900 border-zinc-800 text-white" : "bg-white border-zinc-300 text-zinc-900"
                                             }`}
@@ -11805,7 +13093,7 @@ const exportChatResponseToPdf = async () => {
                              </div>
                           )}
                           <div className="overflow-x-auto w-full">
-                             <div style={{ minWidth: `${Math.max(760, (selectedOnlineDoc?.headers?.length || 3) * 150 + 96)}px` }} className={`border rounded-xl overflow-hidden ${isDark ? "border-zinc-800" : "border-zinc-200"}`}>
+                             <div style={{ minWidth: `${Math.max(820, (selectedOnlineDoc?.headers?.length || 3) * 150 + 160)}px` }} className={`border rounded-xl overflow-hidden ${isDark ? "border-zinc-800" : "border-zinc-200"}`}>
                                 {/* GRID HEADERS */}
                              <div className={`flex border-b min-h-[34px] items-center shrink-0 ${isDark ? "bg-zinc-900/80 border-zinc-800 text-zinc-300" : "bg-zinc-50 border-zinc-200 text-zinc-700"}`}>
                                 <div className="w-12 shrink-0 border-r border-zinc-800/20 dark:border-zinc-200/10 flex items-center justify-center text-[10px] font-bold font-mono">
@@ -11814,10 +13102,10 @@ const exportChatResponseToPdf = async () => {
                                 {selectedOnlineDoc.headers?.map((h, hIdx) => (
                                    <div key={hIdx} className="flex-1 border-r border-zinc-800/20 dark:border-zinc-200/10 p-1.5 text-center text-xs font-bold">
                                       {isOnlineEditing ? (
-                                         <input 
+                                         <ImeSafeInput 
                                             type="text"
                                             value={h}
-                                            onChange={(e) => handleOnlineHeaderChange(hIdx, e.target.value)}
+                                            onChangeValue={(val) => handleOnlineHeaderChange(hIdx, val)}
                                             className={`w-full text-center text-xs bg-transparent focus:outline-none focus:text-accent-500 transition-colors border-b border-transparent focus:border-accent-500/30 ${
                                                isDark ? "text-white" : "text-zinc-900"
                                             }`}
@@ -11827,7 +13115,7 @@ const exportChatResponseToPdf = async () => {
                                       )}
                                    </div>
                                 ))}
-                                <div className="w-24 shrink-0 border-l border-zinc-800/20 dark:border-zinc-200/10 flex items-center justify-center text-[10px] font-bold uppercase">
+                                <div className="w-28 sm:w-32 shrink-0 border-l border-zinc-800/20 dark:border-zinc-200/10 flex items-center justify-center text-[10px] font-bold uppercase">
                                    {t('MEDIA', 'MEDIA', 'ΜΕΣΑ')}
                                 </div>
                              </div>
@@ -11844,10 +13132,11 @@ const exportChatResponseToPdf = async () => {
                                                      ? getActualTextColor(selectedOnlineDoc.textColor)
                                                      : (textColorMode !== 'default' ? getActualTextColor(textColorMode) : undefined)))
                                          : undefined;
+                                   const resolvedOnlineImg = getDisplayImageSrc(r.image);
                                    return (
                                    <div 
                                       key={r.id || rIdx} 
-                                      className={`flex min-h-[28px] items-center transition-colors ${
+                                      className={`flex ${cellDensity === 'compact' ? 'min-h-[34px]' : cellDensity === 'spacious' ? 'min-h-[58px]' : 'min-h-[46px]'} items-stretch transition-colors ${
                                          r.status === 'ok' ? (isDark ? 'bg-green-500/20 border-green-500/30' : 'bg-green-50 border-green-200')
                                          : r.status === 'blue' ? (isDark ? 'bg-blue-500/20 border-blue-500/30' : 'bg-blue-50 border-blue-200')
                                          : r.status === 'yellow' ? (isDark ? 'bg-yellow-500/20 border-yellow-500/30' : 'bg-yellow-50 border-yellow-200')
@@ -11890,32 +13179,42 @@ const exportChatResponseToPdf = async () => {
                                          const colKey = `col${hIdx+1}`;
                                          const cellVal = r[colKey] || '';
                                          return (
-                                            <div key={hIdx} className="flex-1 border-r border-zinc-200/20 dark:border-zinc-800/20 p-1">
+                                             <div key={hIdx} className="flex-1 border-r border-zinc-200/20 dark:border-zinc-800/20 p-1 flex flex-col">
                                                {isOnlineEditing ? (
-                                                  <input 
-                                                     type="text"
+                                                  <ImeSafeTextarea
+                                                     rows={1}
+                                                     autoResize
+                                                     autoLineHeight={autoLineHeight}
                                                      value={cellVal}
                                                      onFocus={() => setOnlineSelectedRowIdx(rIdx)}
-                                                     onChange={(e) => handleOnlineCellChange(rIdx, colKey, e.target.value)}
-                                                     className={`w-full bg-transparent px-1 py-0.5 text-xs outline-none focus:bg-zinc-500/5 focus:border-accent-500/30 border border-transparent rounded ${
+                                                     onChangeValue={(val) => handleOnlineCellChange(rIdx, colKey, val)}
+                                                     className={`w-full flex-1 ${cellDensity === 'compact' ? 'min-h-[26px]' : cellDensity === 'spacious' ? 'min-h-[48px]' : 'min-h-[38px]'} bg-transparent px-1.5 py-1.5 resize-none outline-none focus:bg-zinc-500/5 focus:border-accent-500/30 border border-transparent rounded overflow-hidden ${
                                                         r.status === 'x' ? "line-through text-red-400"
                                                         : r.status === 'blue' ? "text-blue-400 font-semibold"
                                                         : r.status === 'yellow' ? "text-yellow-500 font-semibold"
                                                         : r.status === 'ok' ? "text-green-500 font-semibold"
                                                         : isDark ? "text-zinc-200" : "text-zinc-800"
                                                      }`}
-                                                     style={customTextColor ? { color: customTextColor } : undefined}
+                                                     style={{
+                                                        fontSize: `${textSize || 12}px`,
+                                                        lineHeight: textLineHeight || 1.3,
+                                                        ...(customTextColor ? { color: customTextColor } : {}),
+                                                     }}
                                                   />
                                                ) : (
                                                   <span
-                                                     className={`text-xs px-1 block break-all whitespace-pre-wrap leading-tight ${
+                                                     className={`px-1.5 py-1 block break-words whitespace-pre-wrap ${
                                                         r.status === 'x' ? "line-through text-red-500/70" 
                                                         : r.status === 'blue' ? "text-blue-500 font-semibold"
                                                         : r.status === 'yellow' ? "text-yellow-600 dark:text-yellow-400 font-semibold"
                                                         : r.status === 'ok' ? "text-green-600 font-semibold"
                                                         : isDark ? "text-zinc-300" : "text-zinc-800"
                                                      }`}
-                                                     style={customTextColor ? { color: customTextColor } : undefined}
+                                                     style={{
+                                                        fontSize: `${textSize || 12}px`,
+                                                        lineHeight: textLineHeight || 1.3,
+                                                        ...(customTextColor ? { color: customTextColor } : {}),
+                                                     }}
                                                   >
                                                      {cellVal}
                                                   </span>
@@ -11923,27 +13222,38 @@ const exportChatResponseToPdf = async () => {
                                             </div>
                                          );
                                       })}
-                                      {/* MEDIA COLUMN CELL (IMAGE + AUDIO) */}
-                                      <div className="w-24 shrink-0 border-l border-zinc-200/20 dark:border-zinc-800/20 px-1 py-0.5 flex items-center justify-center gap-1">
+                                      {/* MEDIA COLUMN CELL (IMAGE + PDF + AUDIO PLAYER) */}
+                                      <div className="w-28 sm:w-32 shrink-0 border-l border-zinc-200/20 dark:border-zinc-800/20 px-1 py-1 flex items-center justify-center gap-1">
                                          {r.image ? (
-                                            <div
-                                               onClick={() => {
-                                                  setPreviewImageMeta({
-                                                     fileName: r.imageName || `img_row_${rIdx + 1}.png`,
-                                                     readOnly: !isOnlineEditing,
-                                                     onDelete: () => handleOnlineRowMediaRemove(rIdx, 'image')
-                                                  });
-                                                  setPreviewImage(r.image as string);
-                                               }}
-                                               className="relative group/img w-6 h-6 shrink-0 cursor-pointer"
-                                               title={r.imageName || t('Kliko për parashikim, shkarkim ose fshirje', 'Tap to preview, download or delete')}
-                                            >
-                                               <img src={r.image} className="w-full h-full object-cover rounded opacity-85 hover:opacity-100 transition-opacity ring-1 ring-zinc-500/30" alt="Row media" />
+                                            <div className="flex items-center gap-1 shrink-0">
+                                               <button
+                                                  type="button"
+                                                  onClick={(e) => {
+                                                     e.stopPropagation();
+                                                     void openRowImagePreview(String(r.image), {
+                                                        fileName: r.imageName || `img_row_${rIdx + 1}.png`,
+                                                        readOnly: !isOnlineEditing,
+                                                        rowId: r.id,
+                                                        onDelete: () => handleOnlineRowMediaRemove(rIdx, 'image')
+                                                     });
+                                                  }}
+                                                  className="flex items-center gap-1 p-0.5 rounded-md bg-blue-500/10 hover:bg-blue-500/25 border border-blue-500/30 transition-colors cursor-pointer"
+                                                  title={`${r.imageName || t('Imazh', 'Image')} — ${t('Shiko Imazhin (View Image)', 'View Image')}`}
+                                               >
+                                                  {resolvedOnlineImg ? (
+                                                     <img src={resolvedOnlineImg} className="w-6 h-6 object-cover rounded ring-1 ring-zinc-500/30" alt="Row media" />
+                                                  ) : (
+                                                     <span className="w-6 h-6 rounded bg-blue-500/15 flex items-center justify-center text-blue-400">
+                                                        <Eye className="w-3.5 h-3.5" />
+                                                     </span>
+                                                  )}
+                                                  <Eye className="w-3 h-3 text-blue-400 shrink-0" />
+                                               </button>
                                                {isOnlineEditing && (
                                                   <button
                                                      type="button"
                                                      onClick={(e) => { e.stopPropagation(); handleOnlineRowMediaRemove(rIdx, 'image'); }}
-                                                     className="absolute -top-1 -right-1 bg-red-600 text-white rounded-full p-0.5 opacity-0 group-hover/img:opacity-100 shadow-lg scale-90 hover:scale-110 transition-all"
+                                                     className="p-0.5 rounded-full bg-red-600 hover:bg-red-500 text-white shadow transition-colors"
                                                      title={t('Fshi Imazhin', 'Delete Image')}
                                                   >
                                                      <X className="w-2.5 h-2.5" />
@@ -11951,7 +13261,7 @@ const exportChatResponseToPdf = async () => {
                                                )}
                                             </div>
                                          ) : isOnlineEditing ? (
-                                            <label className="cursor-pointer hover:text-accent-500 p-1 rounded opacity-60 hover:opacity-100 transition-opacity" title={t('Ngarko imazh (PNG/JPEG/JPG)', 'Upload image (PNG/JPEG/JPG)')}>
+                                            <label className="cursor-pointer hover:text-accent-500 p-1 rounded opacity-70 hover:opacity-100 transition-opacity" title={t('Ngarko imazh (PNG/JPEG/JPG)', 'Upload image (PNG/JPEG/JPG)')}>
                                                <input
                                                   type="file"
                                                   accept="image/png, image/jpeg, .png, .jpeg, .jpg"
@@ -11977,7 +13287,7 @@ const exportChatResponseToPdf = async () => {
                                                         onDelete: () => handleOnlineRowMediaRemove(rIdx, 'audio')
                                                      });
                                                   }}
-                                                  className={`p-1 rounded transition-colors ${playingRowAudioKey === `online-${r.id || rIdx}` ? 'bg-amber-500 text-black' : 'bg-indigo-500/15 text-indigo-400 hover:bg-indigo-500 hover:text-white'}`}
+                                                  className={`p-1 rounded-md transition-colors ${playingRowAudioKey === `online-${r.id || rIdx}` ? 'bg-amber-500 text-black' : 'bg-indigo-500/20 text-indigo-400 hover:bg-indigo-500 hover:text-white'}`}
                                                   title={`${r.audioName || 'Audio'} — ${t('Luaj / Ndalo Audio', 'Play / Pause Audio')}`}
                                                >
                                                   {playingRowAudioKey === `online-${r.id || rIdx}` ? <Pause className="w-3 h-3" /> : <Play className="w-3 h-3" />}
@@ -11995,14 +13305,14 @@ const exportChatResponseToPdf = async () => {
                                                         onDelete: () => handleOnlineRowMediaRemove(rIdx, 'audio')
                                                      });
                                                   }}
-                                                  className={`p-1 rounded transition-colors ${activeAudioTrack?.rowKey === `online-${r.id || rIdx}` ? 'bg-emerald-600 text-white' : 'bg-emerald-500/15 text-emerald-500 hover:bg-emerald-600 hover:text-white'}`}
-                                                  title={t('Audio Player (Luaj, Shkarko, Fshi)', 'Audio Player (Play, Download, Delete)')}
+                                                  className={`px-1.5 py-1 rounded-md flex items-center gap-0.5 text-[9px] font-bold transition-colors ${activeAudioTrack?.rowKey === `online-${r.id || rIdx}` ? 'bg-emerald-600 text-white' : 'bg-emerald-500/20 text-emerald-500 hover:bg-emerald-600 hover:text-white'}`}
+                                                  title={`${r.audioName || 'Audio'} — ${t('Hap Audio Player (Luaj, Shkarko, Fshi)', 'Open Audio Player (Play, Download, Delete)')}`}
                                                >
-                                                  <Music className="w-3 h-3" />
+                                                  <Volume2 className="w-3 h-3" />
                                                </button>
                                             </div>
                                          ) : isOnlineEditing ? (
-                                            <label className="cursor-pointer p-1 rounded opacity-60 hover:opacity-100 text-zinc-500 hover:text-indigo-500 transition-all shrink-0" title={t('Ngarko audio (MP3/M4A/AMR)', 'Upload audio (MP3/M4A/AMR)')}>
+                                            <label className="cursor-pointer p-1 rounded opacity-70 hover:opacity-100 text-zinc-500 hover:text-indigo-500 transition-all shrink-0" title={t('Ngarko audio (MP3/M4A/AMR)', 'Upload audio (MP3/M4A/AMR)')}>
                                                <input
                                                   type="file"
                                                   accept="audio/*,.mp3,.m4a,.amr,.mp4,.aac,.3gp"
@@ -12011,6 +13321,51 @@ const exportChatResponseToPdf = async () => {
                                                   onChange={(e) => { if (e.target.files?.[0]) handleOnlineRowMediaUpload(rIdx, 'audio', e.target.files[0]); e.target.value = ''; }}
                                                />
                                                <Music className="w-3.5 h-3.5" />
+                                            </label>
+                                         ) : null}
+
+                                         {/* PDF SLOT IN ONLINE TABLE */}
+                                         {r.pdf ? (
+                                            <div className="flex items-center gap-0.5 shrink-0">
+                                               <button
+                                                  type="button"
+                                                  onClick={(e) => {
+                                                     e.stopPropagation();
+                                                     void openRowPdfPreview(String(r.pdf), {
+                                                        fileName: r.pdfName || `dokument_${rIdx + 1}.pdf`,
+                                                        sizeBytes: r.pdfSize,
+                                                        readOnly: !isOnlineEditing,
+                                                        rowId: r.id,
+                                                        onDelete: () => handleOnlineRowMediaRemove(rIdx, 'pdf')
+                                                     });
+                                                  }}
+                                                  className="px-1.5 py-1 rounded-md bg-rose-500/20 hover:bg-rose-600 text-rose-400 hover:text-white border border-rose-500/30 flex items-center gap-0.5 text-[9px] font-extrabold transition-colors"
+                                                  title={`${r.pdfName || 'PDF'} — ${t('Hap PDF (View, Shkarko, Fshi)', 'Open PDF (View, Download, Delete)')}`}
+                                               >
+                                                  <FileText className="w-3 h-3" />
+                                                  <span>PDF</span>
+                                               </button>
+                                               {isOnlineEditing && (
+                                                  <button
+                                                     type="button"
+                                                     onClick={(e) => { e.stopPropagation(); handleOnlineRowMediaRemove(rIdx, 'pdf'); }}
+                                                     className="p-0.5 rounded-full bg-red-600 hover:bg-red-500 text-white shadow transition-colors"
+                                                     title={t('Fshi PDF (me PIN)', 'Delete PDF (PIN required)')}
+                                                  >
+                                                     <X className="w-2.5 h-2.5" />
+                                                  </button>
+                                               )}
+                                            </div>
+                                         ) : isOnlineEditing ? (
+                                            <label className="cursor-pointer p-1 rounded opacity-70 hover:opacity-100 text-zinc-500 hover:text-rose-500 transition-all shrink-0" title={t('Ngarko PDF', 'Upload PDF')}>
+                                               <input
+                                                  type="file"
+                                                  accept="application/pdf,.pdf"
+                                                  className="hidden"
+                                                  onClick={() => { externalNavUntilRef.current = Date.now() + 180000; }}
+                                                  onChange={(e) => { if (e.target.files?.[0]) handleOnlineRowMediaUpload(rIdx, 'pdf', e.target.files[0]); e.target.value = ''; }}
+                                               />
+                                               <FileText className="w-3.5 h-3.5" />
                                             </label>
                                          ) : null}
                                       </div>
@@ -12168,10 +13523,10 @@ const exportChatResponseToPdf = async () => {
                   {/* NOTES VIEW & EDITOR */}
                   <div className="flex-grow flex flex-col p-4 overflow-hidden">
                      {isOnlineEditing ? (
-                        <textarea
+                        <ImeSafeTextarea
                            value={onlineBlueText}
-                           onChange={(e) => {
-                              const val = e.target.value;
+                           onChangeValue={(val) => {
+                              lastUserTypingTsRef.current = Date.now();
                               setOnlineBlueText(val);
                               scheduleOnlineManualSync({ blueText: val });
                            }}
@@ -12401,11 +13756,11 @@ const exportChatResponseToPdf = async () => {
                                     <div className="flex-1 min-w-0 space-y-1">
                                        {isOnlineEditing ? (
                                           <>
-                                             <input
+                                             <ImeSafeInput
                                                 type="text"
                                                 value={item.name || item.text || ''}
-                                                onChange={(e) => {
-                                                   const val = e.target.value;
+                                                onChangeValue={(val) => {
+                                                   lastUserTypingTsRef.current = Date.now();
                                                    const updatedList = onlineSecretList.map((itm, i) =>
                                                       i === idx ? { ...itm, name: val, text: val, updatedAt: new Date().toISOString() } : itm
                                                    );
@@ -12418,11 +13773,11 @@ const exportChatResponseToPdf = async () => {
                                                 style={itemColor ? { color: itemColor } : undefined}
                                                 placeholder={t('Titulli i elementit sekret...', 'Secret item title...')}
                                              />
-                                             <textarea
+                                             <ImeSafeTextarea
                                                 rows={2}
                                                 value={item.content || ''}
-                                                onChange={(e) => {
-                                                   const val = e.target.value;
+                                                onChangeValue={(val) => {
+                                                   lastUserTypingTsRef.current = Date.now();
                                                    const updatedList = onlineSecretList.map((itm, i) =>
                                                       i === idx ? { ...itm, content: val, updatedAt: new Date().toISOString() } : itm
                                                    );
@@ -13592,27 +14947,163 @@ const exportChatResponseToPdf = async () => {
                    </div>
                 </div>
 
-                {/* 3. Row Density & Column Width Management */}
-                <div className="flex flex-col gap-2">
-                   <span className="text-[11px] font-bold uppercase tracking-wider text-zinc-500">{t('Dendësia e Rrjeshtave (Lartësia)', 'Row Density')}</span>
-                   <div className="grid grid-cols-3 gap-2">
-                      {([
-                         { id: 'compact', label: t('Kompakte', 'Compact') },
-                         { id: 'normal', label: t('Normale', 'Normal') },
-                         { id: 'spacious', label: t('E Gjerë', 'Spacious') }
-                      ] as const).map(d => (
-                         <button
-                            key={d.id}
-                            onClick={() => updateCellDensity(d.id)}
-                            className={`py-2 rounded-xl border text-xs font-bold transition-all ${
-                               cellDensity === d.id
-                                 ? 'border-accent-500 bg-accent-500/15 text-accent-500'
-                                 : isDark ? 'border-zinc-800 bg-zinc-800/50 text-zinc-300' : 'border-zinc-200 bg-zinc-50 text-zinc-700'
-                            }`}
-                         >
-                            {d.label}
-                         </button>
-                      ))}
+                {/* 3. Row Density, Grid Borders & New-Note Row System (90 / 120 / 150 / Automatik) */}
+                <div className="flex flex-col gap-3">
+                   <div className="flex flex-col gap-2">
+                      <span className="text-[11px] font-bold uppercase tracking-wider text-zinc-500">{t('Dendësia e Rrjeshtave (Lartësia)', 'Row Density')}</span>
+                      <div className="grid grid-cols-3 gap-2">
+                         {([
+                            { id: 'compact', label: t('Kompakte', 'Compact') },
+                            { id: 'normal', label: t('Normale', 'Normal') },
+                            { id: 'spacious', label: t('E Gjerë', 'Spacious') }
+                         ] as const).map(d => (
+                            <button
+                               key={d.id}
+                               onClick={() => updateCellDensity(d.id)}
+                               className={`py-2 rounded-xl border text-xs font-bold transition-all ${
+                                  cellDensity === d.id
+                                    ? 'border-accent-500 bg-accent-500/15 text-accent-500'
+                                    : isDark ? 'border-zinc-800 bg-zinc-800/50 text-zinc-300' : 'border-zinc-200 bg-zinc-50 text-zinc-700'
+                               }`}
+                            >
+                               {d.label}
+                            </button>
+                         ))}
+                      </div>
+                   </div>
+
+                   {/* Grid Border Contrast */}
+                   <div className="flex flex-col gap-2">
+                      <span className="text-[11px] font-bold uppercase tracking-wider text-zinc-500">{t('Kufijtë e Qelizave', 'Grid Borders')}</span>
+                      <div className="grid grid-cols-3 gap-2">
+                         {([
+                            { id: 'normal', label: t('Normal (Default)', 'Normal (Default)') },
+                            { id: 'strong', label: t('Të Theksuar', 'Strong') },
+                            { id: 'minimal', label: t('Minimal', 'Minimal') }
+                         ] as const).map(b => (
+                            <button
+                               key={b.id}
+                               onClick={() => updateGridBorderStyle(b.id)}
+                               className={`py-1.5 px-2 rounded-xl border text-[11px] font-bold transition-all ${
+                                  gridBorderStyle === b.id
+                                    ? 'border-accent-500 bg-accent-500/15 text-accent-500'
+                                    : isDark ? 'border-zinc-800 bg-zinc-800/50 text-zinc-300' : 'border-zinc-200 bg-zinc-50 text-zinc-700'
+                               }`}
+                            >
+                               {b.label}
+                            </button>
+                         ))}
+                      </div>
+                   </div>
+
+                   {/* Row System: 90 / 120 / 150 / Automatik & Default Cols */}
+                   <div className={`p-3 rounded-xl border flex flex-col gap-2.5 ${isDark ? 'bg-zinc-950/70 border-zinc-800' : 'bg-zinc-50 border-zinc-200'}`}>
+                      <div className="flex items-center justify-between gap-2">
+                         <span className="text-[11px] font-bold uppercase tracking-wider text-zinc-500">
+                            {t('Sistemi i Rrjeshtave (Shënim i Ri)', 'New Note Row System')}
+                         </span>
+                         <span className="text-[10px] font-extrabold text-accent-500">
+                            {defaultNewDocRowMode === 'auto' ? t('Automatik (+1 live)', 'Automatic (+1 live)') : `${defaultNewDocRows} ${t('rrjeshta', 'rows')}`}
+                         </span>
+                      </div>
+                      <div className="grid grid-cols-4 gap-1.5">
+                         {([
+                            { id: '90', label: '90' },
+                            { id: '120', label: '120' },
+                            { id: '150', label: '150' },
+                            { id: 'auto', label: t('Automatik', 'Automatik') }
+                         ] as const).map(opt => (
+                            <button
+                               key={opt.id}
+                               type="button"
+                               onClick={() => {
+                                  applyDefaultNewDocRowMode(opt.id);
+                                  showToast(
+                                     opt.id === 'auto'
+                                       ? t('✓ Sistemi Automatik aktiv: shënimet e reja shtojnë rreshta automatikisht!', '✓ Automatic mode enabled: rows grow automatically as you type!')
+                                       : t(`✓ Shënimet e reja do nisin me ${opt.id} rrjeshta.`, `✓ New notes will start with ${opt.id} rows.`)
+                                  );
+                               }}
+                               className={`py-1.5 px-1.5 rounded-lg border text-[11px] font-extrabold transition-all ${
+                                  defaultNewDocRowMode === opt.id
+                                    ? 'border-accent-500 bg-accent-600 text-white shadow-sm'
+                                    : isDark ? 'border-zinc-800 bg-zinc-900 text-zinc-300 hover:bg-zinc-800' : 'border-zinc-200 bg-white text-zinc-700 hover:bg-zinc-100'
+                               }`}
+                            >
+                               {opt.label}
+                            </button>
+                         ))}
+                      </div>
+                      <p className={`text-[10px] leading-snug ${isDark ? 'text-zinc-400' : 'text-zinc-500'}`}>
+                         {t(
+                            '90 është standardi baza. Në modalitetin "Automatik", çdo shënim i ri fillon me 1 rresht dhe shton rreshtin tjetër sapo të shkruani, pa shfaqur rreshta bosh.',
+                            '90 is the default. In "Automatik" mode, new notes start cleanly with 1 row and automatically append the next row as you write—no blank filler rows.'
+                         )}
+                      </p>
+
+                      {activeDocId && (() => {
+                         const currActive = documents.find(d => d.id === activeDocId);
+                         const isCurrAuto = Boolean(currActive?.autoGrowRows);
+                         return (
+                            <div className="pt-2 border-t border-zinc-500/20 flex flex-col gap-1.5">
+                               <div className="flex items-center justify-between text-[10px] font-bold">
+                                  <span className="text-zinc-500 uppercase">{t('Apliko te Shënimi Aktual', 'Apply to Active Note')}</span>
+                                  <span className="text-accent-500 tabular-nums">
+                                     {isCurrAuto ? `Automatik (${rows.length})` : `${rows.length} ${t('rrjeshta', 'rows')}`}
+                                  </span>
+                               </div>
+                               <div className="grid grid-cols-4 gap-1.5">
+                                  {([
+                                     { id: '90', label: '90' },
+                                     { id: '120', label: '120' },
+                                     { id: '150', label: '150' },
+                                     { id: 'auto', label: t('Auto', 'Auto') }
+                                  ] as const).map(opt => {
+                                     const isCurrentChoice = opt.id === 'auto' ? isCurrAuto : (!isCurrAuto && rows.length === parseInt(opt.id, 10));
+                                     return (
+                                        <button
+                                           key={`active-doc-rows-${opt.id}`}
+                                           type="button"
+                                           disabled={Boolean(currActive?.isReadOnly)}
+                                           onClick={() => handleSwitchActiveDocRowMode(opt.id)}
+                                           className={`py-1 rounded-lg border text-[11px] font-bold disabled:opacity-40 transition-all ${
+                                              isCurrentChoice
+                                                ? 'border-emerald-500 bg-emerald-600/20 text-emerald-500'
+                                                : isDark ? 'border-zinc-800 bg-zinc-900 text-zinc-300 hover:bg-zinc-800' : 'border-zinc-200 bg-white text-zinc-700 hover:bg-zinc-100'
+                                           }`}
+                                        >
+                                           {opt.label}
+                                        </button>
+                                     );
+                                  })}
+                               </div>
+                            </div>
+                         );
+                      })()}
+
+                      <div className="pt-2 border-t border-zinc-500/20 flex items-center justify-between gap-2">
+                         <span className="text-[10px] font-bold uppercase text-zinc-500">{t('Kolona Fillestare', 'Default Cols')}</span>
+                         <div className="flex items-center gap-1">
+                            {[2, 3, 4, 5, 6].map((cNum) => (
+                               <button
+                                  key={`theme-def-col-${cNum}`}
+                                  type="button"
+                                  onClick={() => {
+                                     setDefaultNewDocCols(cNum);
+                                     localStorage.setItem('grid_default_cols', String(cNum));
+                                     showToast(t(`Dokumentet e reja do hapen me ${cNum} kolona.`, `New notes will start with ${cNum} columns.`));
+                                  }}
+                                  className={`w-7 h-7 rounded-lg border text-xs font-bold tabular-nums transition-all ${
+                                     defaultNewDocCols === cNum
+                                        ? 'border-accent-500 bg-accent-600 text-white'
+                                        : isDark ? 'border-zinc-800 bg-zinc-900 text-zinc-300' : 'border-zinc-200 bg-white text-zinc-700'
+                                  }`}
+                               >
+                                  {cNum}
+                               </button>
+                            ))}
+                         </div>
+                      </div>
                    </div>
                 </div>
 
@@ -13861,20 +15352,41 @@ const exportChatResponseToPdf = async () => {
                          fontFamily: textFontFamily === 'mono' ? 'ui-monospace, SFMono-Regular, Menlo, monospace' : textFontFamily === 'serif' ? 'Georgia, Cambria, "Times New Roman", serif' : 'inherit',
                          textAlign,
                          fontStyle: textItalic ? 'italic' : 'normal',
+                         textDecoration: textUnderline ? 'underline' : undefined,
+                         letterSpacing: textLetterSpacing ? `${textLetterSpacing}px` : undefined,
+                         fontVariantNumeric: textTabularNums ? 'tabular-nums' : undefined,
                          lineHeight: textLineHeight,
                          color: getActualTextColor(textColorMode)
                       }}
                       className="break-words"
                    >
-                      {t('Shembull Shënimi: 230 kg × 50 = 11,500 Lekë', 'Sample Note: 230 kg × 50 = 11,500 Total')}
+                      {t('NoteBook3 — Shënimet, Listat & Arkiva juaj e organizuar', 'NoteBook3 — Structured Notes, Lists & Pad Workspace', 'NoteBook3 — Οργανωμένες Σημειώσεις, Λίστες & Pad')}
                    </div>
                 </div>
 
-                {/* 1. Text Size + Quick Presets */}
+                {/* 1. Text Size + Steppers + Quick Presets */}
                 <div className="flex flex-col gap-2">
                    <div className="flex items-center justify-between">
                       <span className="text-xs font-bold">{t('Madhësia e Tekstit', 'Text Size')}</span>
-                      <span className="text-xs font-extrabold text-accent-500">{textSize}px</span>
+                      <div className="flex items-center gap-1.5">
+                         <button
+                            type="button"
+                            onClick={() => updateTextSize(Math.max(10, textSize - 1))}
+                            className={`w-6 h-6 rounded-md border text-xs font-black flex items-center justify-center ${isDark ? 'border-zinc-700 bg-zinc-800 hover:bg-zinc-700 text-zinc-200' : 'border-zinc-300 bg-zinc-100 hover:bg-zinc-200 text-zinc-800'}`}
+                            title={t('Zvogëlo shkrimin', 'Decrease size')}
+                         >
+                            -
+                         </button>
+                         <span className="text-xs font-extrabold text-accent-500 min-w-[36px] text-center tabular-nums">{textSize}px</span>
+                         <button
+                            type="button"
+                            onClick={() => updateTextSize(Math.min(32, textSize + 1))}
+                            className={`w-6 h-6 rounded-md border text-xs font-black flex items-center justify-center ${isDark ? 'border-zinc-700 bg-zinc-800 hover:bg-zinc-700 text-zinc-200' : 'border-zinc-300 bg-zinc-100 hover:bg-zinc-200 text-zinc-800'}`}
+                            title={t('Zmadho shkrimin', 'Increase size')}
+                         >
+                            +
+                         </button>
+                      </div>
                    </div>
                    <input type="range" min="10" max="32" step="1" value={textSize} onChange={(e) => updateTextSize(parseInt(e.target.value))} className="w-full accent-accent-500" />
                    <div className="flex flex-wrap gap-1.5">
@@ -13919,7 +15431,7 @@ const exportChatResponseToPdf = async () => {
                    </div>
                 </div>
 
-                {/* 3. Font Family + Alignment + Italic */}
+                {/* 3. Font Family + Alignment + Style (Italic, Underline, Tabular) */}
                 <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
                    <div className="flex flex-col gap-1.5">
                       <span className="text-[11px] font-bold uppercase text-zinc-500">{t('Lloji i Shkrimit', 'Font')}</span>
@@ -13943,7 +15455,7 @@ const exportChatResponseToPdf = async () => {
                    </div>
                    <div className="flex flex-col gap-1.5">
                       <span className="text-[11px] font-bold uppercase text-zinc-500">{t('Rreshtimi & Stili', 'Align & Style')}</span>
-                      <div className="grid grid-cols-4 gap-1.5">
+                      <div className="grid grid-cols-6 gap-1">
                          <button onClick={() => updateTextAlign('left')} title={t("Majtas", "Align Left")} className={`py-1.5 rounded-lg border flex items-center justify-center ${textAlign === 'left' ? 'border-accent-500 bg-accent-500/15 text-accent-500' : isDark ? 'border-zinc-800 bg-zinc-800/60 text-zinc-300' : 'border-zinc-200 bg-zinc-50 text-zinc-700'}`}>
                             <AlignLeft className="w-3.5 h-3.5" />
                          </button>
@@ -13956,17 +15468,72 @@ const exportChatResponseToPdf = async () => {
                          <button onClick={() => updateTextItalic(!textItalic)} title={t("Pjerrët (Italic)", "Italic")} className={`py-1.5 rounded-lg border flex items-center justify-center ${textItalic ? 'border-accent-500 bg-accent-500/15 text-accent-500' : isDark ? 'border-zinc-800 bg-zinc-800/60 text-zinc-300' : 'border-zinc-200 bg-zinc-50 text-zinc-700'}`}>
                             <Italic className="w-3.5 h-3.5" />
                          </button>
+                         <button onClick={() => updateTextUnderline(!textUnderline)} title={t("Nënvizuar (Underline)", "Underline")} className={`py-1.5 rounded-lg border flex items-center justify-center ${textUnderline ? 'border-accent-500 bg-accent-500/15 text-accent-500' : isDark ? 'border-zinc-800 bg-zinc-800/60 text-zinc-300' : 'border-zinc-200 bg-zinc-50 text-zinc-700'}`}>
+                            <Underline className="w-3.5 h-3.5" />
+                         </button>
+                         <button onClick={() => updateTextTabularNums(!textTabularNums)} title={t("Numra Tabelorë (123)", "Tabular Numbers")} className={`py-1.5 rounded-lg border text-[10px] font-black flex items-center justify-center ${textTabularNums ? 'border-accent-500 bg-accent-500/15 text-accent-500' : isDark ? 'border-zinc-800 bg-zinc-800/60 text-zinc-300' : 'border-zinc-200 bg-zinc-50 text-zinc-700'}`}>
+                            123
+                         </button>
                       </div>
                    </div>
                 </div>
 
-                {/* 4. Line Height */}
+                {/* 3B. Letter Spacing */}
                 <div className="flex flex-col gap-1.5">
+                   <div className="flex items-center justify-between">
+                      <span className="text-[11px] font-bold uppercase text-zinc-500">{t('Hapësira mes Shkronjave', 'Letter Spacing')}</span>
+                      <span className="text-xs font-extrabold text-accent-500 tabular-nums">{textLetterSpacing.toFixed(1)}px</span>
+                   </div>
+                   <div className="grid grid-cols-4 gap-1.5">
+                      {[0, 0.5, 1.0, 1.5].map((sp) => (
+                         <button
+                            key={sp}
+                            type="button"
+                            onClick={() => updateTextLetterSpacing(sp)}
+                            className={`py-1.5 rounded-lg border text-[11px] font-bold tabular-nums transition-all ${
+                               textLetterSpacing === sp
+                                 ? 'border-accent-500 bg-accent-500/15 text-accent-500'
+                                 : isDark ? 'border-zinc-800 bg-zinc-800/60 text-zinc-300' : 'border-zinc-200 bg-zinc-50 text-zinc-700'
+                            }`}
+                         >
+                            {sp === 0 ? '0px (Def)' : `+${sp}px`}
+                         </button>
+                      ))}
+                   </div>
+                </div>
+
+                {/* 4. Line Height (Manual + Auto Multi-Line Fit) */}
+                <div className="flex flex-col gap-2">
                    <div className="flex items-center justify-between">
                       <span className="text-xs font-bold">{t('Hapësira mes Rreshtave', 'Line Height')}</span>
                       <span className="text-xs font-extrabold text-accent-500">{textLineHeight.toFixed(2)}</span>
                    </div>
                    <input type="range" min="1.0" max="2.0" step="0.05" value={textLineHeight} onChange={(e) => updateTextLineHeight(parseFloat(e.target.value))} className="w-full accent-accent-500" />
+                   <button
+                      type="button"
+                      onClick={() => {
+                         const nextVal = !autoLineHeight;
+                         updateAutoLineHeight(nextVal);
+                         showToast(nextVal
+                           ? t('✓ Auto adaptimi i lartësisë së rreshtit u aktivizua!', '✓ Auto Multi-Line Fit enabled!', '✓ Ενεργοποιήθηκε η αυτόματη προσαρμογή ύψους γραμμής!')
+                           : t('Auto adaptimi u çaktivizua (vetëm manual).', 'Auto Multi-Line Fit disabled (manual only).', 'Η αυτόματη προσαρμογή απενεργοποιήθηκε (μόνο χειροκίνητα).'));
+                      }}
+                      className={`w-full flex items-center justify-between gap-2 px-3 py-2 rounded-xl border text-left transition-all ${
+                         autoLineHeight
+                            ? 'border-accent-500/60 bg-accent-500/10 text-accent-500'
+                            : isDark ? 'border-zinc-800 bg-zinc-950/60 text-zinc-300' : 'border-zinc-200 bg-zinc-50 text-zinc-700'
+                      }`}
+                   >
+                      <div className="flex flex-col min-w-0">
+                         <span className="text-xs font-extrabold">{t('Auto adaptim Multi-Line (Auto Fit)', 'Auto Multi-Line Height Fit', 'Αυτόματη Προσαρμογή Πολλαπλών Γραμμών')}</span>
+                         <span className={`text-[10px] leading-tight ${isDark ? 'text-zinc-400' : 'text-zinc-500'}`}>
+                            {t('Rrit automatikisht hapësirën & lartësinë kur teksti bëhet 2, 3+ rreshta', 'Automatically adapts height & line spacing for 2, 3+ line cells', 'Προσαρμόζει αυτόματα το ύψος & διάστιχο για κελιά 2, 3+ γραμμών')}
+                         </span>
+                      </div>
+                      <div className={`w-9 h-5 rounded-full transition-colors relative shrink-0 ${autoLineHeight ? 'bg-emerald-500' : 'bg-zinc-500'}`}>
+                         <div className={`absolute top-0.5 bottom-0.5 w-4 bg-white rounded-full transition-all ${autoLineHeight ? 'left-[18px]' : 'left-0.5'}`} />
+                      </div>
+                   </button>
                 </div>
 
                 {activeDocId && (
@@ -13999,7 +15566,7 @@ const exportChatResponseToPdf = async () => {
 
                 <div className="flex items-center justify-between pt-2 border-t border-zinc-500/20">
                    <button
-                      onClick={() => { updateTextSize(12); updateTextWeight(400); updateTextFontFamily('sans'); updateTextAlign('left'); updateTextItalic(false); updateTextLineHeight(1.3); showToast(t("Tipografia u rikthye në standard!", "Typography reset to defaults!")); }}
+                      onClick={() => { updateTextSize(12); updateTextWeight(400); updateTextFontFamily('sans'); updateTextAlign('left'); updateTextItalic(false); updateTextUnderline(false); updateTextLetterSpacing(0); updateTextTabularNums(false); updateTextLineHeight(1.3); updateAutoLineHeight(true); showToast(t("Tipografia u rikthye në standard!", "Typography reset to defaults!")); }}
                       className={`px-3 py-2 rounded-xl text-xs font-bold flex items-center gap-1.5 ${isDark ? 'bg-zinc-800 hover:bg-zinc-700 text-zinc-300' : 'bg-zinc-100 hover:bg-zinc-200 text-zinc-700'}`}
                    >
                       <RotateCcw className="w-3.5 h-3.5" /> {t('Rivendos T', 'Reset T')}
@@ -14073,10 +15640,101 @@ const exportChatResponseToPdf = async () => {
                          <div className="text-[11px] font-mono text-zinc-500">{textColorMode}</div>
                       </div>
                    </div>
-                   <div style={{ color: getActualTextColor(textColorMode), fontWeight: textWeight }} className="text-sm px-2.5 py-1 rounded-lg border border-zinc-500/20">
+                   <div style={{ color: getActualTextColor(textColorMode), fontSize: `${textSize}px`, fontWeight: textWeight, fontStyle: textItalic ? 'italic' : 'normal', textDecoration: textUnderline ? 'underline' : undefined }} className="px-2.5 py-1 rounded-lg border border-zinc-500/20">
                       Aa Bb Cc 123
                    </div>
                 </div>
+
+                {/* Letter Size Zoom (A- / A+) & Quick Format Style */}
+                <div className={`p-3 rounded-xl border flex flex-col gap-2.5 ${isDark ? 'bg-zinc-950 border-zinc-800' : 'bg-zinc-50 border-zinc-200'}`}>
+                   <div className="flex items-center justify-between gap-2">
+                      <span className="text-[11px] font-bold uppercase tracking-wider text-zinc-500">
+                         {t('Zmadhimi & Zvogëlimi i Germave (Aa)', 'Letter Size & Style (A- / A+)')}
+                      </span>
+                      <span className="text-xs font-extrabold text-accent-500 tabular-nums">{textSize}px</span>
+                   </div>
+                   <div className="flex items-center gap-1.5">
+                      <button
+                         type="button"
+                         onClick={() => updateTextSize(Math.max(10, textSize - 1))}
+                         className={`px-3 py-1.5 rounded-xl border text-xs font-black transition-all ${isDark ? 'border-zinc-700 bg-zinc-800 hover:bg-zinc-700 text-zinc-100' : 'border-zinc-300 bg-white hover:bg-zinc-100 text-zinc-800'}`}
+                         title={t('Zvogëlo germat (-1px)', 'Shrink letters (-1px)')}
+                      >
+                         A-
+                      </button>
+                      <button
+                         type="button"
+                         onClick={() => updateTextSize(Math.min(32, textSize + 1))}
+                         className={`px-3 py-1.5 rounded-xl border text-xs font-black transition-all ${isDark ? 'border-zinc-700 bg-zinc-800 hover:bg-zinc-700 text-zinc-100' : 'border-zinc-300 bg-white hover:bg-zinc-100 text-zinc-800'}`}
+                         title={t('Zmadho germat (+1px)', 'Enlarge letters (+1px)')}
+                      >
+                         A+
+                      </button>
+                      <div className="flex-1 flex items-center justify-end gap-1">
+                         <button
+                            type="button"
+                            onClick={() => updateTextWeight(textWeight >= 700 ? 400 : 700)}
+                            className={`w-8 h-8 rounded-lg border text-xs font-black transition-all ${textWeight >= 700 ? 'border-accent-500 bg-accent-500/15 text-accent-500' : isDark ? 'border-zinc-800 bg-zinc-900 text-zinc-300' : 'border-zinc-200 bg-white text-zinc-700'}`}
+                            title="Bold"
+                         >
+                            B
+                         </button>
+                         <button
+                            type="button"
+                            onClick={() => updateTextItalic(!textItalic)}
+                            className={`w-8 h-8 rounded-lg border text-xs italic font-serif font-bold transition-all ${textItalic ? 'border-accent-500 bg-accent-500/15 text-accent-500' : isDark ? 'border-zinc-800 bg-zinc-900 text-zinc-300' : 'border-zinc-200 bg-white text-zinc-700'}`}
+                            title="Italic"
+                         >
+                            I
+                         </button>
+                         <button
+                            type="button"
+                            onClick={() => updateTextUnderline(!textUnderline)}
+                            className={`w-8 h-8 rounded-lg border text-xs underline font-bold transition-all ${textUnderline ? 'border-accent-500 bg-accent-500/15 text-accent-500' : isDark ? 'border-zinc-800 bg-zinc-900 text-zinc-300' : 'border-zinc-200 bg-white text-zinc-700'}`}
+                            title={t('Nënvizim', 'Underline')}
+                         >
+                            U
+                         </button>
+                      </div>
+                   </div>
+                   <div className="grid grid-cols-6 gap-1">
+                      {[11, 12, 14, 16, 18, 22].map((sz) => (
+                         <button
+                            key={`aa-sz-${sz}`}
+                            type="button"
+                            onClick={() => updateTextSize(sz)}
+                            className={`py-1 rounded-lg border text-[11px] font-bold tabular-nums transition-all ${
+                               textSize === sz
+                                 ? 'border-accent-500 bg-accent-500/15 text-accent-500'
+                                 : isDark ? 'border-zinc-800 bg-zinc-900 text-zinc-300' : 'border-zinc-200 bg-white text-zinc-700'
+                            }`}
+                         >
+                            {sz}px
+                         </button>
+                      ))}
+                   </div>
+                </div>
+
+                {/* Selected Rows Specific Text Color (when rows are selected) */}
+                {activeDocId && selectedRows.size > 0 && (
+                   <div className={`p-2.5 rounded-xl border flex flex-col gap-2 ${isDark ? 'bg-zinc-950/70 border-zinc-800' : 'bg-zinc-50 border-zinc-200'}`}>
+                      <span className="text-[11px] font-bold text-accent-500 uppercase tracking-wider">
+                         {t(`Ngjyra e Tekstit vetëm për ${selectedRows.size} Rrjesht(a)`, `Selected Rows Color (${selectedRows.size})`)}
+                      </span>
+                      <div className="flex flex-wrap items-center gap-1.5">
+                         {TEXT_COLORS.map((c) => (
+                            <button
+                               key={`sel-row-txt-${c.id}`}
+                               type="button"
+                               onClick={() => applyTextColorToSelectedRows(c.id)}
+                               className="w-6 h-6 rounded-lg border border-black/20 hover:scale-110 transition-transform"
+                               style={{ backgroundColor: c.id === 'default' ? (isDark ? '#71717a' : '#a1a1aa') : c.id }}
+                               title={`${t('Vendos ngjyrën:', 'Apply color:')} ${getColorDisplayName(c.name)}`}
+                            />
+                         ))}
+                      </div>
+                   </div>
+                )}
 
                 {/* Batch Text Case Formatting (respects protected locked rows) */}
                 <div className="flex flex-col gap-2">
@@ -14103,6 +15761,18 @@ const exportChatResponseToPdf = async () => {
                          className={`px-3 py-2 rounded-xl border text-xs font-bold transition-all ${isDark ? 'border-zinc-800 bg-zinc-800/60 hover:bg-zinc-800 text-zinc-200' : 'border-zinc-200 bg-zinc-50 hover:bg-zinc-100 text-zinc-800'}`}
                       >
                          {t('Abc — Kapitalizo', 'Abc — Capitalize')}
+                      </button>
+                      <button
+                         onClick={() => applyTextTransformToEditableRows('sentence')}
+                         className={`px-3 py-2 rounded-xl border text-xs font-bold transition-all ${isDark ? 'border-zinc-800 bg-zinc-800/60 hover:bg-zinc-800 text-zinc-200' : 'border-zinc-200 bg-zinc-50 hover:bg-zinc-100 text-zinc-800'}`}
+                      >
+                         {t('Fjali (Sentence)', 'Sentence Case')}
+                      </button>
+                      <button
+                         onClick={() => applyTextTransformToEditableRows('appendEuro')}
+                         className={`px-3 py-2 rounded-xl border text-xs font-bold transition-all ${isDark ? 'border-zinc-800 bg-zinc-800/60 hover:bg-zinc-800 text-zinc-200' : 'border-zinc-200 bg-zinc-50 hover:bg-zinc-100 text-zinc-800'}`}
+                      >
+                         {t('Shto € te Numrat', 'Add € to Numbers')}
                       </button>
                       <button
                          onClick={() => applyTextTransformToEditableRows('trim')}
@@ -14248,13 +15918,13 @@ const exportChatResponseToPdf = async () => {
 
                 {/* Selected Rows Tools */}
                 {activeDocId && selectedRows.size > 0 && (
-                   <div className={`p-3 rounded-xl border flex flex-col gap-2 ${isDark ? 'bg-zinc-950/70 border-zinc-800' : 'bg-zinc-50 border-zinc-200'}`}>
+                   <div className={`p-3 rounded-xl border flex flex-col gap-2.5 ${isDark ? 'bg-zinc-950/70 border-zinc-800' : 'bg-zinc-50 border-zinc-200'}`}>
                       <div className="flex items-center justify-between">
                          <span className="text-[11px] font-extrabold text-accent-500 uppercase tracking-wider tabular-nums">
                             {selectedRows.size} {t('Rrjesht(a) të Zgjedhur', 'Selected Row(s)')}
                          </span>
                          <button onClick={() => setSelectedRows(new Set())} className="text-[11px] font-bold text-red-500 hover:underline">
-                            {t('Pastro', 'Clear')}
+                            {t('Pastro Zgjedhjen', 'Clear Selection')}
                          </button>
                       </div>
                       <div className="flex flex-wrap gap-1.5">
@@ -14302,9 +15972,31 @@ const exportChatResponseToPdf = async () => {
                                >
                                   <ArrowDown className="w-3.5 h-3.5" />
                                </button>
+                               <button
+                                  onClick={clearSelectedRowsContent}
+                                  className="px-2.5 py-1.5 rounded-lg text-xs font-bold border border-red-500/30 bg-red-500/10 hover:bg-red-600 text-red-500 hover:text-white flex items-center gap-1 transition-colors"
+                                  title={t('Boshatis rrjeshtat e pa-kyçur', 'Clear selected unlocked rows')}
+                               >
+                                  <Eraser className="w-3.5 h-3.5" /> {t('Boshatis', 'Clear Content')}
+                               </button>
                             </>
                          )}
                       </div>
+                      {!currentDocReadOnly && (
+                         <div className="flex items-center gap-1.5 pt-1.5 border-t border-zinc-500/15">
+                            <span className="text-[10px] font-bold text-zinc-500 shrink-0">{t('Teksti:', 'Text:')}</span>
+                            {TEXT_COLORS.map((c) => (
+                               <button
+                                  key={`tag-row-txt-${c.id}`}
+                                  type="button"
+                                  onClick={() => applyTextColorToSelectedRows(c.id)}
+                                  className="w-5 h-5 rounded-md border border-black/20 hover:scale-110 transition-transform shrink-0"
+                                  style={{ backgroundColor: c.id === 'default' ? (isDark ? '#71717a' : '#a1a1aa') : c.id }}
+                                  title={`${t('Ngjyra e tekstit:', 'Text color:')} ${getColorDisplayName(c.name)}`}
+                               />
+                            ))}
+                         </div>
+                      )}
                    </div>
                 )}
 
@@ -14333,7 +16025,7 @@ const exportChatResponseToPdf = async () => {
                 {/* Quick Document & Row Utilities */}
                 {activeDocId && (
                    <div className="flex flex-col gap-2 pt-2 border-t border-zinc-500/20">
-                      <span className="text-[11px] font-bold uppercase tracking-wider text-zinc-500">{t('Veprime të Shpejta Dokumenti', 'Quick Document & Row Actions')}</span>
+                      <span className="text-[11px] font-bold uppercase tracking-wider text-zinc-500">{t('Veprime të Shpejta Dokumenti & Rrjeshtash', 'Quick Document & Row Actions')}</span>
                       <div className="grid grid-cols-2 gap-2">
                          <button
                             type="button"
@@ -14350,14 +16042,54 @@ const exportChatResponseToPdf = async () => {
                          >
                             <CopyPlus className="w-3.5 h-3.5 text-emerald-500" /> {t('Dupliko Dokumentin', 'Duplicate Doc')}
                          </button>
-                         {!currentDocReadOnly && (
+                         {currentTagDoc && (
                             <button
                                type="button"
-                               onClick={handleTrimEmptyRowsInCurrentDoc}
-                               className={`col-span-2 py-2 px-2.5 rounded-xl border text-xs font-bold flex items-center justify-center gap-1.5 ${isDark ? 'border-zinc-800 bg-zinc-950/60 hover:bg-zinc-800 text-zinc-200' : 'border-zinc-200 bg-zinc-50 hover:bg-zinc-100 text-zinc-800'}`}
+                               onClick={(e) => togglePinDocument(e, currentTagDoc)}
+                               className={`py-2 px-2.5 rounded-xl border text-xs font-bold flex items-center justify-center gap-1.5 ${
+                                  currentTagDoc.pinned
+                                    ? 'border-amber-500/40 bg-amber-500/15 text-amber-500'
+                                    : isDark ? 'border-zinc-800 bg-zinc-950/60 hover:bg-zinc-800 text-zinc-200' : 'border-zinc-200 bg-zinc-50 hover:bg-zinc-100 text-zinc-800'
+                               }`}
                             >
-                               <Eraser className="w-3.5 h-3.5 text-amber-500" /> {t('Pastro Rrjeshtat e Tepërt Bosh në Këtë Dokument', 'Trim Extra Blank Rows in This Document')}
+                               <Pin className="w-3.5 h-3.5" /> {currentTagDoc.pinned ? t('Hiq Fiksimin', 'Unpin Doc') : t('Fikso në Krye', 'Pin to Top')}
                             </button>
+                         )}
+                         <button
+                            type="button"
+                            onClick={() => { setShowTagColorMenu(false); exportPdf(); }}
+                            className={`py-2 px-2.5 rounded-xl border text-xs font-bold flex items-center justify-center gap-1.5 ${isDark ? 'border-zinc-800 bg-zinc-950/60 hover:bg-zinc-800 text-zinc-200' : 'border-zinc-200 bg-zinc-50 hover:bg-zinc-100 text-zinc-800'}`}
+                         >
+                            <FileDown className="w-3.5 h-3.5 text-rose-500" /> {t('Eksporto PDF / TXT', 'Export PDF')}
+                         </button>
+                         {!currentDocReadOnly && (
+                            <>
+                               <button
+                                  type="button"
+                                  onClick={() => handleAddExtraRows(10)}
+                                  className="py-1.5 px-2.5 rounded-xl border border-accent-500/30 bg-accent-500/10 hover:bg-accent-500/20 text-accent-500 text-xs font-bold"
+                               >
+                                  +10 {t('Rrjeshta', 'Rows')}
+                               </button>
+                               <button
+                                  type="button"
+                                  onClick={() => handleSwitchActiveDocRowMode(currentTagDoc?.autoGrowRows ? '90' : 'auto')}
+                                  className={`py-1.5 px-2.5 rounded-xl border text-xs font-bold ${
+                                     currentTagDoc?.autoGrowRows
+                                       ? 'border-emerald-500/40 bg-emerald-500/15 text-emerald-500'
+                                       : isDark ? 'border-zinc-800 bg-zinc-950/60 text-zinc-300' : 'border-zinc-200 bg-zinc-50 text-zinc-700'
+                                  }`}
+                               >
+                                  {currentTagDoc?.autoGrowRows ? t('✓ Automatik (Kthe 90)', '✓ Auto (Set 90)') : t('Kalo Automatik', 'Switch to Auto')}
+                               </button>
+                               <button
+                                  type="button"
+                                  onClick={handleTrimEmptyRowsInCurrentDoc}
+                                  className={`col-span-2 py-2 px-2.5 rounded-xl border text-xs font-bold flex items-center justify-center gap-1.5 ${isDark ? 'border-zinc-800 bg-zinc-950/60 hover:bg-zinc-800 text-zinc-200' : 'border-zinc-200 bg-zinc-50 hover:bg-zinc-100 text-zinc-800'}`}
+                               >
+                                  <Eraser className="w-3.5 h-3.5 text-amber-500" /> {t('Pastro Rrjeshtat e Tepërt Bosh në Këtë Dokument', 'Trim Extra Blank Rows in This Document')}
+                               </button>
+                            </>
                          )}
                       </div>
                    </div>
@@ -14856,12 +16588,13 @@ const exportChatResponseToPdf = async () => {
                                         <ArrowLeft className="w-4 h-4 text-white font-bold" />
                                      </button>
                                      {/* Title Input */}
-                                     <input 
+                                     <ImeSafeInput 
                                         type="text"
                                         value={activeNote.name || activeNote.text || ''}
-                                        onChange={(e) => {
-                                           const val = e.target.value;
-                                           const updated = secretList.map(item => {
+                                        onChangeValue={(val) => {
+                                           lastUserTypingTsRef.current = Date.now();
+                                           const baseSecrets = latestSecretListRef.current.length > 0 ? latestSecretListRef.current : secretList;
+                                           const updated = baseSecrets.map(item => {
                                               if (item.id === activeNote.id) {
                                                  return {
                                                     ...item,
@@ -14982,11 +16715,12 @@ const exportChatResponseToPdf = async () => {
                                      }`}
                                      style={activeNote.color && activeNote.color !== 'default' ? { borderColor: `${activeNote.color}55` } : undefined}
                                   >
-                                     <textarea
+                                     <ImeSafeTextarea
                                         value={activeNote.content || ''}
-                                        onChange={(e) => {
-                                           const val = e.target.value;
-                                           const updated = secretList.map(item => {
+                                        onChangeValue={(val) => {
+                                           lastUserTypingTsRef.current = Date.now();
+                                           const baseSecrets = latestSecretListRef.current.length > 0 ? latestSecretListRef.current : secretList;
+                                           const updated = baseSecrets.map(item => {
                                               if (item.id === activeNote.id) {
                                                  return {
                                                     ...item,
@@ -15675,18 +17409,76 @@ const exportChatResponseToPdf = async () => {
                            {previewModalDoc.headers.map((h, idx) => (
                               <th key={idx} className="p-2 font-bold uppercase">{h}</th>
                            ))}
+                           <th className="p-2 font-bold uppercase text-center">{t('MEDIA', 'MEDIA', 'ΜΕΣΑ')}</th>
                         </tr>
                      </thead>
                      <tbody>
-                        {previewModalDoc.rows.slice(0, 30).map((r, rIdx) => (
+                        {previewModalDoc.rows.slice(0, 30).map((r, rIdx) => {
+                           const previewThumb = getDisplayImageSrc(r.image);
+                           return (
                            <tr key={rIdx} className="border-b border-zinc-800/50 hover:bg-zinc-800/30">
                               {previewModalDoc.headers.map((_, cIdx) => (
                                  <td key={cIdx} className="p-2 text-zinc-300">
                                     {(r as any)[`col${cIdx + 1}`] || '-'}
                                  </td>
                               ))}
+                              <td className="p-2">
+                                 <div className="flex items-center justify-center gap-1">
+                                    {r.image && (
+                                       <button
+                                          type="button"
+                                          onClick={() => openRowImagePreview(String(r.image), {
+                                             fileName: r.imageName || `img_row_${rIdx + 1}.png`,
+                                             readOnly: true,
+                                             rowId: r.id
+                                          })}
+                                          className="flex items-center gap-1 p-1 rounded bg-blue-500/15 hover:bg-blue-500/30 text-blue-400"
+                                          title={t('Shiko Imazhin', 'View Image')}
+                                       >
+                                          {previewThumb ? (
+                                             <img src={previewThumb} className="w-5 h-5 object-cover rounded" alt="Preview" />
+                                          ) : (
+                                             <Eye className="w-3.5 h-3.5" />
+                                          )}
+                                       </button>
+                                    )}
+                                    {r.audio && (
+                                       <button
+                                          type="button"
+                                          onClick={() => openAudioPlayerModal(`online-${r.id || rIdx}`, String(r.audio), r.audioName || `audio_row_${rIdx + 1}.mp3`, r.audioMime, {
+                                             rowId: r.id,
+                                             rowIndex: rIdx,
+                                             sourceScope: 'online',
+                                             title: r.audioName || `${t('Rrjeshti', 'Row')} #${rIdx + 1}`,
+                                             readOnly: true
+                                          })}
+                                          className="p-1 rounded bg-emerald-500/20 text-emerald-400 hover:bg-emerald-600 hover:text-white"
+                                          title={t('Audio Player', 'Audio Player')}
+                                       >
+                                          <Volume2 className="w-3.5 h-3.5" />
+                                       </button>
+                                    )}
+                                    {r.pdf && (
+                                       <button
+                                          type="button"
+                                          onClick={() => openRowPdfPreview(String(r.pdf), {
+                                             fileName: r.pdfName || `dokument_${rIdx + 1}.pdf`,
+                                             sizeBytes: r.pdfSize,
+                                             readOnly: true,
+                                             rowId: r.id
+                                          })}
+                                          className="px-1.5 py-1 rounded bg-rose-500/20 text-rose-400 hover:bg-rose-600 hover:text-white flex items-center gap-0.5 text-[10px] font-bold"
+                                          title={t('Hap PDF', 'View PDF')}
+                                       >
+                                          <FileText className="w-3.5 h-3.5" /> PDF
+                                       </button>
+                                    )}
+                                    {!r.image && !r.audio && !r.pdf && <span className="text-zinc-600">-</span>}
+                                 </div>
+                              </td>
                            </tr>
-                        ))}
+                           );
+                        })}
                      </tbody>
                   </table>
                </div>
@@ -18993,7 +20785,7 @@ const exportChatResponseToPdf = async () => {
                      <div className="min-w-0">
                         <h3 className="text-sm sm:text-base font-extrabold truncate flex items-center gap-2">
                            {t('Rreth NoteBook3 & Privatësia', 'About NoteBook3 & Privacy')}
-                           <span className="px-2 py-0.5 rounded-full text-[10px] font-mono font-black bg-emerald-500/15 text-emerald-500 border border-emerald-500/30">v1.5.4</span>
+                           <span className="px-2 py-0.5 rounded-full text-[10px] font-mono font-black bg-emerald-500/15 text-emerald-500 border border-emerald-500/30">v1.5.6</span>
                         </h3>
                         <p className={`text-[11px] truncate ${isDark ? 'text-zinc-400' : 'text-zinc-500'}`}>
                            com.notebook3.app · {t('Gati për Google Play & GitHub APK', 'Google Play & GitHub APK Ready')}
@@ -19079,7 +20871,7 @@ const exportChatResponseToPdf = async () => {
                         <div className="grid grid-cols-2 gap-2.5">
                            <div className={`p-3 rounded-xl border ${isDark ? 'bg-zinc-950/60 border-zinc-800' : 'bg-white border-zinc-200'}`}>
                               <div className="text-[10px] font-bold uppercase text-zinc-500">{t('Versioni', 'Version')}</div>
-                              <div className="text-sm font-black mt-0.5">1.5.4</div>
+                              <div className="text-sm font-black mt-0.5">1.5.6</div>
                            </div>
                            <div className={`p-3 rounded-xl border ${isDark ? 'bg-zinc-950/60 border-zinc-800' : 'bg-white border-zinc-200'}`}>
                               <div className="text-[10px] font-bold uppercase text-zinc-500">{t('ID e Paketës', 'Package ID')}</div>
@@ -19115,9 +20907,9 @@ const exportChatResponseToPdf = async () => {
                            type="button"
                            onClick={() => {
                               const policyText = t(
-                                 'NoteBook3 (com.notebook3.app) v1.5.4 — Publikues: Genti83 (në bashkëpunim me Gemini Studio). Politikë Privatësie: Offline-First, zero reklama/gjurmues, zero READ_CALENDAR ose MANAGE_EXTERNAL_STORAGE. Sinkronizimi Firebase/GitHub Gist dhe funksionet AI përdoren vetëm me kërkesë të përdoruesit, me të drejtë të plotë për fshirje të dhënash (Settings -> App Reset).',
-                                 'NoteBook3 (com.notebook3.app) v1.5.4 — Publisher: Genti83 (in collaboration with Gemini Studio). Privacy Policy: Offline-First, zero ads/trackers, no READ_CALENDAR or MANAGE_EXTERNAL_STORAGE. Optional cloud sync and AI features require explicit user action, with full user data deletion via Settings -> App Reset.',
-                                 'NoteBook3 (com.notebook3.app) v1.5.4 — Εκδότης: Genti83 (σε συνεργασία με Gemini Studio). Πολιτική Απορρήτου: Offline-First, μηδέν διαφημίσεις/ιχνηλάτες, χωρίς READ_CALENDAR ή MANAGE_EXTERNAL_STORAGE. Ο συγχρονισμός Firebase/GitHub Gist και οι λειτουργίες AI ενεργοποιούνται μόνο από τον χρήστη, με πλήρη διαγραφή δεδομένων (Ρυθμίσεις -> Επαναφορά).'
+                                 'NoteBook3 (com.notebook3.app) v1.5.6 — Publikues: Genti83 (në bashkëpunim me Gemini Studio). Politikë Privatësie: Offline-First, zero reklama/gjurmues, zero READ_CALENDAR ose MANAGE_EXTERNAL_STORAGE. Sinkronizimi Firebase/GitHub Gist dhe funksionet AI përdoren vetëm me kërkesë të përdoruesit, me të drejtë të plotë për fshirje të dhënash (Settings -> App Reset).',
+                                 'NoteBook3 (com.notebook3.app) v1.5.6 — Publisher: Genti83 (in collaboration with Gemini Studio). Privacy Policy: Offline-First, zero ads/trackers, no READ_CALENDAR or MANAGE_EXTERNAL_STORAGE. Optional cloud sync and AI features require explicit user action, with full user data deletion via Settings -> App Reset.',
+                                 'NoteBook3 (com.notebook3.app) v1.5.6 — Εκδότης: Genti83 (σε συνεργασία με Gemini Studio). Πολιτική Απορρήτου: Offline-First, μηδέν διαφημίσεις/ιχνηλάτες, χωρίς READ_CALENDAR ή MANAGE_EXTERNAL_STORAGE. Ο συγχρονισμός Firebase/GitHub Gist και οι λειτουργίες AI ενεργοποιούνται μόνο από τον χρήστη, με πλήρη διαγραφή δεδομένων (Ρυθμίσεις -> Επαναφορά).'
                               );
                               navigator.clipboard.writeText(policyText);
                               showToast(t('✓ Politika e Privatësisë u kopjua!', '✓ Privacy Policy copied!'));
@@ -19411,18 +21203,26 @@ const exportChatResponseToPdf = async () => {
                           <div>
                              <label className="text-[10px] font-bold text-zinc-500 block mb-1">{t('Rrjeshta Fillestare', 'Default Rows')}</label>
                              <div className="grid grid-cols-4 gap-1">
-                                {[30, 60, 90, 150].map((rNum) => (
+                                {([
+                                   { id: '90', label: '90' },
+                                   { id: '120', label: '120' },
+                                   { id: '150', label: '150' },
+                                   { id: 'auto', label: 'Auto' }
+                                ] as const).map((rOpt) => (
                                    <button
-                                      key={rNum}
+                                      key={rOpt.id}
                                       type="button"
                                       onClick={() => {
-                                         setDefaultNewDocRows(rNum);
-                                         localStorage.setItem('grid_default_rows', String(rNum));
-                                         showToast(t(`Dokumentet e reja do nisin me ${rNum} rrjeshta.`, `New notes will start with ${rNum} rows.`));
+                                         applyDefaultNewDocRowMode(rOpt.id);
+                                         showToast(
+                                            rOpt.id === 'auto'
+                                              ? t('Dokumentet e reja do shtojnë rrjeshtat automatikisht.', 'New notes will auto-add rows as you type.')
+                                              : t(`Dokumentet e reja do nisin me ${rOpt.id} rrjeshta.`, `New notes will start with ${rOpt.id} rows.`)
+                                         );
                                       }}
-                                      className={`h-8 rounded-lg border text-xs font-bold tabular-nums ${defaultNewDocRows === rNum ? 'bg-accent-600 text-white border-accent-500' : isDark ? 'bg-zinc-800 border-zinc-700 text-zinc-300' : 'bg-zinc-100 border-zinc-300 text-zinc-800'}`}
+                                      className={`h-8 rounded-lg border text-[11px] font-bold tabular-nums ${defaultNewDocRowMode === rOpt.id ? 'bg-accent-600 text-white border-accent-500' : isDark ? 'bg-zinc-800 border-zinc-700 text-zinc-300' : 'bg-zinc-100 border-zinc-300 text-zinc-800'}`}
                                    >
-                                      {rNum}
+                                      {rOpt.label}
                                    </button>
                                 ))}
                              </div>
@@ -19702,7 +21502,7 @@ const exportChatResponseToPdf = async () => {
                            <span className="flex items-center gap-3">
                               <ShieldCheck className="w-4 h-4 shrink-0" /> {t('Rreth App, Privatësia & Lejet', 'About App, Privacy & Permissions')}
                            </span>
-                           <span className="text-[10px] font-mono opacity-80">v1.5.4</span>
+                           <span className="text-[10px] font-mono opacity-80">v1.5.6</span>
                        </button>
                        <button
                           onClick={() => {
@@ -19754,7 +21554,7 @@ const exportChatResponseToPdf = async () => {
                 </button>
              </div>
             
-            {/* SEGMENTED TAB SELECTOR: LISTA OSE ETIKETA */}
+            {/* SEGMENTED TAB SELECTOR: LISTA, ETIKETA OSE PAD */}
             <div className="flex gap-1 p-1 bg-zinc-100 dark:bg-zinc-800/60 rounded-xl border border-zinc-200/60 dark:border-zinc-800 mt-1 shrink-0">
                <button
                   onClick={() => { setMainTab('lista'); setSelectedLabelFolder(null); }}
@@ -19768,7 +21568,7 @@ const exportChatResponseToPdf = async () => {
                   {t("Lista", "Lists")} ({documents.length})
                </button>
                <button
-                  onClick={() => setMainTab('etiketa')}
+                  onClick={() => { setMainTab('etiketa'); }}
                   className={`flex-grow flex items-center justify-center gap-1.5 py-1.5 text-xs font-bold rounded-lg transition-all active:scale-95 ${
                      mainTab === 'etiketa'
                         ? "bg-accent-500 text-white shadow-md shadow-accent-500/15"
@@ -19778,20 +21578,34 @@ const exportChatResponseToPdf = async () => {
                   <Tag className="w-3.5 h-3.5 text-blue-500" />
                   {t("Etiketa", "Labels")} ({customLabels.length})
                </button>
+               <button
+                  onClick={() => { setMainTab('pad'); setSelectedLabelFolder(null); }}
+                  className={`flex-grow flex items-center justify-center gap-1.5 py-1.5 text-xs font-bold rounded-lg transition-all active:scale-95 ${
+                     mainTab === 'pad'
+                        ? "bg-accent-500 text-white shadow-md shadow-accent-500/15"
+                        : "text-zinc-600 dark:text-zinc-400 hover:bg-zinc-200/50 dark:hover:bg-zinc-800"
+                  }`}
+               >
+                  <FileText className="w-3.5 h-3.5 text-emerald-500" />
+                  {t("Pad", "Pad", "Pad")} ({padNotes.length})
+               </button>
             </div>
             
-            {/* If Lista Tab or Etiketa catalog (outside folder), show Search + Quick Filters */}
-            {(mainTab === 'lista' || (mainTab === 'etiketa' && selectedLabelFolder === null)) && (
+            {/* If Lista Tab, Etiketa catalog, or Pad list view, show Search + Layout toggle */}
+            {(mainTab === 'lista' || (mainTab === 'etiketa' && selectedLabelFolder === null) || (mainTab === 'pad' && !activePadId)) && (
                <div className="flex flex-col gap-1.5 w-full mt-1 shrink-0 pb-1">
                   <div className="flex gap-2 w-full">
                      <div className="relative flex-grow">
                         <Search className="w-4 h-4 absolute left-3 top-1/2 -translate-y-1/2 text-zinc-500" />
-                        <input 
-                           value={catalogSearch}
-                           onChange={(e) => setCatalogSearch(e.target.value)}
+                        <ImeSafeInput
+                           key={`catalog-search-${mainTab}`}
+                           value={mainTab === 'pad' ? padSearch : catalogSearch}
+                           onChangeValue={(val) => mainTab === 'pad' ? setPadSearch(val) : setCatalogSearch(val)}
                            placeholder={mainTab === 'lista' 
                               ? t("Kërko dokumente ose tekst brenda tyre...", "Search documents or text inside them...")
-                              : t("Kërko etiketa...", "Search labels...")
+                              : mainTab === 'pad'
+                                 ? t("Kërko shënimet Pad...", "Search Pad notes...", "Αναζήτηση σημειώσεων Pad...")
+                                 : t("Kërko etiketa...", "Search labels...")
                            }
                            className={`w-full h-9 pl-9 pr-4 text-sm rounded-xl border focus:outline-none focus:border-accent-500 transition-colors ${
                               isDark ? "bg-zinc-800 border-zinc-700 text-white placeholder-zinc-500" : "bg-white border-zinc-300 text-zinc-900 placeholder-zinc-400"
@@ -19946,6 +21760,464 @@ const exportChatResponseToPdf = async () => {
                         );
                      })}
                   </div>
+            ) : mainTab === 'pad' ? (
+               /* TAB PAD (SHËNIME ME SHKRIM TË LIRË — PA NDARJE, PA KOLONA, PA PIN) */
+               (() => {
+                  const getPadCardSurface = (colorId: string | undefined) => {
+                     switch (colorId) {
+                        case '#ef4444': return isDark ? 'bg-red-950/15 border-red-500/35 hover:border-red-500/70' : 'bg-red-50/55 border-red-200 hover:border-red-300';
+                        case '#f97316': return isDark ? 'bg-orange-950/15 border-orange-500/35 hover:border-orange-500/70' : 'bg-orange-50/55 border-orange-200 hover:border-orange-300';
+                        case '#eab308': return isDark ? 'bg-yellow-950/10 border-yellow-500/30 hover:border-yellow-500/60' : 'bg-yellow-50/55 border-yellow-200 hover:border-yellow-300';
+                        case '#22c55e': return isDark ? 'bg-emerald-950/15 border-emerald-500/35 hover:border-emerald-500/70' : 'bg-emerald-50/55 border-emerald-200 hover:border-emerald-300';
+                        case '#3b82f6': return isDark ? 'bg-blue-950/15 border-blue-500/35 hover:border-blue-500/70' : 'bg-blue-50/55 border-blue-200 hover:border-blue-300';
+                        case '#a855f7': return isDark ? 'bg-purple-950/15 border-purple-500/35 hover:border-purple-500/70' : 'bg-purple-50/55 border-purple-200 hover:border-purple-300';
+                        case '#ec4899': return isDark ? 'bg-pink-950/15 border-pink-500/35 hover:border-pink-500/70' : 'bg-pink-50/55 border-pink-200 hover:border-pink-300';
+                        default: return isDark ? 'bg-zinc-900 border-zinc-800 hover:border-zinc-700' : 'bg-white border-zinc-200 hover:border-zinc-300';
+                     }
+                  };
+                  const activePad = activePadId ? padNotes.find((p) => p.id === activePadId) || null : null;
+                  if (activePad) {
+                     const canUndoPad = (padUndoMapRef.current[activePad.id] || []).length > 0;
+                     const canRedoPad = (padRedoMapRef.current[activePad.id] || []).length > 0;
+                     const rawContent = activePad.content || '';
+                     const wordCount = rawContent.trim() ? rawContent.trim().split(/\s+/).length : 0;
+                     const charCount = rawContent.length;
+                     const lineCount = rawContent ? rawContent.split(/\r?\n/).length : 1;
+                     const findMatchCount = padFindQuery.trim()
+                        ? rawContent.toLowerCase().split(padFindQuery.trim().toLowerCase()).length - 1
+                        : 0;
+                     const fontCss = textFontFamily === 'mono'
+                        ? 'ui-monospace, SFMono-Regular, Menlo, monospace'
+                        : textFontFamily === 'serif'
+                           ? 'Georgia, Cambria, "Times New Roman", serif'
+                           : 'inherit';
+
+                     return (
+                        <div key={`pad-workspace-${activePad.id}`} className="flex flex-col gap-2.5 max-w-5xl mx-auto animate-in fade-in duration-200">
+                           {/* Pad Top Bar */}
+                           <div className={`p-2 sm:p-3 rounded-2xl border shadow-sm flex flex-wrap items-center gap-2 ${getPadCardSurface(activePad.color)}`}>
+                              <button
+                                 type="button"
+                                 onClick={() => { setActivePadId(null); setPadFindOpen(false); }}
+                                 className="inline-flex items-center gap-1.5 px-3 py-2 rounded-xl bg-blue-600 hover:bg-blue-500 text-white text-xs font-bold shadow-sm active:scale-95 transition-all shrink-0"
+                                 title={t('Kthehu te lista Pad', 'Back to Pad list', 'Επιστροφή στη λίστα Pad')}
+                              >
+                                 <ArrowLeft className="w-4 h-4" />
+                                 <span>{t('Kthehu', 'Back', 'Πίσω')}</span>
+                              </button>
+                              <div className="flex-1 min-w-[160px]">
+                                 <ImeSafeInput
+                                    key={`pad-title-input-${activePad.id}`}
+                                    value={activePad.title}
+                                    onChangeValue={(val) => updateActivePadFields(activePad.id, { title: val }, false)}
+                                    placeholder={t('Emri i shënimit Pad...', 'Pad note name...', 'Όνομα σημείωσης Pad...')}
+                                    className={`w-full h-9 px-3 rounded-xl border text-sm font-extrabold outline-none focus:border-accent-500 transition-colors ${
+                                       isDark ? 'bg-zinc-950/70 border-zinc-700 text-white placeholder-zinc-500' : 'bg-white border-zinc-300 text-zinc-900 placeholder-zinc-400'
+                                    }`}
+                                 />
+                              </div>
+                              <div className="flex items-center gap-1 shrink-0">
+                                 <button
+                                    type="button"
+                                    onClick={() => updateActivePadFields(activePad.id, { pinned: !activePad.pinned }, false)}
+                                    className={`p-2 rounded-xl border transition-all active:scale-95 ${
+                                       activePad.pinned
+                                          ? 'bg-amber-500/15 border-amber-500/40 text-amber-500'
+                                          : isDark ? 'bg-zinc-800/80 border-zinc-700 text-zinc-400 hover:text-amber-500' : 'bg-white border-zinc-200 text-zinc-500 hover:text-amber-600'
+                                    }`}
+                                    title={activePad.pinned ? t('Hiq Fiksimin', 'Unpin') : t('Fikso në Krye', 'Pin to Top')}
+                                 >
+                                    <Pin className={`w-4 h-4 ${activePad.pinned ? 'fill-amber-500' : ''}`} />
+                                 </button>
+                                 <button
+                                    type="button"
+                                    onClick={() => setNewPadModal({ isOpen: true, mode: 'rename', targetId: activePad.id, value: activePad.title })}
+                                    className={`p-2 rounded-xl border transition-all active:scale-95 ${
+                                       isDark ? 'bg-zinc-800/80 border-zinc-700 text-zinc-300 hover:text-accent-400' : 'bg-white border-zinc-200 text-zinc-700 hover:text-accent-600'
+                                    }`}
+                                    title={t('Ndrysho emrin', 'Rename')}
+                                 >
+                                    <Edit className="w-4 h-4" />
+                                 </button>
+                                 <button
+                                    type="button"
+                                    onClick={() => setShowTextMenu(true)}
+                                    className={`px-2.5 py-2 rounded-xl border text-xs font-black transition-all active:scale-95 ${
+                                       isDark ? 'bg-zinc-800/80 border-zinc-700 text-zinc-200 hover:border-accent-500' : 'bg-white border-zinc-200 text-zinc-800 hover:border-accent-500'
+                                    }`}
+                                    title={t('Tipografia & Madhësia (T)', 'Typography (T)')}
+                                 >
+                                    T
+                                 </button>
+                                 <button
+                                    type="button"
+                                    onClick={() => setPadToDelete(activePad)}
+                                    className="p-2 rounded-xl bg-red-600 hover:bg-red-500 text-white shadow-sm active:scale-95 transition-all"
+                                    title={t('Fshi Pad', 'Delete Pad', 'Διαγραφή Pad')}
+                                 >
+                                    <Trash2 className="w-4 h-4" />
+                                 </button>
+                              </div>
+                           </div>
+
+                           {/* Pad Formatting & Utility Toolbar */}
+                           <div className={`p-2 rounded-2xl border flex flex-wrap items-center justify-between gap-2 ${
+                              isDark ? 'bg-zinc-900/90 border-zinc-800' : 'bg-zinc-50 border-zinc-200'
+                           }`}>
+                              <div className="flex flex-wrap items-center gap-1">
+                                 <button
+                                    type="button"
+                                    onClick={() => handlePadUndo(activePad.id)}
+                                    disabled={!canUndoPad}
+                                    className={`inline-flex items-center gap-1 px-2.5 py-1.5 rounded-lg border text-xs font-bold disabled:opacity-35 transition-all ${
+                                       isDark ? 'bg-zinc-800 border-zinc-700 text-zinc-200 hover:bg-zinc-700' : 'bg-white border-zinc-200 text-zinc-800 hover:bg-zinc-100'
+                                    }`}
+                                    title={t('Zhbëj', 'Undo')}
+                                 >
+                                    <Undo2 className="w-3.5 h-3.5 text-accent-500" />
+                                    <span className="hidden sm:inline">{t('Zhbëj', 'Undo')}</span>
+                                 </button>
+                                 <button
+                                    type="button"
+                                    onClick={() => handlePadRedo(activePad.id)}
+                                    disabled={!canRedoPad}
+                                    className={`inline-flex items-center gap-1 px-2.5 py-1.5 rounded-lg border text-xs font-bold disabled:opacity-35 transition-all ${
+                                       isDark ? 'bg-zinc-800 border-zinc-700 text-zinc-200 hover:bg-zinc-700' : 'bg-white border-zinc-200 text-zinc-800 hover:bg-zinc-100'
+                                    }`}
+                                    title={t('Ribëj', 'Redo')}
+                                 >
+                                    <Redo2 className="w-3.5 h-3.5 text-accent-500" />
+                                    <span className="hidden sm:inline">{t('Ribëj', 'Redo')}</span>
+                                 </button>
+                                 <button
+                                    type="button"
+                                    onClick={() => setPadFindOpen((v) => !v)}
+                                    className={`inline-flex items-center gap-1 px-2.5 py-1.5 rounded-lg border text-xs font-bold transition-all ${
+                                       padFindOpen
+                                          ? 'bg-accent-500 text-white border-accent-500'
+                                          : isDark ? 'bg-zinc-800 border-zinc-700 text-zinc-200 hover:bg-zinc-700' : 'bg-white border-zinc-200 text-zinc-800 hover:bg-zinc-100'
+                                    }`}
+                                    title={t('Gjej & Zëvendëso', 'Find & Replace', 'Εύρεση & Αντικατάσταση')}
+                                 >
+                                    <Replace className="w-3.5 h-3.5" />
+                                    <span>{t('Gjej / Zëvendëso', 'Find / Replace', 'Εύρεση / Αντικ.')}</span>
+                                 </button>
+                                 <button
+                                    type="button"
+                                    onClick={() => {
+                                       const now = new Date();
+                                       const stamp = `${pad2(now.getDate())}/${pad2(now.getMonth() + 1)}/${now.getFullYear()} ${pad2(now.getHours())}:${pad2(now.getMinutes())}`;
+                                       const prefix = rawContent && !rawContent.endsWith('\n') ? '\n' : '';
+                                       updateActivePadFields(activePad.id, { content: `${rawContent}${prefix}[${stamp}] ` }, true);
+                                       setPadExternalSyncTick((v) => v + 1);
+                                    }}
+                                    className={`inline-flex items-center gap-1 px-2.5 py-1.5 rounded-lg border text-xs font-bold transition-all ${
+                                       isDark ? 'bg-zinc-800 border-zinc-700 text-zinc-200 hover:bg-zinc-700' : 'bg-white border-zinc-200 text-zinc-800 hover:bg-zinc-100'
+                                    }`}
+                                    title={t('Shto Datën & Orën', 'Insert Date & Time', 'Εισαγωγή Ημερομηνίας & Ώρας')}
+                                 >
+                                    <Calendar className="w-3.5 h-3.5 text-emerald-500" />
+                                    <span className="hidden sm:inline">{t('+ Data/Ora', '+ Date/Time', '+ Ημ/νία')}</span>
+                                 </button>
+                                 <button
+                                    type="button"
+                                    onClick={() => {
+                                       navigator.clipboard?.writeText(rawContent);
+                                       showToast(t('✓ Teksti i Pad u kopjua!', '✓ Pad text copied!', '✓ Το κείμενο Pad αντιγράφηκε!'));
+                                    }}
+                                    className={`inline-flex items-center gap-1 px-2.5 py-1.5 rounded-lg border text-xs font-bold transition-all ${
+                                       isDark ? 'bg-zinc-800 border-zinc-700 text-zinc-200 hover:bg-zinc-700' : 'bg-white border-zinc-200 text-zinc-800 hover:bg-zinc-100'
+                                    }`}
+                                    title={t('Kopjo të gjithë tekstin', 'Copy all text')}
+                                 >
+                                    <Copy className="w-3.5 h-3.5 text-sky-500" />
+                                    <span className="hidden md:inline">{t('Kopjo', 'Copy')}</span>
+                                 </button>
+                                 <button
+                                    type="button"
+                                    onClick={() => exportPadAsTxt(activePad)}
+                                    className={`inline-flex items-center gap-1 px-2.5 py-1.5 rounded-lg border text-xs font-bold transition-all ${
+                                       isDark ? 'bg-zinc-800 border-zinc-700 text-zinc-200 hover:bg-zinc-700' : 'bg-white border-zinc-200 text-zinc-800 hover:bg-zinc-100'
+                                    }`}
+                                    title={t('Eksporto si TXT', 'Export TXT')}
+                                 >
+                                    <Download className="w-3.5 h-3.5 text-amber-500" />
+                                    <span>TXT</span>
+                                 </button>
+                                 <button
+                                    type="button"
+                                    onClick={() => exportPadAsPdf(activePad)}
+                                    className="inline-flex items-center gap-1 px-2.5 py-1.5 rounded-lg bg-red-600 hover:bg-red-500 text-white text-xs font-bold transition-all"
+                                    title={t('Eksporto si PDF', 'Export PDF')}
+                                 >
+                                    <FileDown className="w-3.5 h-3.5" />
+                                    <span>PDF</span>
+                                 </button>
+                                 <button
+                                    type="button"
+                                    onClick={() => {
+                                       if (!rawContent) return;
+                                       setConfirmDialog({
+                                          isOpen: true,
+                                          title: t('Pastro Tekstin e Pad', 'Clear Pad Text', 'Εκκαθάριση κειμένου Pad'),
+                                          message: t('Jeni i sigurt që doni të pastroni të gjithë tekstin e këtij Pad?', 'Are you sure you want to clear all text in this Pad?', 'Είστε σίγουροι ότι θέλετε να εκκαθαρίσετε όλο το κείμενο αυτού του Pad;'),
+                                          confirmLabel: t('Pastro', 'Clear'),
+                                          danger: true,
+                                          onConfirm: () => {
+                                             updateActivePadFields(activePad.id, { content: '' }, true);
+                                             setPadExternalSyncTick((v) => v + 1);
+                                          },
+                                       });
+                                    }}
+                                    disabled={!rawContent}
+                                    className={`inline-flex items-center gap-1 px-2.5 py-1.5 rounded-lg border text-xs font-bold disabled:opacity-35 transition-all ${
+                                       isDark ? 'bg-zinc-800 border-zinc-700 text-red-400 hover:bg-red-600 hover:text-white' : 'bg-white border-zinc-200 text-red-600 hover:bg-red-600 hover:text-white'
+                                    }`}
+                                    title={t('Pastro tekstin', 'Clear text')}
+                                 >
+                                    <Eraser className="w-3.5 h-3.5" />
+                                    <span className="hidden md:inline">{t('Pastro', 'Clear')}</span>
+                                 </button>
+                              </div>
+
+                              {/* Card Color Theme Swatches */}
+                              <div className="flex items-center gap-1.5 px-1">
+                                 <Palette className="w-3.5 h-3.5 text-zinc-400 shrink-0" />
+                                 {TEXT_COLORS.map((c) => {
+                                    const activeSwatch = (activePad.color || 'default') === c.id;
+                                    return (
+                                       <button
+                                          key={`pad-color-${c.id}`}
+                                          type="button"
+                                          onClick={() => updateActivePadFields(activePad.id, { color: c.id }, false)}
+                                          className={`w-5 h-5 rounded-md border transition-transform ${
+                                             activeSwatch ? 'scale-110 ring-2 ring-accent-500 border-white' : 'border-black/20 hover:scale-105'
+                                          }`}
+                                          style={{ backgroundColor: c.id === 'default' ? (isDark ? '#27272a' : '#f4f4f5') : c.id }}
+                                          title={getColorDisplayName(c.name)}
+                                       />
+                                    );
+                                 })}
+                              </div>
+                           </div>
+
+                           {/* Find & Replace Collapsible Bar */}
+                           {padFindOpen && (
+                              <div className={`p-2.5 rounded-2xl border flex flex-wrap items-center gap-2 animate-in fade-in duration-150 ${
+                                 isDark ? 'bg-zinc-900 border-zinc-700' : 'bg-zinc-50 border-zinc-300'
+                              }`}>
+                                 <div className="flex-1 min-w-[140px]">
+                                    <ImeSafeInput
+                                       value={padFindQuery}
+                                       onChangeValue={setPadFindQuery}
+                                       placeholder={t('Gjej tekst...', 'Find text...', 'Εύρεση κειμένου...')}
+                                       className={`w-full h-8 px-2.5 rounded-lg border text-xs outline-none focus:border-accent-500 ${
+                                          isDark ? 'bg-zinc-800 border-zinc-700 text-white' : 'bg-white border-zinc-300 text-zinc-900'
+                                       }`}
+                                    />
+                                 </div>
+                                 <span className="text-[11px] font-mono font-bold text-zinc-500 shrink-0">
+                                    {padFindQuery.trim() ? `${findMatchCount}×` : '0×'}
+                                 </span>
+                                 <div className="flex-1 min-w-[140px]">
+                                    <ImeSafeInput
+                                       value={padReplaceQuery}
+                                       onChangeValue={setPadReplaceQuery}
+                                       placeholder={t('Zëvendëso me...', 'Replace with...', 'Αντικατάσταση με...')}
+                                       className={`w-full h-8 px-2.5 rounded-lg border text-xs outline-none focus:border-accent-500 ${
+                                          isDark ? 'bg-zinc-800 border-zinc-700 text-white' : 'bg-white border-zinc-300 text-zinc-900'
+                                       }`}
+                                    />
+                                 </div>
+                                 <button
+                                    type="button"
+                                    onClick={() => {
+                                       const q = padFindQuery;
+                                       if (!q) return;
+                                       const escaped = q.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+                                       const regex = new RegExp(escaped, 'gi');
+                                       const matches = rawContent.match(regex);
+                                       if (!matches || matches.length === 0) {
+                                          showToast(t('Nuk u gjet asnjë përputhje!', 'No matches found!'));
+                                          return;
+                                       }
+                                       const updatedText = rawContent.replace(regex, padReplaceQuery);
+                                       updateActivePadFields(activePad.id, { content: updatedText }, true);
+                                       setPadExternalSyncTick((v) => v + 1);
+                                       showToast(t(`✓ U zëvendësuan ${matches.length} raste!`, `✓ Replaced ${matches.length} occurrences!`));
+                                    }}
+                                    className="px-3 h-8 rounded-lg bg-blue-600 hover:bg-blue-500 text-white text-xs font-bold shrink-0"
+                                 >
+                                    {t('Zëvendëso të Gjitha', 'Replace All', 'Αντικατάσταση Όλων')}
+                                 </button>
+                                 <button
+                                    type="button"
+                                    onClick={() => setPadFindOpen(false)}
+                                    className="p-1.5 rounded-lg bg-red-600 hover:bg-red-500 text-white shrink-0"
+                                 >
+                                    <X className="w-3.5 h-3.5" />
+                                 </button>
+                              </div>
+                           )}
+
+                           {/* Free-Text Pad Editor Area (No columns, no row dividers, IME/€ safe, keeps keyboard open) */}
+                           <div className={`rounded-2xl border shadow-sm overflow-hidden ${getPadCardSurface(activePad.color)}`}>
+                              <ImeSafeTextarea
+                                 key={`pad-editor-${activePad.id}`}
+                                 syncRevision={padExternalSyncTick}
+                                 value={activePad.content}
+                                 onChangeValue={(val) => updateActivePadFields(activePad.id, { content: val }, true)}
+                                 autoResize={false}
+                                 autoLineHeight={false}
+                                 autoCorrect="off"
+                                 autoCapitalize="off"
+                                 autoComplete="off"
+                                 spellCheck={false}
+                                 placeholder={t('Shkruaj shënim të lirë këtu (pa ndarje, pa kolona, pa PIN)...', 'Write free-form note here (no splits, no columns, no PIN)...', 'Γράψτε ελεύθερα εδώ (χωρίς διαχωρισμούς, στήλες ή PIN)...')}
+                                 style={{
+                                    fontSize: `${Math.max(13, textSize)}px`,
+                                    fontWeight: textWeight,
+                                    fontFamily: fontCss,
+                                    textAlign,
+                                    fontStyle: textItalic ? 'italic' : 'normal',
+                                    textDecoration: textUnderline ? 'underline' : undefined,
+                                    letterSpacing: textLetterSpacing ? `${textLetterSpacing}px` : undefined,
+                                    fontVariantNumeric: textTabularNums ? 'tabular-nums' : undefined,
+                                    lineHeight: Math.max(1.4, textLineHeight),
+                                    color: textColorMode === 'default' ? undefined : getActualTextColor(textColorMode),
+                                 }}
+                                 className={`w-full min-h-[48dvh] sm:min-h-[55dvh] p-3 sm:p-5 bg-transparent outline-none resize-y leading-relaxed ${
+                                    isDark ? 'text-zinc-100 placeholder-zinc-500' : 'text-zinc-900 placeholder-zinc-400'
+                                 }`}
+                              />
+                           </div>
+
+                           {/* Pad Status Footer */}
+                           <div className={`px-3 py-2 rounded-xl border flex flex-wrap items-center justify-between gap-2 text-[11px] font-semibold ${
+                              isDark ? 'bg-zinc-900/70 border-zinc-800 text-zinc-400' : 'bg-zinc-50 border-zinc-200 text-zinc-600'
+                           }`}>
+                              <div className="flex flex-wrap items-center gap-3 tabular-nums">
+                                 <span>{t('Fjalë', 'Words', 'Λέξεις')}: <strong className={textColor}>{wordCount}</strong></span>
+                                 <span>{t('Karaktere', 'Chars', 'Χαρακτήρες')}: <strong className={textColor}>{charCount}</strong></span>
+                                 <span>{t('Rreshta', 'Lines', 'Γραμμές')}: <strong className={textColor}>{lineCount}</strong></span>
+                              </div>
+                              <div className="flex items-center gap-2">
+                                 <span className="text-emerald-500 font-bold">✓ {t('Ruhet automatikisht', 'Auto-saved', 'Αυτόματη αποθήκευση')}</span>
+                                 <span className="opacity-60">· {safeFormatDate(activePad.updatedAt, 'dd/MM HH:mm')}</span>
+                              </div>
+                           </div>
+                        </div>
+                     );
+                  }
+
+                  const padQuery = padSearch.trim().toLowerCase();
+                  const visiblePads = [...padNotes]
+                     .filter((p) => {
+                        if (!padQuery) return true;
+                        return (p.title || '').toLowerCase().includes(padQuery) || (p.content || '').toLowerCase().includes(padQuery);
+                     })
+                     .sort((a, b) => {
+                        if (Boolean(a.pinned) !== Boolean(b.pinned)) return a.pinned ? -1 : 1;
+                        return new Date(b.updatedAt || b.createdAt || 0).getTime() - new Date(a.updatedAt || a.createdAt || 0).getTime();
+                     });
+
+                  return (
+                     <div className={catalogLayout === 'grid'
+                        ? 'grid grid-cols-1 sm:grid-cols-3 lg:grid-cols-4 xl:grid-cols-5 gap-2 animate-in fade-in duration-200'
+                        : 'flex flex-col gap-2 max-w-4xl animate-in fade-in duration-200'
+                     }>
+                        {/* + KRIJO PAD TË RI */}
+                        <button
+                           type="button"
+                           onClick={() => setNewPadModal({ isOpen: true, mode: 'create', value: '' })}
+                           className={`flex items-center gap-2.5 p-2.5 border-2 border-dashed rounded-xl transition-all active:scale-95 text-left ${
+                              isDark
+                                 ? 'border-zinc-700 hover:border-emerald-500/80 bg-zinc-900/30 hover:bg-zinc-900/60'
+                                 : 'border-zinc-300 hover:border-emerald-500/80 bg-zinc-50 hover:bg-zinc-100'
+                           }`}
+                        >
+                           <div className="p-1.5 bg-emerald-500/15 rounded-lg">
+                              <Plus className="w-4 h-4 text-emerald-500" />
+                           </div>
+                           <div className="flex flex-col gap-0.5">
+                              <span className={`text-xs font-bold ${textColor}`}>{t('Krijo Pad të Ri', 'Create New Pad', 'Δημιουργία Νέου Pad')}</span>
+                              <span className="text-[10px] font-medium leading-tight text-zinc-500">
+                                 {t('Shënim i thjeshtë me fushë të lirë (pa PIN)', 'Plain free-text note (no PIN)', 'Απλή ελεύθερη σημείωση (χωρίς PIN)')}
+                              </span>
+                           </div>
+                        </button>
+
+                        {visiblePads.length === 0 ? (
+                           <div className={`col-span-full text-center py-10 text-xs ${isDark ? 'text-zinc-500' : 'text-zinc-400'}`}>
+                              {padQuery
+                                 ? t('Nuk u gjet asnjë Pad me këtë kërkim.', 'No Pad notes match your search.', 'Δεν βρέθηκαν σημειώσεις Pad.')
+                                 : t('Nuk ka ende shënime Pad. Kliko "Krijo Pad të Ri" për të nisur.', 'No Pad notes yet. Tap "Create New Pad" to begin.', 'Δεν υπάρχουν ακόμη σημειώσεις Pad. Πατήστε "Δημιουργία Νέου Pad".')}
+                           </div>
+                        ) : visiblePads.map((pad) => {
+                           const previewSnippet = (pad.content || '').replace(/\s+/g, ' ').trim();
+                           const words = previewSnippet ? previewSnippet.split(' ').length : 0;
+                           return (
+                              <div
+                                 key={pad.id}
+                                 onClick={() => { setActivePadId(pad.id); setPadFindOpen(false); }}
+                                 className={`flex flex-col justify-between gap-2 p-2.5 border rounded-xl cursor-pointer transition-all hover:translate-x-0.5 shadow-sm ${getPadCardSurface(pad.color)}`}
+                              >
+                                 <div className="flex items-start justify-between gap-2 min-w-0">
+                                    <div className="flex items-center gap-1.5 min-w-0">
+                                       {pad.pinned && <Pin className="w-3 h-3 text-amber-500 shrink-0 fill-amber-500" />}
+                                       <FileText className="w-3.5 h-3.5 text-emerald-500 shrink-0" />
+                                       <h3 className={`font-bold text-sm truncate ${textColor}`}>{pad.title}</h3>
+                                    </div>
+                                    <div className="flex items-center gap-0.5 shrink-0" onClick={(e) => e.stopPropagation()}>
+                                       <button
+                                          type="button"
+                                          onClick={() => updateActivePadFields(pad.id, { pinned: !pad.pinned }, false)}
+                                          className={`p-1 rounded-lg transition-colors ${pad.pinned ? 'text-amber-500 bg-amber-500/10' : 'text-zinc-400 hover:text-amber-500'}`}
+                                          title={pad.pinned ? t('Hiq Fiksimin', 'Unpin') : t('Fikso në Krye', 'Pin to Top')}
+                                       >
+                                          <Pin className="w-3.5 h-3.5" />
+                                       </button>
+                                       <button
+                                          type="button"
+                                          onClick={() => duplicatePadNote(pad)}
+                                          className="p-1 rounded-lg text-zinc-400 hover:text-emerald-500 transition-colors"
+                                          title={t('Dupliko', 'Duplicate')}
+                                       >
+                                          <CopyPlus className="w-3.5 h-3.5" />
+                                       </button>
+                                       <button
+                                          type="button"
+                                          onClick={() => setNewPadModal({ isOpen: true, mode: 'rename', targetId: pad.id, value: pad.title })}
+                                          className="p-1 rounded-lg text-zinc-400 hover:text-blue-500 transition-colors"
+                                          title={t('Ndrysho emrin', 'Rename')}
+                                       >
+                                          <Edit className="w-3.5 h-3.5" />
+                                       </button>
+                                       <button
+                                          type="button"
+                                          onClick={() => setPadToDelete(pad)}
+                                          className="p-1 rounded-lg bg-red-600 hover:bg-red-500 text-white active:scale-95 transition-all"
+                                          title={t('Fshi Pad', 'Delete Pad')}
+                                       >
+                                          <Trash2 className="w-3.5 h-3.5 pointer-events-none" />
+                                       </button>
+                                    </div>
+                                 </div>
+                                 <p className={`text-xs line-clamp-2 min-h-[2rem] break-words ${isDark ? 'text-zinc-400' : 'text-zinc-600'}`}>
+                                    {previewSnippet || t('Fushë e zbrazët — kliko për të shkruar...', 'Empty note — tap to write...', 'Κενή σημείωση — πατήστε για εγγραφή...')}
+                                 </p>
+                                 <div className="flex items-center justify-between text-[10px] text-zinc-500 tabular-nums pt-1 border-t border-zinc-500/10">
+                                    <span className="flex items-center gap-1 text-sky-600 dark:text-sky-400 font-semibold">
+                                       <Save className="w-2.5 h-2.5" /> {safeFormatDate(pad.updatedAt, 'dd/MM HH:mm')}
+                                    </span>
+                                    <span>{words} {t('fjalë', 'words', 'λέξεις')}</span>
+                                 </div>
+                              </div>
+                           );
+                        })}
+                     </div>
+                  );
+               })()
             ) : (
                /* TAB ETIKETA */
                selectedLabelFolder === null ? (
@@ -20406,6 +22678,110 @@ const exportChatResponseToPdf = async () => {
                </div>
             </div>
          )}
+         {/* CREATE / RENAME PAD MODAL */}
+         {newPadModal.isOpen && (
+            <div className="fixed inset-0 bg-black/60 backdrop-blur-sm flex items-center justify-center z-[140] p-4 animate-in fade-in duration-150" onClick={() => setNewPadModal({ isOpen: false, mode: 'create', value: '' })}>
+               <div
+                  onClick={(e) => e.stopPropagation()}
+                  className={`w-full max-w-sm rounded-2xl border p-5 shadow-2xl animate-in zoom-in-95 duration-150 ${
+                     isDark ? 'bg-zinc-900 border-zinc-800 text-white' : 'bg-white border-zinc-200 text-zinc-900'
+                  }`}
+               >
+                  <div className="flex justify-between items-center mb-3">
+                     <h3 className="font-extrabold text-sm flex items-center gap-2">
+                        <FileText className="w-4 h-4 text-emerald-500" />
+                        {newPadModal.mode === 'rename'
+                           ? t('Ndrysho Emrin e Pad', 'Rename Pad Note', 'Μετονομασία Pad')
+                           : t('Krijo Listë Pad të Re', 'Create New Pad Note', 'Δημιουργία Νέου Pad')}
+                     </h3>
+                     <button
+                        type="button"
+                        onClick={() => setNewPadModal({ isOpen: false, mode: 'create', value: '' })}
+                        className="p-1 rounded-lg bg-red-600 hover:bg-red-500 text-white transition-colors"
+                     >
+                        <X className="w-4 h-4" />
+                     </button>
+                  </div>
+                  <p className={`text-xs mb-3 ${isDark ? 'text-zinc-400' : 'text-zinc-500'}`}>
+                     {t('Shkruani emrin për shënimin tuaj me tekst të lirë. Do të ruhet automatikisht pa PIN dhe pa kolona.', 'Enter a title for your free-text note. It auto-saves with no PIN and no columns.', 'Εισάγετε τίτλο για την ελεύθερη σημείωση. Αποθηκεύεται αυτόματα χωρίς PIN ή στήλες.')}
+                  </p>
+                  <ImeSafeInput
+                     key={`pad-modal-input-${newPadModal.mode}-${newPadModal.targetId || 'new'}`}
+                     value={newPadModal.value}
+                     onChangeValue={(val) => setNewPadModal((prev) => ({ ...prev, value: val }))}
+                     onKeyDown={(e) => {
+                        if (e.key === 'Enter') {
+                           e.preventDefault();
+                           handleCreateOrRenamePad();
+                        }
+                     }}
+                     autoFocus
+                     placeholder={t('P.sh. Shënime Ditore, Ide...', 'e.g. Daily Notes, Ideas...', 'π.χ. Καθημερινές Σημειώσεις...')}
+                     className={`w-full h-10 px-3 rounded-xl border text-sm font-bold outline-none focus:border-accent-500 mb-4 ${
+                        isDark ? 'bg-zinc-950 border-zinc-700 text-white placeholder-zinc-500' : 'bg-zinc-50 border-zinc-300 text-zinc-900 placeholder-zinc-400'
+                     }`}
+                  />
+                  <div className="flex gap-2">
+                     <button
+                        type="button"
+                        onClick={handleCreateOrRenamePad}
+                        className="flex-1 py-2.5 rounded-xl bg-blue-600 hover:bg-blue-500 text-white text-xs font-bold shadow-sm active:scale-95 transition-all"
+                     >
+                        {newPadModal.mode === 'rename' ? t('Ruaj Emrin', 'Save Title', 'Αποθήκευση') : t('Krijo Pad', 'Create Pad', 'Δημιουργία')}
+                     </button>
+                     <button
+                        type="button"
+                        onClick={() => setNewPadModal({ isOpen: false, mode: 'create', value: '' })}
+                        className="flex-1 py-2.5 rounded-xl bg-red-600 hover:bg-red-500 text-white text-xs font-bold active:scale-95 transition-all"
+                     >
+                        {t('Anulo', 'Cancel', 'Ακύρωση')}
+                     </button>
+                  </div>
+               </div>
+            </div>
+         )}
+
+         {/* DELETE PAD CONFIRMATION MODAL */}
+         {padToDelete && (
+            <div className="fixed inset-0 bg-black/65 backdrop-blur-sm flex items-center justify-center z-[145] p-4 animate-in fade-in duration-150" onClick={() => setPadToDelete(null)}>
+               <div
+                  onClick={(e) => e.stopPropagation()}
+                  className={`w-full max-w-sm rounded-2xl border p-5 shadow-2xl animate-in zoom-in-95 duration-150 ${
+                     isDark ? 'bg-zinc-900 border-zinc-800 text-white' : 'bg-white border-zinc-200 text-zinc-900'
+                  }`}
+               >
+                  <div className="flex items-center gap-2.5 mb-2">
+                     <div className="p-2 rounded-xl bg-red-500/15 text-red-500">
+                        <Trash2 className="w-5 h-5" />
+                     </div>
+                     <h3 className="font-extrabold text-sm text-red-500">
+                        {t('Fshi Shënimin Pad?', 'Delete Pad Note?', 'Διαγραφή Σημείωσης Pad;')}
+                     </h3>
+                  </div>
+                  <p className={`text-xs mb-4 leading-relaxed ${isDark ? 'text-zinc-300' : 'text-zinc-600'}`}>
+                     {t(`Jeni i sigurt që doni të fshini "${padToDelete.title}"? Ky veprim nuk mund të zhbëhet.`, `Are you sure you want to delete "${padToDelete.title}"? This action cannot be undone.`, `Είστε σίγουροι ότι θέλετε να διαγράψετε το "${padToDelete.title}"; Αυτή η ενέργεια δεν μπορεί να αναιρεθεί.`)}
+                  </p>
+                  <div className="flex gap-2">
+                     <button
+                        type="button"
+                        onClick={() => executeDeletePadNote(padToDelete.id)}
+                        className="flex-1 py-2.5 rounded-xl bg-red-600 hover:bg-red-500 text-white text-xs font-bold shadow-sm active:scale-95 transition-all"
+                     >
+                        {t('Fshi', 'Delete', 'Διαγραφή')}
+                     </button>
+                     <button
+                        type="button"
+                        onClick={() => setPadToDelete(null)}
+                        className={`flex-1 py-2.5 rounded-xl text-xs font-bold border active:scale-95 transition-all ${
+                           isDark ? 'bg-zinc-800 border-zinc-700 text-zinc-200 hover:bg-zinc-700' : 'bg-zinc-100 border-zinc-200 text-zinc-800 hover:bg-zinc-200'
+                        }`}
+                     >
+                        {t('Anulo', 'Cancel', 'Ακύρωση')}
+                     </button>
+                  </div>
+               </div>
+            </div>
+         )}
          {/* TOAST CUSTOM */}
          {renderToastBanner()}
          {renderSharedModals()}
@@ -20416,13 +22792,13 @@ const exportChatResponseToPdf = async () => {
   // ACTIVE DOCUMENT VIEW
   const activeDocMeta = documents.find(d => d.id === activeDocId);
   const isDocReadOnly = Boolean(activeDocMeta?.isReadOnly);
-  const hasRowContent = (r: GridRow) => Boolean(headers.some((_, c) => String(r[`col${c + 1}`] || '').trim()) || r.image || r.audio);
+  const hasRowContent = (r: GridRow) => Boolean(headers.some((_, c) => String(r[`col${c + 1}`] || '').trim()) || r.image || r.audio || r.pdf);
   const filledRowsCount = rows.filter(hasRowContent).length;
   const visibleRowsList = rows.map((r, rIndex) => ({ r, rIndex })).filter(({ r }) => {
      if (rowFilter === 'filled' && !hasRowContent(r)) return false;
      if (rowFilter === 'locked' && !(r.status === 'ok' || r.status === 'blue' || r.status === 'yellow' || r.status === 'x' || r.status === 'lock')) return false;
      if (rowFilter === 'unlocked' && (r.status === 'ok' || r.status === 'blue' || r.status === 'yellow' || r.status === 'x' || r.status === 'lock')) return false;
-     if (rowFilter === 'images' && !r.image && !r.audio) return false;
+     if (rowFilter === 'images' && !r.image && !r.audio && !r.pdf) return false;
      if (!docSearch.trim()) return true;
      const q = docSearch.toLowerCase();
      return headers.some((_, c) => (r[`col${c + 1}`] || '').toString().toLowerCase().includes(q));
@@ -20816,14 +23192,16 @@ const exportChatResponseToPdf = async () => {
                   {selectedRows.size === rows.length && rows.length > 0 ? <Check className="w-4 h-4" /> : selectedRows.size > 0 ? <Square className="w-4 h-4 text-accent-500" /> : "NR"}
                </div>
             </div>
-            {headers.map((h, i) => (
-              <div key={i} style={{ width: columnWidths[i] || 150, minWidth: columnWidths[i] || 150, maxWidth: columnWidths[i] || 150 }} className={`shrink-0 border-r py-1 px-1 last:border-r-0 flex flex-col justify-center relative group ${isDark ? "border-zinc-800" : "border-zinc-200"}`}>
+            {headers.map((h, i) => {
+              const colW = columnWidths[i] || 160;
+              return (
+              <div key={i} style={{ flex: `${colW} 0 ${colW}px`, minWidth: colW }} className={`border-r py-1.5 px-1.5 last:border-r-0 flex flex-col justify-center relative group ${isDark ? "border-zinc-800" : "border-zinc-200"}`}>
                 <div className="flex gap-1 justify-between w-full opacity-0 px-1 group-hover:opacity-100 transition-opacity absolute top-0.5 left-0 pointer-events-none">
                    <button onClick={(e) => {
                        e.stopPropagation();
                        executeProtectedAction(() => {
                            const ns = [...columnWidths];
-                           ns[i] = Math.max(50, (ns[i] || 150) - 20);
+                           ns[i] = Math.max(70, (ns[i] || 160) - 20);
                            setColumnWidths(ns);
                            updateActiveDocumentState(title, rows, headers, ns, activeTags, undefined, true);
                        });
@@ -20832,7 +23210,7 @@ const exportChatResponseToPdf = async () => {
                        e.stopPropagation();
                        executeProtectedAction(() => {
                            const ns = [...columnWidths];
-                           ns[i] = Math.min(600, (ns[i] || 150) + 20);
+                           ns[i] = Math.min(600, (ns[i] || 160) + 20);
                            setColumnWidths(ns);
                            updateActiveDocumentState(title, rows, headers, ns, activeTags, undefined, true);
                        });
@@ -20854,8 +23232,9 @@ const exportChatResponseToPdf = async () => {
                   placeholder={`${t('Kolona', 'Col')} ${i+1}`}
                 />
               </div>
-            ))}
-            <div className={`w-24 shrink-0 border-l flex items-center justify-center text-[10px] font-bold uppercase tracking-wider ${
+              );
+            })}
+            <div className={`w-28 sm:w-32 shrink-0 border-l flex items-center justify-center text-[10px] font-bold uppercase tracking-wider ${
               isDark ? "bg-zinc-950 border-zinc-800 text-zinc-500" : "bg-white border-zinc-200 text-zinc-500"
             }`}>
               {t('MEDIA', 'MEDIA', 'ΜΕΣΑ')}
@@ -20911,14 +23290,18 @@ const exportChatResponseToPdf = async () => {
                     dragMoveStateRef.current.active = false;
                     dragMoveStateRef.current.pointerId = null;
                   }}
-                  className={`flex border-b ${cellDensity === 'compact' ? 'min-h-[22px]' : cellDensity === 'spacious' ? 'min-h-[42px]' : 'min-h-[28px]'} group w-full transition-colors ${
+                  className={`flex border-b ${cellDensity === 'compact' ? 'min-h-[34px]' : cellDensity === 'spacious' ? 'min-h-[58px]' : 'min-h-[46px]'} items-stretch group w-full transition-colors ${
                     isRowSelectedForDrag ? 'ring-2 ring-inset ring-indigo-500 shadow-md cursor-ns-resize z-10 relative ' : ''
                   }${
                   r.status === 'ok' ? (isDark ? 'bg-green-500/25 border-green-500/40' : 'bg-green-50 border-green-200')
                   : r.status === 'blue' ? (isDark ? 'bg-blue-500/25 border-blue-500/40' : 'bg-blue-50 border-blue-200')
                   : r.status === 'yellow' ? (isDark ? 'bg-yellow-500/25 border-yellow-500/40' : 'bg-yellow-50 border-yellow-200')
                   : r.status === 'x' ? (isDark ? 'bg-red-500/25 border-red-500/40' : 'bg-red-50 border-red-200')
-                  : isDark ? "border-zinc-800/80 focus-within:bg-zinc-900/50" : "border-zinc-200 focus-within:bg-zinc-50"
+                  : gridBorderStyle === 'strong'
+                    ? (isDark ? "border-zinc-700 focus-within:bg-zinc-900/50" : "border-zinc-300 focus-within:bg-zinc-50")
+                    : gridBorderStyle === 'minimal'
+                      ? (isDark ? "border-zinc-800/40 focus-within:bg-zinc-900/50" : "border-zinc-200/50 focus-within:bg-zinc-50")
+                      : (isDark ? "border-zinc-800/80 focus-within:bg-zinc-900/50" : "border-zinc-200 focus-within:bg-zinc-50")
                 }`}>
                   {/* Row Number (Sticky) */}
                   <div 
@@ -20945,8 +23328,8 @@ const exportChatResponseToPdf = async () => {
                         : r.status === 'yellow' ? (isDark ? "bg-yellow-500/20 text-yellow-400 border-zinc-800" : "bg-yellow-100 text-yellow-700 border-zinc-200")
                         : r.status === 'x' ? (isDark ? "bg-red-500/20 text-red-400 border-zinc-800" : "bg-red-100 text-red-700 border-zinc-200")
                         : isDark 
-                          ? "bg-zinc-900/50 border-zinc-800 text-zinc-600 group-hover:bg-zinc-900/80 group-hover:text-zinc-400" 
-                          : "bg-zinc-50 border-zinc-200 text-zinc-500 group-hover:bg-zinc-100 group-hover:text-zinc-700"
+                          ? `bg-zinc-900/50 ${gridBorderStyle === 'strong' ? 'border-zinc-700' : gridBorderStyle === 'minimal' ? 'border-zinc-800/40' : 'border-zinc-800'} text-zinc-600 group-hover:bg-zinc-900/80 group-hover:text-zinc-400` 
+                          : `bg-zinc-50 ${gridBorderStyle === 'strong' ? 'border-zinc-300' : gridBorderStyle === 'minimal' ? 'border-zinc-200/50' : 'border-zinc-200'} text-zinc-500 group-hover:bg-zinc-100 group-hover:text-zinc-700`
                     }`}
                     style={r.status?.startsWith('tag-') && !selectedRows.has(rIndex) 
                       ? { boxShadow: `inset 4px 0 0 ${TAG_COLORS.find(c => c.id === r.status)?.color || 'transparent'}, 2px 0 5px rgba(0,0,0,0.02)` } 
@@ -20956,9 +23339,21 @@ const exportChatResponseToPdf = async () => {
                     {isRowSelectedForDrag ? <ArrowUpDown className="w-4 h-4" /> : selectedRows.has(rIndex) ? <Check className="w-4 h-4" /> : (rIndex + 1)}
                   </div>
                   {/* Columns */}
-                  {headers.map((_, i) => `col${i+1}`).map((colKey, cIndex) => (
-                    <div key={cIndex} style={{ width: columnWidths[cIndex] || 150, minWidth: columnWidths[cIndex] || 150, maxWidth: columnWidths[cIndex] || 150 }} className={`shrink-0 border-r relative ${cellDensity === 'compact' ? 'p-0' : cellDensity === 'spacious' ? 'p-1.5' : 'p-0.5'} group/cell ${
-                      isDark ? "border-zinc-800" : "border-zinc-200"
+                  {headers.map((_, i) => `col${i+1}`).map((colKey, cIndex) => {
+                    const colW = columnWidths[cIndex] || 160;
+                    const resolvedRowColor =
+                      (r.status === 'none' || r.status?.startsWith('tag-'))
+                        ? (r.textColor && r.textColor !== 'default'
+                            ? getActualTextColor(r.textColor)
+                            : (textColorMode !== 'default' ? getActualTextColor(textColorMode) : undefined))
+                        : undefined;
+                    return (
+                    <div key={cIndex} style={{ flex: `${colW} 0 ${colW}px`, minWidth: colW }} className={`border-r relative flex flex-col ${cellDensity === 'compact' ? 'p-0.5' : cellDensity === 'spacious' ? 'p-1.5' : 'p-1'} group/cell ${
+                      gridBorderStyle === 'strong'
+                        ? (isDark ? "border-zinc-700" : "border-zinc-300")
+                        : gridBorderStyle === 'minimal'
+                          ? (isDark ? "border-zinc-800/40" : "border-zinc-200/50")
+                          : (isDark ? "border-zinc-800" : "border-zinc-200")
                     }`}>
                         <CellInput
                           initialValue={r[colKey as keyof GridRow] as string}
@@ -20982,9 +23377,10 @@ const exportChatResponseToPdf = async () => {
                             }, 100);
                           }}
                           readOnly={isDocReadOnly || isRowMoveMode || r.status === 'ok' || r.status === 'blue' || r.status === 'yellow' || r.status === 'x' || r.status === 'lock'}
+                          autoLineHeight={autoLineHeight}
                           startHold={!isRowMoveMode ? () => handleCellHoldStart(rIndex, colKey) : undefined}
                           stopHold={handleCellHoldCancel}
-                          className={`w-full h-full resize-none focus:outline-none px-1.5 ${cellDensity === 'compact' ? 'py-0' : cellDensity === 'spacious' ? 'py-1.5' : 'py-0.5'} rounded scrollbar-hide transition-colors ${isRowSelectedForDrag ? 'pointer-events-none select-none ' : ''}${
+                          className={`w-full flex-1 ${cellDensity === 'compact' ? 'min-h-[26px]' : cellDensity === 'spacious' ? 'min-h-[48px]' : 'min-h-[38px]'} resize-none focus:outline-none px-2 ${cellDensity === 'compact' ? 'py-1' : cellDensity === 'spacious' ? 'py-2' : 'py-1.5'} rounded scrollbar-hide transition-colors ${isRowSelectedForDrag ? 'pointer-events-none select-none ' : ''}${
                             r.status === 'x' 
                               ? `line-through decoration-red-500 placeholder-red-500/50 cursor-default bg-transparent ${isDark ? "text-red-100" : "text-red-900"}`
                               : r.status === 'blue'
@@ -20993,7 +23389,7 @@ const exportChatResponseToPdf = async () => {
                                 ? `placeholder-yellow-600/50 cursor-default bg-transparent ${isDark ? "text-yellow-100" : "text-yellow-900"}`
                               : r.status === 'ok'
                                 ? `placeholder-green-500/50 cursor-default bg-transparent ${isDark ? "text-green-100" : "text-green-900"}`
-                                : (isDark ? `${inputBgDark} ${textColorMode === 'default' ? 'text-white' : ''} placeholder-zinc-700/50 focus:border-zinc-700/50` : `${inputBgLight} ${textColorMode === 'default' ? 'text-zinc-900' : ''} placeholder-zinc-400/70 focus:border-zinc-300`)
+                                : (isDark ? `${inputBgDark} ${!resolvedRowColor ? 'text-white' : ''} placeholder-zinc-700/50 focus:border-zinc-700/50` : `${inputBgLight} ${!resolvedRowColor ? 'text-zinc-900' : ''} placeholder-zinc-400/70 focus:border-zinc-300`)
                           }`}
                           style={{
                                fontSize: `${textSize || 12}px`,
@@ -21001,8 +23397,11 @@ const exportChatResponseToPdf = async () => {
                                fontFamily: textFontFamily === 'mono' ? 'ui-monospace, SFMono-Regular, Menlo, monospace' : textFontFamily === 'serif' ? 'Georgia, Cambria, "Times New Roman", serif' : 'inherit',
                                textAlign,
                                fontStyle: textItalic ? 'italic' : 'normal',
+                               textDecoration: r.status === 'x' ? undefined : (textUnderline ? 'underline' : undefined),
+                               letterSpacing: textLetterSpacing ? `${textLetterSpacing}px` : undefined,
+                               fontVariantNumeric: textTabularNums ? 'tabular-nums' : undefined,
                                lineHeight: textLineHeight || 1.3,
-                               ...((r.status === 'none' || r.status?.startsWith('tag-')) && textColorMode !== 'default' ? { color: getActualTextColor(textColorMode) } : {}),
+                               ...(resolvedRowColor ? { color: resolvedRowColor } : {}),
                                ...(r.status?.startsWith('tag-') ? { backgroundColor: `${TAG_COLORS.find(c => c.id === r.status)?.color || '#888'}15` } : {})
                           }}
                         />
@@ -21037,16 +23436,21 @@ const exportChatResponseToPdf = async () => {
                            </button>
                         </div>
                     </div>
-                  ))}
+                    );
+                  })}
                   
-                  {/* Media Column (Image PNG/JPEG/JPG + Audio MP3/M4A/AMR) */}
-                  <div className={`w-24 shrink-0 border-l relative px-1 py-0.5 flex items-center justify-center gap-1 group/img ${
-                      isDark ? "border-zinc-800" : "border-zinc-200"
+                  {/* Media Column (Image PNG/JPEG/JPG + PDF + Audio MP3/M4A/AMR) */}
+                  <div className={`w-28 sm:w-32 shrink-0 border-l relative px-1 py-1 flex items-center justify-center gap-1 group/img ${
+                      gridBorderStyle === 'strong'
+                        ? (isDark ? "border-zinc-700" : "border-zinc-300")
+                        : gridBorderStyle === 'minimal'
+                          ? (isDark ? "border-zinc-800/40" : "border-zinc-200/50")
+                          : (isDark ? "border-zinc-800" : "border-zinc-200")
                   }`}>
                      {/* IMAGE SLOT */}
                      {r.image ? (
                         <div 
-                          className={`w-10 h-7 relative cursor-pointer flex items-center justify-center p-0.5 transition-all shrink-0 ${selectedRows.has(rIndex) ? 'ring-2 ring-blue-500 rounded bg-blue-500/20' : ''}`}
+                          className={`w-9 h-7 relative cursor-pointer flex items-center justify-center p-0.5 transition-all shrink-0 ${selectedRows.has(rIndex) ? 'ring-2 ring-blue-500 rounded bg-blue-500/20' : ''}`}
                           onPointerDown={() => {
                              if (isRowMoveMode) return;
                              isLongPress.current[rIndex] = false;
@@ -21064,12 +23468,12 @@ const exportChatResponseToPdf = async () => {
                              if (pressTimers.current[rIndex]) clearTimeout(pressTimers.current[rIndex]);
                              if (isRowMoveMode) return;
                              if (!isLongPress.current[rIndex]) {
-                                 setPreviewImageMeta({
+                                 void openRowImagePreview(String(r.image), {
                                      fileName: r.imageName || `img_row_${rIndex + 1}.png`,
                                      readOnly: isDocReadOnly,
+                                     rowId: r.id,
                                      onDelete: () => removeImage(rIndex)
                                  });
-                                 setPreviewImage(r.image as string);
                              }
                           }}
                           onPointerLeave={() => {
@@ -21080,7 +23484,13 @@ const exportChatResponseToPdf = async () => {
                           }}
                           title={r.imageName || t('Kliko për parashikim, shkarkim ose fshirje', 'Tap to preview, download or delete')}
                         >
-                           <img src={r.image} className="w-full h-full object-cover rounded opacity-85 hover:opacity-100 transition-opacity ring-1 ring-zinc-500/30" alt="Row upload" />
+                           {getDisplayImageSrc(r.image) ? (
+                              <img src={getDisplayImageSrc(r.image)} className="w-full h-full object-cover rounded opacity-85 hover:opacity-100 transition-opacity ring-1 ring-zinc-500/30" alt="Row upload" />
+                           ) : (
+                              <span className="w-full h-full rounded bg-blue-500/15 flex items-center justify-center text-blue-400">
+                                 <Eye className="w-3.5 h-3.5" />
+                              </span>
+                           )}
                            {!isDocReadOnly && (
                              <button onClick={(e) => { e.stopPropagation(); removeImage(rIndex); }} className="absolute -top-1 -right-1 bg-red-600 text-white rounded-full p-0.5 opacity-0 group-hover/img:opacity-100 shadow-lg scale-90 hover:scale-110 transition-all" title={t('Fshi Imazhin', 'Delete Image')}>
                                  <X className="w-2.5 h-2.5" />
@@ -21088,15 +23498,49 @@ const exportChatResponseToPdf = async () => {
                            )}
                         </div>
                      ) : !isDocReadOnly ? (
-                        <div className="flex items-center justify-center gap-0.5 opacity-45 hover:opacity-100 transition-opacity">
-                           <label className="cursor-pointer hover:text-accent-500 p-1 rounded" title={t("Ngarko imazh (PNG/JPEG/JPG)", "Upload image (PNG/JPEG/JPG)")}>
-                             <input type="file" accept="image/png, image/jpeg, .png, .jpeg, .jpg" className="hidden" onClick={() => { externalNavUntilRef.current = Date.now() + 60000; }} onChange={(e) => { if (e.target.files && e.target.files[0]) handleImageUpload(rIndex, e.target.files[0]); e.target.value = ''; }} />
-                             <ImagePlus className="w-3.5 h-3.5 text-zinc-500 hover:text-accent-500" />
-                           </label>
-                           <button type="button" onClick={() => generatePlaceholderImage(rIndex)} className="p-0.5 text-zinc-500 hover:text-teal-500 transition-colors" title={t("Gjenero Imazh Placeholder", "Generate Placeholder Image")}>
-                             <Sparkles className="w-3 h-3" />
+                        <label className="cursor-pointer hover:text-accent-500 p-1 rounded opacity-50 hover:opacity-100 transition-opacity shrink-0" title={t("Ngarko imazh (PNG/JPEG/JPG)", "Upload image (PNG/JPEG/JPG)")}>
+                          <input type="file" accept="image/png, image/jpeg, .png, .jpeg, .jpg" className="hidden" onClick={() => { externalNavUntilRef.current = Date.now() + 60000; }} onChange={(e) => { if (e.target.files && e.target.files[0]) handleImageUpload(rIndex, e.target.files[0]); e.target.value = ''; }} />
+                          <ImagePlus className="w-3.5 h-3.5 text-zinc-500 hover:text-accent-500" />
+                        </label>
+                     ) : null}
+
+                     {/* PDF SLOT */}
+                     {r.pdf ? (
+                        <div className="flex items-center gap-0.5 shrink-0">
+                           <button
+                             type="button"
+                             onClick={(e) => {
+                                e.stopPropagation();
+                                void openRowPdfPreview(String(r.pdf), {
+                                  fileName: r.pdfName || `dokument_${rIndex + 1}.pdf`,
+                                  sizeBytes: r.pdfSize,
+                                  readOnly: isDocReadOnly,
+                                  rowId: r.id,
+                                  onDelete: () => removePdf(rIndex)
+                                });
+                             }}
+                             className="px-1.5 py-1 rounded bg-rose-500/15 hover:bg-rose-600 text-rose-500 hover:text-white border border-rose-500/30 flex items-center gap-0.5 text-[9px] font-extrabold transition-colors"
+                             title={`${r.pdfName || 'PDF'} — ${t('Hap PDF (View, Shkarko, Fshi)', 'Open PDF (View, Download, Delete)')}`}
+                           >
+                             <FileText className="w-3 h-3" />
+                             <span>PDF</span>
                            </button>
+                           {!isDocReadOnly && (
+                             <button
+                               type="button"
+                               onClick={(e) => { e.stopPropagation(); removePdf(rIndex); }}
+                               className="p-0.5 rounded-full bg-red-600 hover:bg-red-500 text-white shadow transition-colors"
+                               title={t('Fshi PDF (me PIN)', 'Delete PDF (PIN required)')}
+                             >
+                               <X className="w-2.5 h-2.5" />
+                             </button>
+                           )}
                         </div>
+                     ) : !isDocReadOnly ? (
+                        <label className="cursor-pointer p-1 rounded opacity-50 hover:opacity-100 text-zinc-500 hover:text-rose-500 transition-all shrink-0" title={t("Ngarko PDF", "Upload PDF")}>
+                           <input type="file" accept="application/pdf,.pdf" className="hidden" onClick={() => { externalNavUntilRef.current = Date.now() + 180000; }} onChange={(e) => { if (e.target.files && e.target.files[0]) handlePdfUpload(rIndex, e.target.files[0]); e.target.value = ''; }} />
+                           <FileText className="w-3.5 h-3.5" />
+                        </label>
                      ) : null}
 
                      {/* AUDIO SLOT (MP3 / M4A / AMR) */}
@@ -21139,7 +23583,7 @@ const exportChatResponseToPdf = async () => {
                            </button>
                         </div>
                      ) : !isDocReadOnly ? (
-                        <label className="cursor-pointer p-1 rounded opacity-45 hover:opacity-100 text-zinc-500 hover:text-indigo-500 transition-all shrink-0" title={t("Ngarko audio (MP3/M4A/AMR)", "Upload audio (MP3/M4A/AMR)")}>
+                        <label className="cursor-pointer p-1 rounded opacity-50 hover:opacity-100 text-zinc-500 hover:text-indigo-500 transition-all shrink-0" title={t("Ngarko audio (MP3/M4A/AMR)", "Upload audio (MP3/M4A/AMR)")}>
                            <input type="file" accept="audio/*,.mp3,.m4a,.amr,.mp4,.aac,.3gp" className="hidden" onClick={() => { externalNavUntilRef.current = Date.now() + 180000; }} onChange={(e) => { if (e.target.files && e.target.files[0]) handleAudioUpload(rIndex, e.target.files[0]); e.target.value = ''; }} />
                            <Music className="w-3.5 h-3.5" />
                         </label>
@@ -21254,7 +23698,10 @@ const exportChatResponseToPdf = async () => {
                                          imageName: prevRow?.imageName || '',
                                          audio: prevRow?.audio || '',
                                          audioName: prevRow?.audioName || '',
-                                         audioMime: prevRow?.audioMime || ''
+                                         audioMime: prevRow?.audioMime || '',
+                                         pdf: prevRow?.pdf || '',
+                                         pdfName: prevRow?.pdfName || '',
+                                         pdfSize: prevRow?.pdfSize || 0
                                        };
                                    });
                                    if (activeDocId === d.id) {
@@ -21378,6 +23825,65 @@ const exportChatResponseToPdf = async () => {
                   </div>
                </div>
                <img src={previewImage} className="max-w-full max-h-[80dvh] object-contain rounded-xl border border-white/10" alt="Preview Full" />
+            </div>
+         </div>
+      )}
+      {/* PDF PREVIEW MODAL (VIEW, DOWNLOAD, PIN-PROTECTED DELETE) */}
+      {previewPdf && (
+         <div className="fixed inset-0 z-[565] flex items-center justify-center overflow-y-auto bg-black/85 p-2 sm:p-4 animate-in fade-in" onClick={() => { setPreviewPdf(null); setPreviewPdfMeta(null); }}>
+            <div onClick={(e) => e.stopPropagation()} className={`w-full max-w-5xl h-[90dvh] rounded-2xl border shadow-2xl flex flex-col overflow-hidden ${isDark ? "bg-zinc-900 border-zinc-700 text-zinc-100" : "bg-white border-zinc-300 text-zinc-900"}`}>
+               <div className={`px-3 sm:px-4 py-3 border-b flex flex-wrap items-center justify-between gap-2 shrink-0 ${isDark ? "bg-zinc-950 border-zinc-800" : "bg-zinc-50 border-zinc-200"}`}>
+                  <div className="flex items-center gap-2 min-w-0">
+                     <div className="p-2 rounded-xl bg-rose-500/15 text-rose-500 shrink-0">
+                        <FileText className="w-4 h-4" />
+                     </div>
+                     <div className="min-w-0">
+                        <h3 className="text-xs sm:text-sm font-extrabold truncate">{previewPdfMeta?.fileName || 'dokument.pdf'}</h3>
+                        <p className="text-[10px] text-zinc-500 font-mono">{formatBytesReadable(previewPdfMeta?.sizeBytes || estimateDataUrlSizeBytes(previewPdf))}</p>
+                     </div>
+                  </div>
+                  <div className="flex items-center gap-1.5 sm:gap-2 shrink-0">
+                     <button
+                        type="button"
+                        onClick={() => handleDownloadRowMedia(previewPdf, previewPdfMeta?.fileName || 'dokument.pdf', 'pdf')}
+                        className="px-2.5 sm:px-3 py-1.5 rounded-xl bg-emerald-600 hover:bg-emerald-500 text-white text-xs font-bold flex items-center gap-1"
+                     >
+                        <Download className="w-3.5 h-3.5" /> {t('Shkarko', 'Download', 'Λήψη')}
+                     </button>
+                     {previewPdfMeta?.onDelete && !previewPdfMeta.readOnly && (
+                        <button
+                           type="button"
+                           onClick={() => {
+                              const delFn = previewPdfMeta.onDelete;
+                              setPreviewPdf(null);
+                              setPreviewPdfMeta(null);
+                              delFn?.();
+                           }}
+                           className="px-2.5 sm:px-3 py-1.5 rounded-xl bg-red-600 hover:bg-red-500 text-white text-xs font-bold flex items-center gap-1"
+                        >
+                           <Trash2 className="w-3.5 h-3.5" /> {t('Fshi', 'Delete', 'Διαγραφή')}
+                        </button>
+                     )}
+                     <button
+                        type="button"
+                        onClick={() => { setPreviewPdf(null); setPreviewPdfMeta(null); }}
+                        className="p-1.5 bg-red-600 hover:bg-red-500 text-white rounded-xl transition-colors"
+                        title={t('Mbyll', 'Close')}
+                     >
+                        <X className="w-4 h-4" />
+                     </button>
+                  </div>
+               </div>
+               <div className="flex-1 bg-zinc-950/60 overflow-hidden flex flex-col">
+                  <iframe
+                     src={dataUrlToPlayableSrc(previewPdf, 'application/pdf')}
+                     title={previewPdfMeta?.fileName || 'PDF Viewer'}
+                     className="w-full flex-1 border-0 bg-white"
+                  />
+                  <div className={`px-3 py-1.5 border-t text-[11px] flex items-center justify-between gap-2 shrink-0 ${isDark ? "bg-zinc-950 border-zinc-800 text-zinc-400" : "bg-zinc-50 border-zinc-200 text-zinc-600"}`}>
+                     <span className="truncate">{t('Nëse PDF nuk shfaqet brenda dritares në Android, klikoni "Shkarko" për ta hapur.', 'If the inline PDF preview is blank on mobile, tap "Download" to open it.', 'Αν η προεπισκόπηση PDF δεν εμφανίζεται, πατήστε «Λήψη» για άνοιγμα.')}</span>
+                  </div>
+               </div>
             </div>
          </div>
       )}
@@ -21671,12 +24177,11 @@ const exportChatResponseToPdf = async () => {
                 
                 {/* Modal Body */}
                 <div className={`flex-1 p-5 ${isDark ? "bg-zinc-950" : "bg-white"}`}>
-                    <textarea
+                    <ImeSafeTextarea
                       autoFocus
                       readOnly={rows[activeCell.rIndex]?.status === 'lock' || rows[activeCell.rIndex]?.status === 'ok' || rows[activeCell.rIndex]?.status === 'blue' || rows[activeCell.rIndex]?.status === 'yellow' || rows[activeCell.rIndex]?.status === 'x'}
                       value={modalText}
-                      onChange={(e) => {
-                          const val = e.target.value;
+                      onChangeValue={(val) => {
                           lastUserTypingTsRef.current = Date.now();
                           setModalText(val);
                           updateCell(activeCell.rIndex, activeCell.colKey, val);

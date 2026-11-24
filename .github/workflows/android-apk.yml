@@ -22,7 +22,7 @@ on:
         default: true
         type: boolean
       version_name:
-        description: 'Version Name opsional (psh 1.5.4)'
+        description: 'Version Name opsional (psh 1.5.6)'
         required: false
         type: string
       gemini_api_key:
@@ -224,7 +224,14 @@ jobs:
           fi
           echo "=== PËRMBAJTJA E DIREKTORISË ARTIFACTS ==="
           ls -lh artifacts/ || echo "Direktoria artifacts është bosh!"
-          echo "## NoteBook3 Android Build Artifacts" >> "$GITHUB_STEP_SUMMARY"
+          echo "## NoteBook3 v1.5.6 Android Build Artifacts" >> "$GITHUB_STEP_SUMMARY"
+          echo "" >> "$GITHUB_STEP_SUMMARY"
+          echo "| Skedari / File | Përdorimi / Purpose |" >> "$GITHUB_STEP_SUMMARY"
+          echo "| --- | --- |" >> "$GITHUB_STEP_SUMMARY"
+          echo "| \`NoteBook3-debug.apk\` | Instalim direkt në telefon Android |" >> "$GITHUB_STEP_SUMMARY"
+          echo "| \`NoteBook3-release-installable.apk\` | Release APK direkt i instalueshëm |" >> "$GITHUB_STEP_SUMMARY"
+          echo "| \`*.aab\` | Google Play Console Bundle |" >> "$GITHUB_STEP_SUMMARY"
+          echo "" >> "$GITHUB_STEP_SUMMARY"
           ls -lh artifacts/ >> "$GITHUB_STEP_SUMMARY" || true
           echo "========================================"
 
@@ -258,8 +265,8 @@ jobs:
 
           if [ -n "$FILES_TO_UPLOAD" ]; then
             gh release create latest-apk \
-              --title "NoteBook3 v1.5.4 - Android APK & Play Store AAB (Latest Build)" \
-              --notes "Versioni më i fundit v1.5.4 i NoteBook3 (com.notebook3.app, versionCode 340+) me ngarkim të plotë dhe pa pengesa për skedarë audio mbi 10 MB deri në 30 MB (MP3, M4A, AMR) si në 90-rreshta ashtu edhe në Online Cloud, sistem të integruar Audio Player (Play/Pause, Mini-Player lundrues, Seek, -10s/+10s, shpejtësi, volum, Download, Delete), sinkronizim me copa (chunked) në Server Cloud & Firebase Firestore, mbështetje IndexedDB + android:largeHeap për performancë të lartë në telefon, ruajtje të sigurt të simbolit € dhe gjuhën Greke. Për instalim direkt shkarkoni 'NoteBook3-debug.apk' ose 'NoteBook3-release-installable.apk'. Për Google Play Console përdorni skedarin '.aab'." \
+              --title "NoteBook3 v1.5.6 - Android APK & Play Store AAB (Latest Build)" \
+              --notes "Versioni më i fundit v1.5.6 i NoteBook3 (com.notebook3.app, versionCode 350+) me: përmirësim të shkrimit në PAD (tastiera qëndron hapur gjatë çdo shkronje), sistem të ri rreshtash 90/120/150 & Automatik (pa rreshta bosh) te Menaxhimi i Pamjes, kontrolle të zgjeruara te Tipografia (T), Ngjyra & Formatimi (Aa) dhe Etiketat/Rrjeshtat/Mbrojtja duke ruajtur të gjitha vlerat default dhe strukturën baza, si dhe lidhje të qëndrueshme Firestore Cloud. Për instalim direkt shkarkoni 'NoteBook3-debug.apk' ose 'NoteBook3-release-installable.apk'. Për Google Play Console përdorni skedarin '.aab'." \
               --prerelease \
               $FILES_TO_UPLOAD || echo "Gabim gjatë krijimit të release, po vazhdojmë..."
           else

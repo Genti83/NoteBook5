@@ -1,11 +1,27 @@
 import { initializeApp, getApps, getApp, onLog } from 'firebase/app';
 import { getAuth } from 'firebase/auth';
-import { getFirestore, disableNetwork, enableNetwork } from 'firebase/firestore';
+import { getFirestore, initializeFirestore, disableNetwork, enableNetwork, type Firestore } from 'firebase/firestore';
 import firebaseConfig from '../../firebase-applet-config.json';
 
 export const app = getApps().length === 0 ? initializeApp(firebaseConfig) : getApp();
 
-export const db = getFirestore(app, firebaseConfig.firestoreDatabaseId);
+function createFirestoreDb(): Firestore {
+  try {
+    const settings =
+      typeof window !== 'undefined'
+        ? { experimentalForceLongPolling: true, ignoreUndefinedProperties: true }
+        : { ignoreUndefinedProperties: true };
+    return initializeFirestore(
+      app,
+      settings,
+      firebaseConfig.firestoreDatabaseId
+    );
+  } catch {
+    return getFirestore(app, firebaseConfig.firestoreDatabaseId);
+  }
+}
+
+export const db = createFirestoreDb();
 
 export const FIRESTORE_QUOTA_COOLDOWN_KEY = 'grid_notepad_firestore_quota_until';
 const FIRESTORE_QUOTA_COOLDOWN_MS = 4 * 60 * 60 * 1000;
@@ -88,7 +104,7 @@ try {
         });
       }
     },
-    { level: 'error' }
+    { level: 'warn' }
   );
 } catch {}
 

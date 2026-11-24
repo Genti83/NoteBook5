@@ -25,6 +25,7 @@
         "blueText": { "type": "string", "description": "The encrypted or plain drafting text of the secrets modal" },
         "secretList": { "type": "array", "description": "Secrets checklist items with colors" },
         "customLabels": { "type": "array", "description": "Custom folder labels" },
+        "padNotes": { "type": "array", "description": "Plain-text Pad notes synced across devices" },
         "trashItems": { "type": "array", "description": "Deleted lists, notes, and labels archived in Listat ne Kosh" },
         "notesColor": { "type": "string", "description": "Color for text notes" },
         "textColorMode": { "type": "string", "description": "Global text color preference" },
@@ -41,14 +42,14 @@
     },
     "MediaChunk": {
       "title": "Media Chunk",
-      "description": "Chunked base64 media attachment (image or audio) for grid rows exceeding inline document limits",
+      "description": "Chunked base64 media attachment (image, audio, or pdf) for grid rows exceeding inline document limits",
       "type": "object",
       "properties": {
         "id": { "type": "string", "description": "Unique chunk ID" },
         "docId": { "type": "string", "description": "Parent document ID" },
         "userId": { "type": "string", "description": "The owner ID or registered email" },
         "rowId": { "type": "string", "description": "Parent row ID" },
-        "kind": { "type": "string", "description": "image or audio" },
+        "kind": { "type": "string", "description": "image, audio, or pdf" },
         "chunkIndex": { "type": "number", "description": "Zero-based chunk index (0..149)" },
         "totalChunks": { "type": "number", "description": "Total chunk count (1..150, supporting up to 30MB media)" },
         "data": { "type": "string", "description": "Chunk string slice" },
@@ -64,11 +65,11 @@
     },
     "settings/{settingsId}": {
       "schema": "Settings",
-      "description": "User account settings, PINs, and secret list collection"
+      "description": "User account settings, PINs, pad notes, and secret list collection"
     },
     "media_chunks/{chunkId}": {
       "schema": "MediaChunk",
-      "description": "Chunked row image and audio attachments for Firestore 1 MiB safe sync"
+      "description": "Chunked row image, audio, and pdf attachments for Firestore 1 MiB safe sync"
     }
   }
 }

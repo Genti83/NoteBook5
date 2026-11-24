@@ -35,6 +35,7 @@ service cloud.firestore {
       return data.userId is string && data.userId.size() <= 128 &&
              (data.blueText == null || (data.blueText is string && data.blueText.size() <= 100000)) &&
              (data.secretList == null || (data.secretList is list && data.secretList.size() <= 1000)) &&
+             (data.padNotes == null || (data.padNotes is list && data.padNotes.size() <= 500)) &&
              (data.pin == null || (data.pin is string && data.pin.size() <= 100)) &&
              (data.gistToken == null || (data.gistToken is string && data.gistToken.size() <= 200)) &&
              (data.gistId == null || (data.gistId is string && data.gistId.size() <= 200)) &&
@@ -69,7 +70,7 @@ service cloud.firestore {
              data.docId is string && data.docId.size() <= 128 &&
              data.userId is string && data.userId.size() <= 128 &&
              data.rowId is string && data.rowId.size() <= 128 &&
-             data.kind in ['image', 'audio'] &&
+             data.kind in ['image', 'audio', 'pdf'] &&
              data.chunkIndex is int && data.chunkIndex >= 0 && data.chunkIndex < 150 &&
              data.totalChunks is int && data.totalChunks >= 1 && data.totalChunks <= 150 &&
              data.data is string && data.data.size() <= 600000;
@@ -89,7 +90,7 @@ service cloud.firestore {
                        (isOwner(settingsId) || (resource != null && isOwner(resource.data.userId)));
     }
 
-    // Chunked media (images & audio) match block
+    // Chunked media (images, audio & pdf) match block
     match /media_chunks/{chunkId} {
       allow get: if isSignedIn() && (resource == null || isOwner(resource.data.userId));
       allow list: if isSignedIn() && (resource.data.userId == request.auth.uid ||

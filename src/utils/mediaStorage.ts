@@ -75,6 +75,7 @@ function estimateTotalMediaChars(docs: any[]): number {
       if (!r || typeof r !== 'object') continue;
       if (typeof r.image === 'string') total += r.image.length;
       if (typeof r.audio === 'string') total += r.audio.length;
+      if (typeof r.pdf === 'string') total += r.pdf.length;
       if (total > 2500000) return total;
     }
   }
@@ -95,9 +96,12 @@ function buildCompactLocalStorageMirror(docs: any[]): any[] {
       const aud = typeof r.audio === 'string' && r.audio.length > 80000
         ? `${IDB_MARKER_PREFIX}${d.id}:${rowId}:audio`
         : r.audio;
-      if (img !== r.image || aud !== r.audio) {
+      const pdfVal = typeof r.pdf === 'string' && r.pdf.length > 80000
+        ? `${IDB_MARKER_PREFIX}${d.id}:${rowId}:pdf`
+        : r.pdf;
+      if (img !== r.image || aud !== r.audio || pdfVal !== r.pdf) {
         changed = true;
-        return { ...r, image: img, audio: aud };
+        return { ...r, image: img, audio: aud, pdf: pdfVal };
       }
       return r;
     });
@@ -169,7 +173,8 @@ export function hasIdbMediaMarkers(docs: any[]): boolean {
       d.rows.some(
         (r: any) =>
           (typeof r?.image === 'string' && r.image.startsWith(IDB_MARKER_PREFIX)) ||
-          (typeof r?.audio === 'string' && r.audio.startsWith(IDB_MARKER_PREFIX))
+          (typeof r?.audio === 'string' && r.audio.startsWith(IDB_MARKER_PREFIX)) ||
+          (typeof r?.pdf === 'string' && r.pdf.startsWith(IDB_MARKER_PREFIX))
       )
   );
 }
@@ -225,6 +230,8 @@ export async function readAudioFileAsDataUrlSafe(file: File, normalizedMime = 'a
   }
   return `data:${normalizedMime};base64,${b64Parts.join('')}`;
 }
+
+export const readFileAsDataUrlSafe = readAudioFileAsDataUrlSafe;
 
 // ObjectURL cache so playing/seeking large (up to 30MB) audio files never stalls WebView
 const objectUrlCache = new Map<string, string>();

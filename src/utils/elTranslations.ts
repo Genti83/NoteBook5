@@ -768,7 +768,7 @@ export const EL_TRANSLATIONS: Record<string, string> = {
   'The Personal Calendar syncs with your device clock privately: it never reads private OS calendar events (no READ_CALENDAR) and never connects to Google Calendar.': 'Το Προσωπικό Ημερολόγιο συγχρονίζεται ιδιωτικά με το ρολόι συσκευής: δεν διαβάζει ιδιωτικά συμβάντα (χωρίς READ_CALENDAR) και δεν συνδέεται με το Google Calendar.',
   'Firebase Cloud and GitHub Gist sync only run when explicitly activated by the user with their own credentials.': 'Ο συγχρονισμός Firebase Cloud και GitHub Gist εκτελείται μόνο όταν ενεργοποιηθεί ρητά από τον χρήστη με δικά του στοιχεία.',
   'Data Deletion Rights: Users retain full control to delete individual notes, Trash items, Cloud/Gist snapshots, or wipe all app data cleanly via Settings -> Delete all data (App Reset).': 'Δικαίωμα Διαγραφής Δεδομένων: Οι χρήστες διατηρούν πλήρη έλεγχο διαγραφής μεμονωμένων σημειώσεων, στοιχείων Κάδου, αντιγράφων Cloud/Gist ή πλήρους διαγραφής μέσω Ρυθμίσεις -> Διαγραφή όλων.',
-  'NoteBook3 (com.notebook3.app) v1.5.4 — Publisher: Genti83 (in collaboration with Gemini Studio). Privacy Policy: Offline-First, zero ads/trackers, no READ_CALENDAR or MANAGE_EXTERNAL_STORAGE. Optional cloud sync and AI features require explicit user action, with full user data deletion via Settings -> App Reset.': 'NoteBook3 (com.notebook3.app) v1.5.4 — Εκδότης: Genti83 (σε συνεργασία με Gemini Studio). Πολιτική Απορρήτου: Offline-First, 0 διαφημίσεις/ιχνηλάτες, χωρίς READ_CALENDAR ή MANAGE_EXTERNAL_STORAGE. Προαιρετικός συγχρονισμός cloud & AI μόνο με ενέργεια χρήστη, με πλήρη διαγραφή από Ρυθμίσεις -> App Reset.',
+  'NoteBook3 (com.notebook3.app) v1.5.6 — Publisher: Genti83 (in collaboration with Gemini Studio). Privacy Policy: Offline-First, zero ads/trackers, no READ_CALENDAR or MANAGE_EXTERNAL_STORAGE. Optional cloud sync and AI features require explicit user action, with full user data deletion via Settings -> App Reset.': 'NoteBook3 (com.notebook3.app) v1.5.6 — Εκδότης: Genti83 (σε συνεργασία με Gemini Studio). Πολιτική Απορρήτου: Offline-First, 0 διαφημίσεις/ιχνηλάτες, χωρίς READ_CALENDAR ή MANAGE_EXTERNAL_STORAGE. Προαιρετικός συγχρονισμός cloud & AI μόνο με ενέργεια χρήστη, με πλήρη διαγραφή από Ρυθμίσεις -> App Reset.',
   '✓ Privacy Policy copied!': '✓ Η Πολιτική Απορρήτου αντιγράφηκε!',
   'Copy Privacy Policy Summary': 'Αντιγραφή Σύνοψης Πολιτικής Απορρήτου',
   'Minimal Android permissions declared in compliance with Google Play Policy:': 'Ελάχιστες άδειες Android δηλωμένες σύμφωνα με την πολιτική του Google Play:',
@@ -963,6 +963,56 @@ export const EL_TRANSLATIONS: Record<string, string> = {
   'Loading audio from Cloud...': 'Φόρτωση ήχου από το Cloud...',
   'Could not download audio from Cloud.': 'Δεν ήταν δυνατή η λήψη του ήχου από το Cloud.',
   'Restoring audio from local storage...': 'Ανάκτηση ήχου από την τοπική μνήμη...',
+  'Upload PDF': 'Μεταφόρτωση PDF',
+  'View PDF': 'Προβολή PDF',
+  'PDF Viewer': 'Προβολή PDF',
+  'Delete PDF': 'Διαγραφή PDF',
+  'Delete PDF (PIN required)': 'Διαγραφή PDF (απαιτείται PIN)',
+  'Downloading PDF...': 'Λήψη PDF...',
+  'Loading PDF from Cloud...': 'Φόρτωση PDF από το Cloud...',
+  'Could not download PDF from Cloud.': 'Δεν ήταν δυνατή η λήψη του PDF από το Cloud.',
+  'PDF removed.': 'Το PDF αφαιρέθηκε.',
+  'PDF removed from Cloud.': 'Το PDF αφαιρέθηκε από το Cloud.',
+  'PDF file ready to view or download.': 'Το αρχείο PDF είναι έτοιμο για προβολή ή λήψη.',
+  'Open in Browser': 'Άνοιγμα σε Περιηγητή',
+  'PDF preview is not supported in this frame, use Download to open it.': 'Η προεπισκόπηση PDF δεν υποστηρίζεται εδώ, πατήστε Λήψη για άνοιγμα.',
+  'Copy all text': 'Αντιγραφή όλου του κειμένου',
+  'Export TXT': 'Εξαγωγή TXT',
+  'Export PDF': 'Εξαγωγή PDF',
+  'Clear text': 'Εκκαθάριση κειμένου',
+  'Rename': 'Μετονομασία',
+  'No matches found!': 'Δεν βρέθηκαν αντιστοιχίες!',
+  'Grid Borders': 'Περιγράμματα Κελιών',
+  'Normal (Default)': 'Κανονικό (Προεπιλογή)',
+  'Strong': 'Έντονο',
+  'Minimal': 'Μίνιμαλ',
+  'New Note Row System': 'Σύστημα Γραμμών Νέας Σημείωσης',
+  'Automatic (+1 live)': 'Αυτόματο (+1 live)',
+  'Automatik': 'Αυτόματο',
+  '90 is the default. In "Automatik" mode, new notes start cleanly with 1 row and automatically append the next row as you write—no blank filler rows.': 'Το 90 είναι η προεπιλογή. Στη λειτουργία "Αυτόματο", οι νέες σημειώσεις ξεκινούν με 1 γραμμή και προσθέτουν αυτόματα την επόμενη καθώς γράφετε—χωρίς κενές γραμμές.',
+  '✓ Automatic mode enabled: rows grow automatically as you type!': '✓ Αυτόματη λειτουργία ενεργή: οι γραμμές αυξάνονται αυτόματα καθώς γράφετε!',
+  'Apply to Active Note': 'Εφαρμογή στην Ενεργή Σημείωση',
+  'Default Cols': 'Προεπιλ. Στήλες',
+  '✓ Active note switched to Automatic rows!': '✓ Η ενεργή σημείωση άλλαξε σε Αυτόματες γραμμές!',
+  'Decrease size': 'Μείωση μεγέθους',
+  'Increase size': 'Αύξηση μεγέθους',
+  'Underline': 'Υπογράμμιση',
+  'Tabular Numbers': 'Στηλοθετικοί Αριθμοί (123)',
+  'Letter Spacing': 'Απόσταση Γραμμάτων',
+  'Letter Size & Style (A- / A+)': 'Μέγεθος & Στυλ Γραμμάτων (A- / A+)',
+  'Shrink letters (-1px)': 'Σμίκρυνση γραμμάτων (-1px)',
+  'Enlarge letters (+1px)': 'Μεγέθυνση γραμμάτων (+1px)',
+  'Sentence Case': 'Πεζά/Κεφαλαία Πρότασης',
+  'Add € to Numbers': 'Προσθήκη € σε Αριθμούς',
+  'Clear Selection': 'Εκκαθάριση Επιλογής',
+  'Clear Content': 'Εκκαθάριση Περιεχομένου',
+  'Clear selected unlocked rows': 'Εκκαθάριση επιλεγμένων ξεκλείδωτων γραμμών',
+  'Selected rows are locked. Unlock them first!': 'Οι επιλεγμένες γραμμές είναι κλειδωμένες. Ξεκλειδώστε τες πρώτα!',
+  'Unpin Doc': 'Ξεκαρφίτσωμα',
+  'Pin to Top': 'Καρφίτσωμα',
+  '✓ Auto (Set 90)': '✓ Αυτόματο (Ορισμός 90)',
+  'Switch to Auto': 'Μετάβαση σε Αυτόματο',
+  'New notes will auto-add rows as you type.': 'Οι νέες σημειώσεις θα προσθέτουν γραμμές αυτόματα καθώς γράφετε.',
 };
 
 export function translateDynamicToGreek(sq: string, en: string): string {
@@ -1226,6 +1276,30 @@ export function translateDynamicToGreek(sq: string, en: string): string {
   }
   if ((m = s.match(/^Zoom \((\d+)%\) — Resize$/))) {
     return `Ζουμ (${m[1]}%) — Αλλαγή μεγέθους`;
+  }
+  if ((m = s.match(/^✓ PDF file \((.*)\) uploaded and synced!$/))) {
+    return `✓ Το αρχείο PDF (${m[1]}) μεταφορτώθηκε και συγχρονίστηκε!`;
+  }
+  if ((m = s.match(/^✓ PDF \((.*)\) uploaded and synced to Cloud!$/))) {
+    return `✓ Το PDF (${m[1]}) μεταφορτώθηκε και συγχρονίστηκε στο Cloud!`;
+  }
+  if ((m = s.match(/^✓ Replaced (\d+) occurrences!$/))) {
+    return `✓ Αντικαταστάθηκαν ${m[1]} περιπτώσεις!`;
+  }
+  if ((m = s.match(/^✓ Active note set to (\d+) rows!$/))) {
+    return `✓ Η ενεργή σημείωση ορίστηκε στις ${m[1]} γραμμές!`;
+  }
+  if ((m = s.match(/^✓ Text color applied to (\d+) selected row\(s\)!$/))) {
+    return `✓ Το χρώμα κειμένου εφαρμόστηκε σε ${m[1]} επιλεγμένες γραμμές!`;
+  }
+  if ((m = s.match(/^✓ Cleared (\d+) unlocked row\(s\)!$/))) {
+    return `✓ Εκκαθαρίστηκαν ${m[1]} ξεκλείδωτες γραμμές!`;
+  }
+  if ((m = s.match(/^✓ New notes will start with (\d+) rows\.$/))) {
+    return `✓ Οι νέες σημειώσεις θα ξεκινούν με ${m[1]} γραμμές.`;
+  }
+  if ((m = s.match(/^Selected Rows Color \((\d+)\)$/))) {
+    return `Χρώμα Επιλεγμένων Γραμμών (${m[1]})`;
   }
 
   return s;

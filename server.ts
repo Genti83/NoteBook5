@@ -2,7 +2,6 @@ import express from 'express';
 import path from 'path';
 import fs from 'fs';
 import crypto from 'crypto';
-import { createServer as createViteServer } from 'vite';
 import { GoogleGenAI, ThinkingLevel } from '@google/genai';
 
 const STORAGE_FILE = path.join(process.cwd(), 'cloud_db.json');
@@ -36,7 +35,7 @@ function offloadHeavyMediaOnServer(userKey: string, docs: any[]): any[] {
     const nextRows = d.rows.map((r: any, idx: number) => {
       if (!r || typeof r !== 'object') return r;
       let nextRow = r;
-      (['image', 'audio'] as const).forEach((kind) => {
+      (['image', 'audio', 'pdf'] as const).forEach((kind) => {
         const val = nextRow[kind];
         if (typeof val === 'string' && val.length > 1500000 && !val.startsWith(SRV_MEDIA_PREFIX) && !val.startsWith('__fschunk__:')) {
           const mediaId = `${String(d.id || 'doc').slice(0, 32)}_${String(r.id || `row-${idx}`).slice(0, 32)}_${kind}_${val.length}`;
@@ -168,7 +167,7 @@ async function startServer() {
          return res.status(401).json({ success: false, error: 'Ju lutemi kyçuni me Email/Fjalëkalim ose me Google për të sinkronizuar të dhënat.' });
       }
 
-      const { documents, activeDocId, blueText, secretList, pin, gistToken, gistId, customLabels, notesColor, textColorMode, textSize, textWeight, settingsUpdatedAt, trashItems } = req.body;
+      const { documents, activeDocId, blueText, secretList, padNotes, pin, gistToken, gistId, customLabels, notesColor, textColorMode, textSize, textWeight, settingsUpdatedAt, trashItems } = req.body;
       const key = (verified.email || verified.uid).toLowerCase();
       const storedDocs = offloadHeavyMediaOnServer(key, Array.isArray(documents) ? documents : []);
 
@@ -180,6 +179,7 @@ async function startServer() {
         activeDocId: activeDocId || null,
         blueText: blueText !== undefined ? blueText : db[key]?.blueText,
         secretList: secretList !== undefined ? secretList : db[key]?.secretList,
+        padNotes: Array.isArray(padNotes) ? padNotes : (db[key]?.padNotes || []),
         customLabels: customLabels !== undefined ? customLabels : db[key]?.customLabels,
         trashItems: Array.isArray(trashItems) ? trashItems : (db[key]?.trashItems || []),
         notesColor: notesColor !== undefined ? notesColor : db[key]?.notesColor,
@@ -203,6 +203,7 @@ async function startServer() {
           ? d.rows.map((r: any) => ({
               ...r,
               audio: typeof r?.audio === 'string' && r.audio.length > 2 * 1024 * 1024 ? '' : r?.audio,
+              pdf: typeof r?.pdf === 'string' && r.pdf.length > 2 * 1024 * 1024 ? '' : r?.pdf,
             }))
           : [],
       }));
@@ -212,6 +213,7 @@ async function startServer() {
         documents: lightDocsForHistory,
         customLabels: db[key].customLabels || [],
         secretList: db[key].secretList || [],
+        padNotes: db[key].padNotes || [],
         trashItems: db[key].trashItems || [],
         blueText: db[key].blueText || '',
         notesColor: db[key].notesColor || 'default',
@@ -245,7 +247,7 @@ async function startServer() {
       const db = readCloudDb();
       const record = db[userId];
       if (!record || !record.documents) {
-        return res.json({ success: true, documents: [], trashItems: record?.trashItems || [], lastUpdated: null });
+        return res.json({ success: true, documents: [], padNotes: record?.padNotes || [], trashItems: record?.trashItems || [], lastUpdated: null });
       }
       return res.json({
         success: true,
@@ -253,6 +255,7 @@ async function startServer() {
         activeDocId: record.activeDocId,
         blueText: record.blueText,
         secretList: record.secretList,
+        padNotes: Array.isArray(record.padNotes) ? record.padNotes : [],
         customLabels: record.customLabels || [],
         trashItems: Array.isArray(record.trashItems) ? record.trashItems : [],
         notesColor: record.notesColor || 'default',
@@ -832,6 +835,7 @@ Kthe VETËM JSON të vlefshëm pa koodblock markdown! (Mos vendos veprime tek "a
 
   // Vite middleware for development
   if (process.env.NODE_ENV !== 'production') {
+    const { createServer: createViteServer } = await import('vite');
     const vite = await createViteServer({
       server: { middlewareMode: true },
       appType: 'spa',

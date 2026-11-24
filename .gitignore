@@ -6,3 +6,7 @@ coverage/
 *.log
 .env*
 !.env.example
+cloud_media/
+cloud_db.json
+tmp/
+android/
