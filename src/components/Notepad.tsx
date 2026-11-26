@@ -11004,7 +11004,7 @@ const exportChatResponseToPdf = async () => {
              .map(d => ({ id: d.id, title: d.title, updatedAt: d.updatedAt }))
        }));
        const backupData = {
-          version: '1.5.7',
+          version: '1.5.8',
           exportedAt: new Date().toISOString(),
           documents: docsSnapshot,
           customLabels: exportedLabels,
@@ -11336,7 +11336,7 @@ const exportChatResponseToPdf = async () => {
                      .map(d => ({ id: d.id, title: d.title, updatedAt: d.updatedAt }))
                }));
                const data = {
-                   version: '1.5.7',
+                   version: '1.5.8',
                    exportedAt: new Date().toISOString(),
                    documents: docsSnapshot,
                    blueText: latestBlueTextRef.current,
@@ -21083,7 +21083,7 @@ const exportChatResponseToPdf = async () => {
                      <div className="min-w-0">
                         <h3 className="text-sm sm:text-base font-extrabold truncate flex items-center gap-2">
                            {t('Rreth NoteBook3 & Privatësia', 'About NoteBook3 & Privacy')}
-                           <span className="px-2 py-0.5 rounded-full text-[10px] font-mono font-black bg-emerald-500/15 text-emerald-500 border border-emerald-500/30">v1.5.7</span>
+                           <span className="px-2 py-0.5 rounded-full text-[10px] font-mono font-black bg-emerald-500/15 text-emerald-500 border border-emerald-500/30">v1.5.8</span>
                         </h3>
                         <p className={`text-[11px] truncate ${isDark ? 'text-zinc-400' : 'text-zinc-500'}`}>
                            com.notebook3.app · {t('Gati për Google Play & GitHub APK', 'Google Play & GitHub APK Ready')}
@@ -21169,7 +21169,7 @@ const exportChatResponseToPdf = async () => {
                         <div className="grid grid-cols-2 gap-2.5">
                            <div className={`p-3 rounded-xl border ${isDark ? 'bg-zinc-950/60 border-zinc-800' : 'bg-white border-zinc-200'}`}>
                               <div className="text-[10px] font-bold uppercase text-zinc-500">{t('Versioni', 'Version')}</div>
-                              <div className="text-sm font-black mt-0.5">1.5.7</div>
+                              <div className="text-sm font-black mt-0.5">1.5.8</div>
                            </div>
                            <div className={`p-3 rounded-xl border ${isDark ? 'bg-zinc-950/60 border-zinc-800' : 'bg-white border-zinc-200'}`}>
                               <div className="text-[10px] font-bold uppercase text-zinc-500">{t('ID e Paketës', 'Package ID')}</div>
@@ -21205,9 +21205,9 @@ const exportChatResponseToPdf = async () => {
                            type="button"
                            onClick={() => {
                               const policyText = t(
-                                 'NoteBook3 (com.notebook3.app) v1.5.7 — Publikues: Genti83 (në bashkëpunim me Gemini Studio). Politikë Privatësie: Offline-First, zero reklama/gjurmues, zero READ_CALENDAR ose MANAGE_EXTERNAL_STORAGE. Sinkronizimi Firebase/GitHub Gist dhe funksionet AI përdoren vetëm me kërkesë të përdoruesit, me të drejtë të plotë për fshirje të dhënash (Settings -> App Reset).',
-                                 'NoteBook3 (com.notebook3.app) v1.5.7 — Publisher: Genti83 (in collaboration with Gemini Studio). Privacy Policy: Offline-First, zero ads/trackers, no READ_CALENDAR or MANAGE_EXTERNAL_STORAGE. Optional cloud sync and AI features require explicit user action, with full user data deletion via Settings -> App Reset.',
-                                 'NoteBook3 (com.notebook3.app) v1.5.7 — Εκδότης: Genti83 (σε συνεργασία με Gemini Studio). Πολιτική Απορρήτου: Offline-First, μηδέν διαφημίσεις/ιχνηλάτες, χωρίς READ_CALENDAR ή MANAGE_EXTERNAL_STORAGE. Ο συγχρονισμός Firebase/GitHub Gist και οι λειτουργίες AI ενεργοποιούνται μόνο από τον χρήστη, με πλήρη διαγραφή δεδομένων (Ρυθμίσεις -> Επαναφορά).'
+                                 'NoteBook3 (com.notebook3.app) v1.5.8 — Publikues: Genti83 (në bashkëpunim me Gemini Studio). Politikë Privatësie: Offline-First, zero reklama/gjurmues, zero READ_CALENDAR ose MANAGE_EXTERNAL_STORAGE. Sinkronizimi Firebase/GitHub Gist dhe funksionet AI përdoren vetëm me kërkesë të përdoruesit, me të drejtë të plotë për fshirje të dhënash (Settings -> App Reset).',
+                                 'NoteBook3 (com.notebook3.app) v1.5.8 — Publisher: Genti83 (in collaboration with Gemini Studio). Privacy Policy: Offline-First, zero ads/trackers, no READ_CALENDAR or MANAGE_EXTERNAL_STORAGE. Optional cloud sync and AI features require explicit user action, with full user data deletion via Settings -> App Reset.',
+                                 'NoteBook3 (com.notebook3.app) v1.5.8 — Εκδότης: Genti83 (σε συνεργασία με Gemini Studio). Πολιτική Απορρήτου: Offline-First, μηδέν διαφημίσεις/ιχνηλάτες, χωρίς READ_CALENDAR ή MANAGE_EXTERNAL_STORAGE. Ο συγχρονισμός Firebase/GitHub Gist και οι λειτουργίες AI ενεργοποιούνται μόνο από τον χρήστη, με πλήρη διαγραφή δεδομένων (Ρυθμίσεις -> Επαναφορά).'
                               );
                               navigator.clipboard.writeText(policyText);
                               showToast(t('✓ Politika e Privatësisë u kopjua!', '✓ Privacy Policy copied!'));
@@ -21800,7 +21800,7 @@ const exportChatResponseToPdf = async () => {
                            <span className="flex items-center gap-3">
                               <ShieldCheck className="w-4 h-4 shrink-0" /> {t('Rreth App, Privatësia & Lejet', 'About App, Privacy & Permissions')}
                            </span>
-                           <span className="text-[10px] font-mono opacity-80">v1.5.7</span>
+                           <span className="text-[10px] font-mono opacity-80">v1.5.8</span>
                        </button>
                        <button
                           onClick={() => {

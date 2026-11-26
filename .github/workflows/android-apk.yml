@@ -22,7 +22,7 @@ on:
         default: true
         type: boolean
       version_name:
-        description: 'Version Name opsional (psh 1.5.7)'
+        description: 'Version Name opsional (psh 1.5.8)'
         required: false
         type: string
       gemini_api_key:
@@ -205,9 +205,12 @@ jobs:
 
       - name: Ensure Direct-Installable Signed Release APK
         run: |
+          SDK_DIR="${ANDROID_HOME:-${ANDROID_SDK_ROOT:-/usr/local/lib/android/sdk}}"
           UNSIGNED_APK="android/app/build/outputs/apk/release/app-release-unsigned.apk"
           SIGNED_RELEASE_APK="android/app/build/outputs/apk/release/app-release.apk"
           SIGNED_OUT="android/app/build/outputs/apk/release/NoteBook3-release-installable.apk"
+          APKSIGNER=$(find "$SDK_DIR/build-tools" -name "apksigner" 2>/dev/null | sort -V | tail -n 1)
+          ZIPALIGN=$(find "$SDK_DIR/build-tools" -name "zipalign" 2>/dev/null | sort -V | tail -n 1)
           if [ -f "$SIGNED_RELEASE_APK" ]; then
             cp -f "$SIGNED_RELEASE_APK" "$SIGNED_OUT"
             echo "Copied keystore-signed Release APK to: $SIGNED_OUT"
@@ -216,18 +219,22 @@ jobs:
               mkdir -p "$HOME/.android"
               keytool -genkey -v -keystore "$HOME/.android/debug.keystore" -alias androiddebugkey -keyalg RSA -keysize 2048 -validity 10000 -storepass android -keypass android -dname "CN=Android Debug,O=Android,C=US"
             fi
-            APKSIGNER=$(find "$ANDROID_HOME/build-tools" -name "apksigner" 2>/dev/null | sort -V | tail -n 1)
-            ZIPALIGN=$(find "$ANDROID_HOME/build-tools" -name "zipalign" 2>/dev/null | sort -V | tail -n 1)
             if [ -n "$APKSIGNER" ] && [ -f "$HOME/.android/debug.keystore" ]; then
               if [ -n "$ZIPALIGN" ]; then
                 "$ZIPALIGN" -f -p 4 "$UNSIGNED_APK" "${UNSIGNED_APK}.aligned"
-                "$APKSIGNER" sign --ks "$HOME/.android/debug.keystore" --ks-pass pass:android --key-pass pass:android --out "$SIGNED_OUT" "${UNSIGNED_APK}.aligned"
+                "$APKSIGNER" sign --v1-signing-enabled true --v2-signing-enabled true --v3-signing-enabled true --ks "$HOME/.android/debug.keystore" --ks-pass pass:android --key-pass pass:android --out "$SIGNED_OUT" "${UNSIGNED_APK}.aligned"
                 rm -f "${UNSIGNED_APK}.aligned"
               else
-                "$APKSIGNER" sign --ks "$HOME/.android/debug.keystore" --ks-pass pass:android --key-pass pass:android --out "$SIGNED_OUT" "$UNSIGNED_APK"
+                "$APKSIGNER" sign --v1-signing-enabled true --v2-signing-enabled true --v3-signing-enabled true --ks "$HOME/.android/debug.keystore" --ks-pass pass:android --key-pass pass:android --out "$SIGNED_OUT" "$UNSIGNED_APK"
               fi
               echo "Created direct-installable Release APK: $SIGNED_OUT"
+            else
+              echo "::error::Could not locate apksigner or debug.keystore to sign Release APK!"
+              exit 1
             fi
+          fi
+          if [ -n "$APKSIGNER" ] && [ -f "$SIGNED_OUT" ]; then
+            "$APKSIGNER" verify --print-certs "$SIGNED_OUT"
           fi
 
       - name: Collect and List Generated Artifacts
@@ -240,7 +247,7 @@ jobs:
           fi
           echo "=== PËRMBAJTJA E DIREKTORISË ARTIFACTS ==="
           ls -lh artifacts/ || echo "Direktoria artifacts është bosh!"
-          echo "## NoteBook3 v1.5.7 Android Build Artifacts" >> "$GITHUB_STEP_SUMMARY"
+          echo "## NoteBook3 v1.5.8 Android Build Artifacts" >> "$GITHUB_STEP_SUMMARY"
           echo "" >> "$GITHUB_STEP_SUMMARY"
           echo "| Skedari / File | Përdorimi / Purpose |" >> "$GITHUB_STEP_SUMMARY"
           echo "| --- | --- |" >> "$GITHUB_STEP_SUMMARY"
@@ -281,8 +288,8 @@ jobs:
 
           if [ -n "$FILES_TO_UPLOAD" ]; then
             gh release create latest-apk \
-              --title "NoteBook3 v1.5.7 - Android APK & Play Store AAB (Latest Build)" \
-              --notes "Versioni më i fundit v1.5.7 i NoteBook3 (com.notebook3.app, versionCode 350+) me: rregullim të plotë për simbolin € gjatë shkrimit në tastierën e telefonit, sinkronizim të plotë të Etiketave (shto/hiq/nënvizo/listat) me Online Cloud dhe ruajtje të plotë në 'Eksporto të gjitha si JSON', rreshtim uniform në një vijë për të gjitha kartat e listave në Main & Etiketa, si dhe nënshkrim të qëndrueshëm APK për përditësim në telefon pa humbur shënimet ekzistuese. Për instalim direkt shkarkoni 'NoteBook3-debug.apk' ose 'NoteBook3-release-installable.apk'. Për Google Play Console përdorni skedarin '.aab'." \
+              --title "NoteBook3 v1.5.8 - Android APK & Play Store AAB (Latest Build)" \
+              --notes "Versioni i ri v1.5.8 i NoteBook3 (com.notebook3.app) për instalim & përditësim direkt në telefon pa fshirë shënimet ekzistuese: rritje automatike e versionCode, nënshkrim i verifikuar APK v1/v2/v3 me keystore të qëndrueshëm, simboli € në tastierë, sinkronizim i plotë i Etiketave me Online Cloud & JSON Backup, dhe lista uniforme në një vijë. Për instalim direkt në telefon shkarkoni 'NoteBook3-release-installable.apk' ose 'NoteBook3-debug.apk'. Për Google Play Console përdorni skedarin '.aab'." \
               --prerelease \
               $FILES_TO_UPLOAD || echo "Gabim gjatë krijimit të release, po vazhdojmë..."
           else
