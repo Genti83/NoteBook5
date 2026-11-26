@@ -312,7 +312,7 @@ interface HeaderInputProps {
   readOnly?: boolean;
 }
 function HeaderInput({ initialValue, onChange, className, placeholder, readOnly }: HeaderInputProps) {
-  const [val, setVal] = React.useState(initialValue || "");
+  const inputRef = React.useRef<HTMLInputElement | null>(null);
   const isFocusedRef = React.useRef(false);
   const isComposingRef = React.useRef(false);
   const lastEmittedRef = React.useRef(initialValue || "");
@@ -322,8 +322,12 @@ function HeaderInput({ initialValue, onChange, className, placeholder, readOnly 
     const incoming = initialValue || "";
     if (incoming === prevInitialRef.current) return;
     prevInitialRef.current = incoming;
-    if (!isFocusedRef.current && !isComposingRef.current && incoming !== lastEmittedRef.current) {
-      setVal(incoming);
+    const el = inputRef.current;
+    const isActivelyFocused = isFocusedRef.current || Boolean(el && document.activeElement === el);
+    if (!isActivelyFocused && !isComposingRef.current && incoming !== lastEmittedRef.current) {
+      if (el && el.value !== incoming) {
+        el.value = incoming;
+      }
       lastEmittedRef.current = incoming;
     }
   }, [initialValue]);
@@ -336,39 +340,38 @@ function HeaderInput({ initialValue, onChange, className, placeholder, readOnly 
     }
   };
 
+  const syncFromEl = (el: HTMLInputElement) => {
+    if (readOnly) return;
+    const newVal = el.value;
+    if (newVal.includes('€')) {
+      isComposingRef.current = false;
+    }
+    emitVal(newVal);
+  };
+
   return (
     <input
+      ref={inputRef}
       type="text"
-      value={val}
+      defaultValue={initialValue || ""}
       readOnly={readOnly}
       onFocus={() => { isFocusedRef.current = true; }}
       onCompositionStart={() => { isComposingRef.current = true; }}
-      onChange={(e) => {
-        if (readOnly) return;
-        const newVal = e.target.value;
-        setVal(newVal);
-        if (newVal.includes('€')) {
-          isComposingRef.current = false;
-        }
-        emitVal(newVal);
-      }}
+      onInput={(e) => syncFromEl(e.currentTarget)}
+      onChange={(e) => syncFromEl(e.currentTarget)}
       onCompositionEnd={(e) => {
         isComposingRef.current = false;
-        const finalVal = (e.target as HTMLInputElement).value;
-        setVal(finalVal);
-        emitVal(finalVal);
+        syncFromEl(e.currentTarget);
       }}
       onBlur={(e) => {
         isFocusedRef.current = false;
         isComposingRef.current = false;
-        const finalVal = e.currentTarget.value;
-        setVal(finalVal);
-        emitVal(finalVal);
+        syncFromEl(e.currentTarget);
       }}
       onKeyDown={(e) => {
         if (e.key === "Enter" && !isComposingRef.current) {
           emitVal(e.currentTarget.value);
-          (e.target as HTMLInputElement).blur();
+          e.currentTarget.blur();
         }
       }}
       className={className}
@@ -395,24 +398,13 @@ interface CellInputProps {
   style?: React.CSSProperties;
 }
 function CellInput({ initialValue, onChange, onFocus, onBlur, dataRowIndex, dataColKey, readOnly, startHold, stopHold, autoLineHeight = true, className, style }: CellInputProps) {
-  const [val, setVal] = React.useState(initialValue || "");
   const [detectedLines, setDetectedLines] = React.useState<number>(1);
   const textareaRef = React.useRef<HTMLTextAreaElement | null>(null);
   const isFocusedRef = React.useRef(false);
   const isComposingRef = React.useRef(false);
   const lastEmittedRef = React.useRef(initialValue || "");
   const prevInitialRef = React.useRef(initialValue || "");
-  const valRef = React.useRef(val);
-  valRef.current = val;
-  React.useEffect(() => {
-    const incoming = initialValue || "";
-    if (incoming === prevInitialRef.current) return;
-    prevInitialRef.current = incoming;
-    if (!isFocusedRef.current && !isComposingRef.current && incoming !== lastEmittedRef.current && incoming !== valRef.current) {
-      setVal(incoming);
-      lastEmittedRef.current = incoming;
-    }
-  }, [initialValue]);
+  const rafSizeRef = React.useRef<number | null>(null);
   const lastWidthRef = React.useRef<number>(0);
   const baseLineHeight = typeof style?.lineHeight === 'number' ? style.lineHeight : (parseFloat(String(style?.lineHeight || '1.35')) || 1.35);
   const adaptiveLineHeight = autoLineHeight && detectedLines >= 2
@@ -422,9 +414,10 @@ function CellInput({ initialValue, onChange, onFocus, onBlur, dataRowIndex, data
     const el = textareaRef.current;
     if (!el) return;
     if (isComposingRef.current) return;
+    const currentText = el.value || "";
     const prevHeight = el.style.height;
     el.style.height = '';
-    if (!val) {
+    if (!currentText) {
       setDetectedLines(prev => (prev !== 1 ? 1 : prev));
       return;
     }
@@ -447,10 +440,41 @@ function CellInput({ initialValue, onChange, onFocus, onBlur, dataRowIndex, data
     } else {
       el.style.height = prevHeight;
     }
-  }, [val, baseLineHeight]);
+  }, [baseLineHeight]);
+  const scheduleRecalcSize = React.useCallback(() => {
+    if (typeof window === 'undefined') return;
+    if (rafSizeRef.current !== null) {
+      cancelAnimationFrame(rafSizeRef.current);
+    }
+    rafSizeRef.current = requestAnimationFrame(() => {
+      rafSizeRef.current = null;
+      recalcSize();
+    });
+  }, [recalcSize]);
+  React.useEffect(() => {
+    return () => {
+      if (rafSizeRef.current !== null) {
+        cancelAnimationFrame(rafSizeRef.current);
+      }
+    };
+  }, []);
+  React.useEffect(() => {
+    const incoming = initialValue || "";
+    if (incoming === prevInitialRef.current) return;
+    prevInitialRef.current = incoming;
+    const el = textareaRef.current;
+    const isActivelyFocused = isFocusedRef.current || Boolean(el && document.activeElement === el);
+    if (!isActivelyFocused && !isComposingRef.current && incoming !== lastEmittedRef.current) {
+      if (el && el.value !== incoming) {
+        el.value = incoming;
+      }
+      lastEmittedRef.current = incoming;
+      scheduleRecalcSize();
+    }
+  }, [initialValue, scheduleRecalcSize]);
   React.useLayoutEffect(() => {
     recalcSize();
-  }, [val, style?.fontSize, style?.fontWeight, style?.fontFamily, style?.lineHeight, autoLineHeight, recalcSize]);
+  }, [style?.fontSize, style?.fontWeight, style?.fontFamily, style?.lineHeight, autoLineHeight, recalcSize]);
   React.useEffect(() => {
     const el = textareaRef.current;
     if (!el || typeof ResizeObserver === 'undefined') return;
@@ -460,23 +484,25 @@ function CellInput({ initialValue, onChange, onFocus, onBlur, dataRowIndex, data
       const w = textareaRef.current.clientWidth;
       if (Math.abs(w - lastWidthRef.current) > 1) {
         lastWidthRef.current = w;
-        recalcSize();
+        scheduleRecalcSize();
       }
     });
     ro.observe(el);
     return () => ro.disconnect();
-  }, [recalcSize]);
-  const handleChange = (e: React.ChangeEvent<HTMLTextAreaElement>) => {
+  }, [scheduleRecalcSize]);
+  const syncFromEl = (el: HTMLTextAreaElement, forceEmit = false) => {
     if (readOnly) return;
-    const newVal = e.target.value;
-    setVal(newVal);
+    const newVal = el.value;
     if (newVal.includes('€')) {
       isComposingRef.current = false;
     }
-    if (newVal !== lastEmittedRef.current) {
-      lastEmittedRef.current = newVal;
-      onChange(newVal);
+    if (forceEmit || newVal !== lastEmittedRef.current) {
+      if (newVal !== lastEmittedRef.current) {
+        lastEmittedRef.current = newVal;
+        onChange(newVal);
+      }
     }
+    scheduleRecalcSize();
   };
   const handlePointerDown = () => {
     if (startHold) startHold();
@@ -487,11 +513,12 @@ function CellInput({ initialValue, onChange, onFocus, onBlur, dataRowIndex, data
   return (
     <textarea
       ref={textareaRef}
-      value={val}
+      defaultValue={initialValue || ""}
       data-row-index={dataRowIndex}
       data-col-key={dataColKey}
       onCompositionStart={() => { isComposingRef.current = true; }}
-      onChange={handleChange}
+      onInput={(e) => syncFromEl(e.currentTarget)}
+      onChange={(e) => syncFromEl(e.currentTarget)}
       onFocus={(e) => {
         isFocusedRef.current = true;
         if (onFocus) onFocus(e);
@@ -499,24 +526,12 @@ function CellInput({ initialValue, onChange, onFocus, onBlur, dataRowIndex, data
       onBlur={(e) => {
         isFocusedRef.current = false;
         isComposingRef.current = false;
-        const finalVal = e.currentTarget.value;
-        setVal(finalVal);
-        if (!readOnly && finalVal !== lastEmittedRef.current) {
-          lastEmittedRef.current = finalVal;
-          onChange(finalVal);
-        }
+        syncFromEl(e.currentTarget, true);
         if (onBlur) onBlur(e);
       }}
       onCompositionEnd={(e) => {
         isComposingRef.current = false;
-        if (readOnly) return;
-        const finalVal = (e.target as HTMLTextAreaElement).value;
-        setVal(finalVal);
-        if (finalVal !== lastEmittedRef.current) {
-          lastEmittedRef.current = finalVal;
-          onChange(finalVal);
-        }
-        requestAnimationFrame(() => recalcSize());
+        syncFromEl(e.currentTarget, true);
       }}
       readOnly={readOnly}
       autoCorrect="off"
@@ -538,33 +553,48 @@ function ImeSafeInput({
   onChangeValue,
   onFocus,
   onBlur,
+  onInput,
   ...rest
-}: Omit<React.InputHTMLAttributes<HTMLInputElement>, 'value' | 'onChange'> & {
+}: Omit<React.InputHTMLAttributes<HTMLInputElement>, 'value' | 'defaultValue' | 'onChange'> & {
   value: string;
   onChangeValue: (val: string) => void;
 }) {
-  const [localVal, setLocalVal] = React.useState(value || '');
+  const inputRef = React.useRef<HTMLInputElement | null>(null);
   const isFocusedRef = React.useRef(false);
   const isComposingRef = React.useRef(false);
   const lastEmittedRef = React.useRef(value || '');
   const prevExternalRef = React.useRef(value || '');
-  const localValRef = React.useRef(localVal);
-  localValRef.current = localVal;
 
   React.useEffect(() => {
     const incoming = value || '';
     if (incoming === prevExternalRef.current) return;
     prevExternalRef.current = incoming;
-    if (!isFocusedRef.current && !isComposingRef.current && incoming !== lastEmittedRef.current && incoming !== localValRef.current) {
-      setLocalVal(incoming);
+    const el = inputRef.current;
+    const isActivelyFocused = isFocusedRef.current || Boolean(el && document.activeElement === el);
+    if (!isActivelyFocused && !isComposingRef.current && incoming !== lastEmittedRef.current) {
+      if (el && el.value !== incoming) {
+        el.value = incoming;
+      }
       lastEmittedRef.current = incoming;
     }
   }, [value]);
 
+  const syncFromEl = (el: HTMLInputElement) => {
+    const nextVal = el.value;
+    if (nextVal.includes('€')) {
+      isComposingRef.current = false;
+    }
+    if (nextVal !== lastEmittedRef.current) {
+      lastEmittedRef.current = nextVal;
+      onChangeValue(nextVal);
+    }
+  };
+
   return (
     <input
       {...rest}
-      value={localVal}
+      ref={inputRef}
+      defaultValue={value || ''}
       onFocus={(e) => {
         isFocusedRef.current = true;
         onFocus?.(e);
@@ -572,35 +602,21 @@ function ImeSafeInput({
       onCompositionStart={() => {
         isComposingRef.current = true;
       }}
+      onInput={(e) => {
+        syncFromEl(e.currentTarget);
+        onInput?.(e);
+      }}
       onChange={(e) => {
-        const nextVal = e.target.value;
-        setLocalVal(nextVal);
-        if (nextVal.includes('€')) {
-          isComposingRef.current = false;
-        }
-        if (nextVal !== lastEmittedRef.current) {
-          lastEmittedRef.current = nextVal;
-          onChangeValue(nextVal);
-        }
+        syncFromEl(e.currentTarget);
       }}
       onCompositionEnd={(e) => {
         isComposingRef.current = false;
-        const finalVal = (e.target as HTMLInputElement).value;
-        setLocalVal(finalVal);
-        if (finalVal !== lastEmittedRef.current) {
-          lastEmittedRef.current = finalVal;
-          onChangeValue(finalVal);
-        }
+        syncFromEl(e.currentTarget);
       }}
       onBlur={(e) => {
         isFocusedRef.current = false;
         isComposingRef.current = false;
-        const finalVal = e.currentTarget.value;
-        setLocalVal(finalVal);
-        if (finalVal !== lastEmittedRef.current) {
-          lastEmittedRef.current = finalVal;
-          onChangeValue(finalVal);
-        }
+        syncFromEl(e.currentTarget);
         onBlur?.(e);
       }}
     />
@@ -611,19 +627,19 @@ function ImeSafeTextarea({
   onChangeValue,
   onFocus,
   onBlur,
+  onInput,
   autoResize = false,
   autoLineHeight = true,
   syncRevision,
   style,
   ...rest
-}: Omit<React.TextareaHTMLAttributes<HTMLTextAreaElement>, 'value' | 'onChange'> & {
+}: Omit<React.TextareaHTMLAttributes<HTMLTextAreaElement>, 'value' | 'defaultValue' | 'onChange'> & {
   value: string;
   onChangeValue: (val: string) => void;
   autoResize?: boolean;
   autoLineHeight?: boolean;
   syncRevision?: number;
 }) {
-  const [localVal, setLocalVal] = React.useState(value || '');
   const [detectedLines, setDetectedLines] = React.useState<number>(1);
   const textareaRef = React.useRef<HTMLTextAreaElement | null>(null);
   const isFocusedRef = React.useRef(false);
@@ -631,25 +647,7 @@ function ImeSafeTextarea({
   const lastEmittedRef = React.useRef(value || '');
   const prevExternalRef = React.useRef(value || '');
   const lastSyncRevRef = React.useRef(syncRevision);
-  const localValRef = React.useRef(localVal);
-  localValRef.current = localVal;
-
-  React.useEffect(() => {
-    const incoming = value || '';
-    if (syncRevision !== undefined && syncRevision !== lastSyncRevRef.current) {
-      lastSyncRevRef.current = syncRevision;
-      prevExternalRef.current = incoming;
-      lastEmittedRef.current = incoming;
-      setLocalVal(incoming);
-      return;
-    }
-    if (incoming === prevExternalRef.current) return;
-    prevExternalRef.current = incoming;
-    if (!isFocusedRef.current && !isComposingRef.current && incoming !== lastEmittedRef.current && incoming !== localValRef.current) {
-      setLocalVal(incoming);
-      lastEmittedRef.current = incoming;
-    }
-  }, [value, syncRevision]);
+  const rafSizeRef = React.useRef<number | null>(null);
 
   const baseLineHeight = typeof style?.lineHeight === 'number' ? style.lineHeight : (parseFloat(String(style?.lineHeight || '1.35')) || 1.35);
   const adaptiveLineHeight = autoResize && autoLineHeight && detectedLines >= 2
@@ -661,9 +659,10 @@ function ImeSafeTextarea({
     const el = textareaRef.current;
     if (!el) return;
     if (isComposingRef.current) return;
+    const currentText = el.value || '';
     const prevHeight = el.style.height;
     el.style.height = '';
-    if (!localVal) {
+    if (!currentText) {
       setDetectedLines(prev => (prev !== 1 ? 1 : prev));
       return;
     }
@@ -686,17 +685,73 @@ function ImeSafeTextarea({
     } else {
       el.style.height = prevHeight;
     }
-  }, [autoResize, localVal, baseLineHeight]);
+  }, [autoResize, baseLineHeight]);
+
+  const scheduleRecalcSize = React.useCallback(() => {
+    if (!autoResize || typeof window === 'undefined') return;
+    if (rafSizeRef.current !== null) {
+      cancelAnimationFrame(rafSizeRef.current);
+    }
+    rafSizeRef.current = requestAnimationFrame(() => {
+      rafSizeRef.current = null;
+      recalcSize();
+    });
+  }, [autoResize, recalcSize]);
+
+  React.useEffect(() => {
+    return () => {
+      if (rafSizeRef.current !== null) {
+        cancelAnimationFrame(rafSizeRef.current);
+      }
+    };
+  }, []);
+
+  React.useEffect(() => {
+    const incoming = value || '';
+    const el = textareaRef.current;
+    if (syncRevision !== undefined && syncRevision !== lastSyncRevRef.current) {
+      lastSyncRevRef.current = syncRevision;
+      prevExternalRef.current = incoming;
+      lastEmittedRef.current = incoming;
+      if (el && el.value !== incoming) {
+        el.value = incoming;
+      }
+      scheduleRecalcSize();
+      return;
+    }
+    if (incoming === prevExternalRef.current) return;
+    prevExternalRef.current = incoming;
+    const isActivelyFocused = isFocusedRef.current || Boolean(el && document.activeElement === el);
+    if (!isActivelyFocused && !isComposingRef.current && incoming !== lastEmittedRef.current) {
+      if (el && el.value !== incoming) {
+        el.value = incoming;
+      }
+      lastEmittedRef.current = incoming;
+      scheduleRecalcSize();
+    }
+  }, [value, syncRevision, scheduleRecalcSize]);
 
   React.useLayoutEffect(() => {
     recalcSize();
-  }, [localVal, style?.fontSize, style?.lineHeight, autoLineHeight, recalcSize]);
+  }, [style?.fontSize, style?.lineHeight, autoLineHeight, recalcSize]);
+
+  const syncFromEl = (el: HTMLTextAreaElement) => {
+    const nextVal = el.value;
+    if (nextVal.includes('€')) {
+      isComposingRef.current = false;
+    }
+    if (nextVal !== lastEmittedRef.current) {
+      lastEmittedRef.current = nextVal;
+      onChangeValue(nextVal);
+    }
+    scheduleRecalcSize();
+  };
 
   return (
     <textarea
       {...rest}
       ref={textareaRef}
-      value={localVal}
+      defaultValue={value || ''}
       style={autoResize ? { ...style, lineHeight: adaptiveLineHeight, overflow: 'hidden' } : style}
       onFocus={(e) => {
         isFocusedRef.current = true;
@@ -705,36 +760,21 @@ function ImeSafeTextarea({
       onCompositionStart={() => {
         isComposingRef.current = true;
       }}
+      onInput={(e) => {
+        syncFromEl(e.currentTarget);
+        onInput?.(e);
+      }}
       onChange={(e) => {
-        const nextVal = e.target.value;
-        setLocalVal(nextVal);
-        if (nextVal.includes('€')) {
-          isComposingRef.current = false;
-        }
-        if (nextVal !== lastEmittedRef.current) {
-          lastEmittedRef.current = nextVal;
-          onChangeValue(nextVal);
-        }
+        syncFromEl(e.currentTarget);
       }}
       onCompositionEnd={(e) => {
         isComposingRef.current = false;
-        const finalVal = (e.target as HTMLTextAreaElement).value;
-        setLocalVal(finalVal);
-        if (finalVal !== lastEmittedRef.current) {
-          lastEmittedRef.current = finalVal;
-          onChangeValue(finalVal);
-        }
-        requestAnimationFrame(() => recalcSize());
+        syncFromEl(e.currentTarget);
       }}
       onBlur={(e) => {
         isFocusedRef.current = false;
         isComposingRef.current = false;
-        const finalVal = e.currentTarget.value;
-        setLocalVal(finalVal);
-        if (finalVal !== lastEmittedRef.current) {
-          lastEmittedRef.current = finalVal;
-          onChangeValue(finalVal);
-        }
+        syncFromEl(e.currentTarget);
         onBlur?.(e);
       }}
     />
@@ -11004,7 +11044,7 @@ const exportChatResponseToPdf = async () => {
              .map(d => ({ id: d.id, title: d.title, updatedAt: d.updatedAt }))
        }));
        const backupData = {
-          version: '1.5.8',
+          version: '1.5.9',
           exportedAt: new Date().toISOString(),
           documents: docsSnapshot,
           customLabels: exportedLabels,
@@ -11336,7 +11376,7 @@ const exportChatResponseToPdf = async () => {
                      .map(d => ({ id: d.id, title: d.title, updatedAt: d.updatedAt }))
                }));
                const data = {
-                   version: '1.5.8',
+                   version: '1.5.9',
                    exportedAt: new Date().toISOString(),
                    documents: docsSnapshot,
                    blueText: latestBlueTextRef.current,
@@ -21083,7 +21123,7 @@ const exportChatResponseToPdf = async () => {
                      <div className="min-w-0">
                         <h3 className="text-sm sm:text-base font-extrabold truncate flex items-center gap-2">
                            {t('Rreth NoteBook3 & Privatësia', 'About NoteBook3 & Privacy')}
-                           <span className="px-2 py-0.5 rounded-full text-[10px] font-mono font-black bg-emerald-500/15 text-emerald-500 border border-emerald-500/30">v1.5.8</span>
+                           <span className="px-2 py-0.5 rounded-full text-[10px] font-mono font-black bg-emerald-500/15 text-emerald-500 border border-emerald-500/30">v1.5.9</span>
                         </h3>
                         <p className={`text-[11px] truncate ${isDark ? 'text-zinc-400' : 'text-zinc-500'}`}>
                            com.notebook3.app · {t('Gati për Google Play & GitHub APK', 'Google Play & GitHub APK Ready')}
@@ -21169,7 +21209,7 @@ const exportChatResponseToPdf = async () => {
                         <div className="grid grid-cols-2 gap-2.5">
                            <div className={`p-3 rounded-xl border ${isDark ? 'bg-zinc-950/60 border-zinc-800' : 'bg-white border-zinc-200'}`}>
                               <div className="text-[10px] font-bold uppercase text-zinc-500">{t('Versioni', 'Version')}</div>
-                              <div className="text-sm font-black mt-0.5">1.5.8</div>
+                              <div className="text-sm font-black mt-0.5">1.5.9</div>
                            </div>
                            <div className={`p-3 rounded-xl border ${isDark ? 'bg-zinc-950/60 border-zinc-800' : 'bg-white border-zinc-200'}`}>
                               <div className="text-[10px] font-bold uppercase text-zinc-500">{t('ID e Paketës', 'Package ID')}</div>
@@ -21205,9 +21245,9 @@ const exportChatResponseToPdf = async () => {
                            type="button"
                            onClick={() => {
                               const policyText = t(
-                                 'NoteBook3 (com.notebook3.app) v1.5.8 — Publikues: Genti83 (në bashkëpunim me Gemini Studio). Politikë Privatësie: Offline-First, zero reklama/gjurmues, zero READ_CALENDAR ose MANAGE_EXTERNAL_STORAGE. Sinkronizimi Firebase/GitHub Gist dhe funksionet AI përdoren vetëm me kërkesë të përdoruesit, me të drejtë të plotë për fshirje të dhënash (Settings -> App Reset).',
-                                 'NoteBook3 (com.notebook3.app) v1.5.8 — Publisher: Genti83 (in collaboration with Gemini Studio). Privacy Policy: Offline-First, zero ads/trackers, no READ_CALENDAR or MANAGE_EXTERNAL_STORAGE. Optional cloud sync and AI features require explicit user action, with full user data deletion via Settings -> App Reset.',
-                                 'NoteBook3 (com.notebook3.app) v1.5.8 — Εκδότης: Genti83 (σε συνεργασία με Gemini Studio). Πολιτική Απορρήτου: Offline-First, μηδέν διαφημίσεις/ιχνηλάτες, χωρίς READ_CALENDAR ή MANAGE_EXTERNAL_STORAGE. Ο συγχρονισμός Firebase/GitHub Gist και οι λειτουργίες AI ενεργοποιούνται μόνο από τον χρήστη, με πλήρη διαγραφή δεδομένων (Ρυθμίσεις -> Επαναφορά).'
+                                 'NoteBook3 (com.notebook3.app) v1.5.9 — Publikues: Genti83 (në bashkëpunim me Gemini Studio). Politikë Privatësie: Offline-First, zero reklama/gjurmues, zero READ_CALENDAR ose MANAGE_EXTERNAL_STORAGE. Sinkronizimi Firebase/GitHub Gist dhe funksionet AI përdoren vetëm me kërkesë të përdoruesit, me të drejtë të plotë për fshirje të dhënash (Settings -> App Reset).',
+                                 'NoteBook3 (com.notebook3.app) v1.5.9 — Publisher: Genti83 (in collaboration with Gemini Studio). Privacy Policy: Offline-First, zero ads/trackers, no READ_CALENDAR or MANAGE_EXTERNAL_STORAGE. Optional cloud sync and AI features require explicit user action, with full user data deletion via Settings -> App Reset.',
+                                 'NoteBook3 (com.notebook3.app) v1.5.9 — Εκδότης: Genti83 (σε συνεργασία με Gemini Studio). Πολιτική Απορρήτου: Offline-First, μηδέν διαφημίσεις/ιχνηλάτες, χωρίς READ_CALENDAR ή MANAGE_EXTERNAL_STORAGE. Ο συγχρονισμός Firebase/GitHub Gist και οι λειτουργίες AI ενεργοποιούνται μόνο από τον χρήστη, με πλήρη διαγραφή δεδομένων (Ρυθμίσεις -> Επαναφορά).'
                               );
                               navigator.clipboard.writeText(policyText);
                               showToast(t('✓ Politika e Privatësisë u kopjua!', '✓ Privacy Policy copied!'));
@@ -21800,7 +21840,7 @@ const exportChatResponseToPdf = async () => {
                            <span className="flex items-center gap-3">
                               <ShieldCheck className="w-4 h-4 shrink-0" /> {t('Rreth App, Privatësia & Lejet', 'About App, Privacy & Permissions')}
                            </span>
-                           <span className="text-[10px] font-mono opacity-80">v1.5.8</span>
+                           <span className="text-[10px] font-mono opacity-80">v1.5.9</span>
                        </button>
                        <button
                           onClick={() => {
