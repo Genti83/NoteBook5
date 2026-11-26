@@ -22,7 +22,7 @@ on:
         default: true
         type: boolean
       version_name:
-        description: 'Version Name opsional (psh 1.5.9)'
+        description: 'Version Name opsional (psh 1.6.0)'
         required: false
         type: string
       gemini_api_key:
@@ -247,7 +247,7 @@ jobs:
           fi
           echo "=== PËRMBAJTJA E DIREKTORISË ARTIFACTS ==="
           ls -lh artifacts/ || echo "Direktoria artifacts është bosh!"
-          echo "## NoteBook3 v1.5.9 Android Build Artifacts" >> "$GITHUB_STEP_SUMMARY"
+          echo "## NoteBook3 v1.6.0 Android Build Artifacts" >> "$GITHUB_STEP_SUMMARY"
           echo "" >> "$GITHUB_STEP_SUMMARY"
           echo "| Skedari / File | Përdorimi / Purpose |" >> "$GITHUB_STEP_SUMMARY"
           echo "| --- | --- |" >> "$GITHUB_STEP_SUMMARY"
@@ -288,8 +288,8 @@ jobs:
 
           if [ -n "$FILES_TO_UPLOAD" ]; then
             gh release create latest-apk \
-              --title "NoteBook3 v1.5.9 - Android APK & Play Store AAB (Latest Build)" \
-              --notes "Versioni i ri v1.5.9 i NoteBook3 (com.notebook3.app) për instalim & përditësim direkt në telefon pa fshirë shënimet ekzistuese: rregullim i plotë i simbolit € në tastierën Android (InputConnection nativ + fusha teksti IME-safe), rritje automatike e versionCode, nënshkrim i verifikuar APK v1/v2/v3 me keystore të qëndrueshëm, sinkronizim i plotë i Etiketave me Online Cloud & JSON Backup. Për instalim direkt në telefon shkarkoni 'NoteBook3-release-installable.apk' ose 'NoteBook3-debug.apk'. Për Google Play Console përdorni skedarin '.aab'." \
+              --title "NoteBook3 v1.6.0 - Android APK & Play Store AAB (Latest Build)" \
+              --notes "Versioni i ri v1.6.0 i NoteBook3 (com.notebook3.app) për përditësim direkt mbi aplikacionin ekzistues (pa çinstalim dhe pa humbur dokumentet): riqendërzim i pastër i tekstit me 2 rreshta dhe zgjerim automatik i lartësisë së rreshtit për 3-4+ rreshta duke ruajtur strukturën default me 90 rreshta, rregullim i plotë i simbolit € në tastierën Android, rritje automatike e versionCode dhe nënshkrim i verifikuar APK v1/v2/v3 me keystore të qëndrueshëm. Për instalim direkt mbi app-in aktual shkarkoni 'NoteBook3-release-installable.apk' ose 'NoteBook3-debug.apk'. Për Google Play Console përdorni skedarin '.aab'." \
               --prerelease \
               $FILES_TO_UPLOAD || echo "Gabim gjatë krijimit të release, po vazhdojmë..."
           else

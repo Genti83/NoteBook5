@@ -416,31 +416,46 @@ function CellInput({ initialValue, onChange, onFocus, onBlur, dataRowIndex, data
     if (isComposingRef.current) return;
     const currentText = el.value || "";
     const prevHeight = el.style.height;
-    el.style.height = '';
+    const prevMinHeight = el.style.minHeight;
+    const prevFlex = el.style.flex;
     if (!currentText) {
+      if (prevHeight) el.style.height = '';
+      if (prevMinHeight) el.style.minHeight = '';
+      if (prevFlex) el.style.flex = '';
       setDetectedLines(prev => (prev !== 1 ? 1 : prev));
       return;
     }
+    el.style.height = '';
+    el.style.minHeight = '';
+    el.style.flex = '';
     const computed = typeof window !== 'undefined' ? window.getComputedStyle(el) : null;
     const fontSizePx = computed ? (parseFloat(computed.fontSize) || 12) : 12;
     const padTop = computed ? (parseFloat(computed.paddingTop) || 0) : 0;
     const padBot = computed ? (parseFloat(computed.paddingBottom) || 0) : 0;
-    const fullCellH = el.clientHeight || Math.ceil(fontSizePx * baseLineHeight + padTop + padBot);
+    const cssMinH = computed ? (parseFloat(computed.minHeight) || 0) : 0;
+    const baseCellH = cssMinH || Math.ceil(fontSizePx * baseLineHeight + padTop + padBot);
+    el.style.flex = '0 0 auto';
+    el.style.minHeight = '0px';
     el.style.height = 'auto';
     const naturalScrollH = el.scrollHeight;
-    const lineHeightPx = Math.max(fontSizePx * baseLineHeight, 12);
+    const appliedLH = Number(adaptiveLineHeight) || baseLineHeight;
+    const lineHeightPx = Math.max(fontSizePx * appliedLH, 12);
     const contentHeight = Math.max(0, naturalScrollH - padTop - padBot);
     const estLines = Math.max(1, Math.round(contentHeight / lineHeightPx));
     setDetectedLines(prev => (prev !== estLines ? estLines : prev));
-    const nextHeight = (naturalScrollH > fullCellH + 2 || (estLines >= 2 && naturalScrollH > Math.ceil(lineHeightPx + padTop + padBot) + 2))
-      ? `${Math.max(naturalScrollH, fullCellH)}px`
-      : '';
-    if (nextHeight !== prevHeight) {
-      el.style.height = nextHeight;
+    const needsExpand = estLines >= 2 || naturalScrollH > baseCellH + 1;
+    if (needsExpand) {
+      const extraPad = estLines >= 3 ? 4 : 2;
+      const targetH = `${Math.max(naturalScrollH + extraPad, baseCellH)}px`;
+      el.style.flex = '0 0 auto';
+      el.style.minHeight = targetH;
+      el.style.height = targetH;
     } else {
-      el.style.height = prevHeight;
+      el.style.flex = '';
+      el.style.minHeight = '';
+      el.style.height = '';
     }
-  }, [baseLineHeight]);
+  }, [baseLineHeight, adaptiveLineHeight]);
   const scheduleRecalcSize = React.useCallback(() => {
     if (typeof window === 'undefined') return;
     if (rafSizeRef.current !== null) {
@@ -474,7 +489,7 @@ function CellInput({ initialValue, onChange, onFocus, onBlur, dataRowIndex, data
   }, [initialValue, scheduleRecalcSize]);
   React.useLayoutEffect(() => {
     recalcSize();
-  }, [style?.fontSize, style?.fontWeight, style?.fontFamily, style?.lineHeight, autoLineHeight, recalcSize]);
+  }, [style?.fontSize, style?.fontWeight, style?.fontFamily, style?.lineHeight, adaptiveLineHeight, autoLineHeight, recalcSize]);
   React.useEffect(() => {
     const el = textareaRef.current;
     if (!el || typeof ResizeObserver === 'undefined') return;
@@ -661,31 +676,46 @@ function ImeSafeTextarea({
     if (isComposingRef.current) return;
     const currentText = el.value || '';
     const prevHeight = el.style.height;
-    el.style.height = '';
+    const prevMinHeight = el.style.minHeight;
+    const prevFlex = el.style.flex;
     if (!currentText) {
+      if (prevHeight) el.style.height = '';
+      if (prevMinHeight) el.style.minHeight = '';
+      if (prevFlex) el.style.flex = '';
       setDetectedLines(prev => (prev !== 1 ? 1 : prev));
       return;
     }
+    el.style.height = '';
+    el.style.minHeight = '';
+    el.style.flex = '';
     const computed = typeof window !== 'undefined' ? window.getComputedStyle(el) : null;
     const fontSizePx = computed ? (parseFloat(computed.fontSize) || 12) : 12;
     const padTop = computed ? (parseFloat(computed.paddingTop) || 0) : 0;
     const padBot = computed ? (parseFloat(computed.paddingBottom) || 0) : 0;
-    const fullCellH = el.clientHeight || Math.ceil(fontSizePx * baseLineHeight + padTop + padBot);
+    const cssMinH = computed ? (parseFloat(computed.minHeight) || 0) : 0;
+    const baseCellH = cssMinH || Math.ceil(fontSizePx * baseLineHeight + padTop + padBot);
+    el.style.flex = '0 0 auto';
+    el.style.minHeight = '0px';
     el.style.height = 'auto';
     const naturalScrollH = el.scrollHeight;
-    const lineHeightPx = Math.max(fontSizePx * baseLineHeight, 12);
+    const appliedLH = typeof adaptiveLineHeight === 'number' ? adaptiveLineHeight : (parseFloat(String(adaptiveLineHeight || baseLineHeight)) || baseLineHeight);
+    const lineHeightPx = Math.max(fontSizePx * appliedLH, 12);
     const contentHeight = Math.max(0, naturalScrollH - padTop - padBot);
     const estLines = Math.max(1, Math.round(contentHeight / lineHeightPx));
     setDetectedLines(prev => (prev !== estLines ? estLines : prev));
-    const nextHeight = (naturalScrollH > fullCellH + 2 || (estLines >= 2 && naturalScrollH > Math.ceil(lineHeightPx + padTop + padBot) + 2))
-      ? `${Math.max(naturalScrollH, fullCellH)}px`
-      : '';
-    if (nextHeight !== prevHeight) {
-      el.style.height = nextHeight;
+    const needsExpand = estLines >= 2 || naturalScrollH > baseCellH + 1;
+    if (needsExpand) {
+      const extraPad = estLines >= 3 ? 4 : 2;
+      const targetH = `${Math.max(naturalScrollH + extraPad, baseCellH)}px`;
+      el.style.flex = '0 0 auto';
+      el.style.minHeight = targetH;
+      el.style.height = targetH;
     } else {
-      el.style.height = prevHeight;
+      el.style.flex = '';
+      el.style.minHeight = '';
+      el.style.height = '';
     }
-  }, [autoResize, baseLineHeight]);
+  }, [autoResize, baseLineHeight, adaptiveLineHeight]);
 
   const scheduleRecalcSize = React.useCallback(() => {
     if (!autoResize || typeof window === 'undefined') return;
@@ -733,7 +763,7 @@ function ImeSafeTextarea({
 
   React.useLayoutEffect(() => {
     recalcSize();
-  }, [style?.fontSize, style?.lineHeight, autoLineHeight, recalcSize]);
+  }, [style?.fontSize, style?.lineHeight, adaptiveLineHeight, autoLineHeight, recalcSize]);
 
   const syncFromEl = (el: HTMLTextAreaElement) => {
     const nextVal = el.value;
@@ -11044,7 +11074,7 @@ const exportChatResponseToPdf = async () => {
              .map(d => ({ id: d.id, title: d.title, updatedAt: d.updatedAt }))
        }));
        const backupData = {
-          version: '1.5.9',
+          version: '1.6.0',
           exportedAt: new Date().toISOString(),
           documents: docsSnapshot,
           customLabels: exportedLabels,
@@ -11376,7 +11406,7 @@ const exportChatResponseToPdf = async () => {
                      .map(d => ({ id: d.id, title: d.title, updatedAt: d.updatedAt }))
                }));
                const data = {
-                   version: '1.5.9',
+                   version: '1.6.0',
                    exportedAt: new Date().toISOString(),
                    documents: docsSnapshot,
                    blueText: latestBlueTextRef.current,
@@ -13480,7 +13510,7 @@ const exportChatResponseToPdf = async () => {
                                          const colKey = `col${hIdx+1}`;
                                          const cellVal = r[colKey] || '';
                                          return (
-                                             <div key={hIdx} className="flex-1 border-r border-zinc-200/20 dark:border-zinc-800/20 p-1 flex flex-col">
+                                             <div key={hIdx} className="flex-1 border-r border-zinc-200/20 dark:border-zinc-800/20 p-1 flex flex-col justify-center">
                                                {isOnlineEditing ? (
                                                   <ImeSafeTextarea
                                                      rows={1}
@@ -21123,7 +21153,7 @@ const exportChatResponseToPdf = async () => {
                      <div className="min-w-0">
                         <h3 className="text-sm sm:text-base font-extrabold truncate flex items-center gap-2">
                            {t('Rreth NoteBook3 & Privatësia', 'About NoteBook3 & Privacy')}
-                           <span className="px-2 py-0.5 rounded-full text-[10px] font-mono font-black bg-emerald-500/15 text-emerald-500 border border-emerald-500/30">v1.5.9</span>
+                           <span className="px-2 py-0.5 rounded-full text-[10px] font-mono font-black bg-emerald-500/15 text-emerald-500 border border-emerald-500/30">v1.6.0</span>
                         </h3>
                         <p className={`text-[11px] truncate ${isDark ? 'text-zinc-400' : 'text-zinc-500'}`}>
                            com.notebook3.app · {t('Gati për Google Play & GitHub APK', 'Google Play & GitHub APK Ready')}
@@ -21209,7 +21239,7 @@ const exportChatResponseToPdf = async () => {
                         <div className="grid grid-cols-2 gap-2.5">
                            <div className={`p-3 rounded-xl border ${isDark ? 'bg-zinc-950/60 border-zinc-800' : 'bg-white border-zinc-200'}`}>
                               <div className="text-[10px] font-bold uppercase text-zinc-500">{t('Versioni', 'Version')}</div>
-                              <div className="text-sm font-black mt-0.5">1.5.9</div>
+                              <div className="text-sm font-black mt-0.5">1.6.0</div>
                            </div>
                            <div className={`p-3 rounded-xl border ${isDark ? 'bg-zinc-950/60 border-zinc-800' : 'bg-white border-zinc-200'}`}>
                               <div className="text-[10px] font-bold uppercase text-zinc-500">{t('ID e Paketës', 'Package ID')}</div>
@@ -21245,9 +21275,9 @@ const exportChatResponseToPdf = async () => {
                            type="button"
                            onClick={() => {
                               const policyText = t(
-                                 'NoteBook3 (com.notebook3.app) v1.5.9 — Publikues: Genti83 (në bashkëpunim me Gemini Studio). Politikë Privatësie: Offline-First, zero reklama/gjurmues, zero READ_CALENDAR ose MANAGE_EXTERNAL_STORAGE. Sinkronizimi Firebase/GitHub Gist dhe funksionet AI përdoren vetëm me kërkesë të përdoruesit, me të drejtë të plotë për fshirje të dhënash (Settings -> App Reset).',
-                                 'NoteBook3 (com.notebook3.app) v1.5.9 — Publisher: Genti83 (in collaboration with Gemini Studio). Privacy Policy: Offline-First, zero ads/trackers, no READ_CALENDAR or MANAGE_EXTERNAL_STORAGE. Optional cloud sync and AI features require explicit user action, with full user data deletion via Settings -> App Reset.',
-                                 'NoteBook3 (com.notebook3.app) v1.5.9 — Εκδότης: Genti83 (σε συνεργασία με Gemini Studio). Πολιτική Απορρήτου: Offline-First, μηδέν διαφημίσεις/ιχνηλάτες, χωρίς READ_CALENDAR ή MANAGE_EXTERNAL_STORAGE. Ο συγχρονισμός Firebase/GitHub Gist και οι λειτουργίες AI ενεργοποιούνται μόνο από τον χρήστη, με πλήρη διαγραφή δεδομένων (Ρυθμίσεις -> Επαναφορά).'
+                                 'NoteBook3 (com.notebook3.app) v1.6.0 — Publikues: Genti83 (në bashkëpunim me Gemini Studio). Politikë Privatësie: Offline-First, zero reklama/gjurmues, zero READ_CALENDAR ose MANAGE_EXTERNAL_STORAGE. Sinkronizimi Firebase/GitHub Gist dhe funksionet AI përdoren vetëm me kërkesë të përdoruesit, me të drejtë të plotë për fshirje të dhënash (Settings -> App Reset).',
+                                 'NoteBook3 (com.notebook3.app) v1.6.0 — Publisher: Genti83 (in collaboration with Gemini Studio). Privacy Policy: Offline-First, zero ads/trackers, no READ_CALENDAR or MANAGE_EXTERNAL_STORAGE. Optional cloud sync and AI features require explicit user action, with full user data deletion via Settings -> App Reset.',
+                                 'NoteBook3 (com.notebook3.app) v1.6.0 — Εκδότης: Genti83 (σε συνεργασία με Gemini Studio). Πολιτική Απορρήτου: Offline-First, μηδέν διαφημίσεις/ιχνηλάτες, χωρίς READ_CALENDAR ή MANAGE_EXTERNAL_STORAGE. Ο συγχρονισμός Firebase/GitHub Gist και οι λειτουργίες AI ενεργοποιούνται μόνο από τον χρήστη, με πλήρη διαγραφή δεδομένων (Ρυθμίσεις -> Επαναφορά).'
                               );
                               navigator.clipboard.writeText(policyText);
                               showToast(t('✓ Politika e Privatësisë u kopjua!', '✓ Privacy Policy copied!'));
@@ -21840,7 +21870,7 @@ const exportChatResponseToPdf = async () => {
                            <span className="flex items-center gap-3">
                               <ShieldCheck className="w-4 h-4 shrink-0" /> {t('Rreth App, Privatësia & Lejet', 'About App, Privacy & Permissions')}
                            </span>
-                           <span className="text-[10px] font-mono opacity-80">v1.5.9</span>
+                           <span className="text-[10px] font-mono opacity-80">v1.6.0</span>
                        </button>
                        <button
                           onClick={() => {
@@ -23728,7 +23758,7 @@ const exportChatResponseToPdf = async () => {
                             : (textColorMode !== 'default' ? getActualTextColor(textColorMode) : undefined))
                         : undefined;
                     return (
-                    <div key={cIndex} style={{ flex: `${colW} 0 ${colW}px`, minWidth: colW }} className={`border-r relative flex flex-col ${cellDensity === 'compact' ? 'p-0.5' : cellDensity === 'spacious' ? 'p-1.5' : 'p-1'} group/cell ${
+                    <div key={cIndex} style={{ flex: `${colW} 0 ${colW}px`, minWidth: colW }} onClick={(e) => { if (e.target === e.currentTarget) { const ta = e.currentTarget.querySelector('textarea'); ta?.focus(); } }} className={`border-r relative flex flex-col justify-center ${cellDensity === 'compact' ? 'p-0.5' : cellDensity === 'spacious' ? 'p-1.5' : 'p-1'} group/cell ${
                       gridBorderStyle === 'strong'
                         ? (isDark ? "border-zinc-700" : "border-zinc-300")
                         : gridBorderStyle === 'minimal'

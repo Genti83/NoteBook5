@@ -16,9 +16,9 @@ const versionCode = explicitVersionCode && explicitVersionCode > 0 ? explicitVer
 const pkgVersion = (() => {
   try {
     const pkg = JSON.parse(fs.readFileSync(path.join(root, 'package.json'), 'utf8'));
-    return pkg.version || '1.5.9';
+    return pkg.version || '1.6.0';
   } catch {
-    return '1.5.9';
+    return '1.6.0';
   }
 })();
 const versionName = (process.env.ANDROID_VERSION_NAME || '').trim() || `${pkgVersion}.${runNumber}`;
