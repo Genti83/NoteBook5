@@ -220,8 +220,9 @@ export interface TrashItem {
 interface LabelScrollingTextProps {
   label: string;
   textColor: string;
+  underlined?: boolean;
 }
-const LabelScrollingText: React.FC<LabelScrollingTextProps> = ({ label, textColor }) => {
+const LabelScrollingText: React.FC<LabelScrollingTextProps> = ({ label, textColor, underlined }) => {
   const containerRef = React.useRef<HTMLDivElement>(null);
   const [isOverflowing, setIsOverflowing] = React.useState<boolean>(false);
 
@@ -258,6 +259,8 @@ const LabelScrollingText: React.FC<LabelScrollingTextProps> = ({ label, textColo
     return () => clearTimeout(timer);
   }, [label]);
 
+  const underlineCls = underlined ? ' underline decoration-2 decoration-amber-500 underline-offset-2' : '';
+
   return (
     <div ref={containerRef} className="w-full overflow-hidden relative whitespace-nowrap">
       {isOverflowing && (
@@ -269,12 +272,12 @@ const LabelScrollingText: React.FC<LabelScrollingTextProps> = ({ label, textColo
       {isOverflowing ? (
         <div className="w-full overflow-hidden whitespace-nowrap relative">
           <div className="inline-block animate-marquee-slow whitespace-nowrap font-extrabold text-xs sm:text-sm">
-            <span className={`pr-6 ${textColor}`}>{label}</span>
-            <span className={`pr-6 ${textColor}`}>{label}</span>
+            <span className={`pr-6 ${textColor}${underlineCls}`}>{label}</span>
+            <span className={`pr-6 ${textColor}${underlineCls}`}>{label}</span>
           </div>
         </div>
       ) : (
-        <span className={`text-xs sm:text-sm font-extrabold block truncate ${textColor}`} title={label}>
+        <span className={`text-xs sm:text-sm font-extrabold block truncate ${textColor}${underlineCls}`} title={label}>
           {label}
         </span>
       )}
@@ -344,10 +347,10 @@ function HeaderInput({ initialValue, onChange, className, placeholder, readOnly 
         if (readOnly) return;
         const newVal = e.target.value;
         setVal(newVal);
-        const composing = isComposingRef.current || Boolean((e.nativeEvent as any)?.isComposing);
-        if (!composing) {
-          emitVal(newVal);
+        if (newVal.includes('€')) {
+          isComposingRef.current = false;
         }
+        emitVal(newVal);
       }}
       onCompositionEnd={(e) => {
         isComposingRef.current = false;
@@ -399,11 +402,13 @@ function CellInput({ initialValue, onChange, onFocus, onBlur, dataRowIndex, data
   const isComposingRef = React.useRef(false);
   const lastEmittedRef = React.useRef(initialValue || "");
   const prevInitialRef = React.useRef(initialValue || "");
+  const valRef = React.useRef(val);
+  valRef.current = val;
   React.useEffect(() => {
     const incoming = initialValue || "";
     if (incoming === prevInitialRef.current) return;
     prevInitialRef.current = incoming;
-    if (!isFocusedRef.current && !isComposingRef.current && incoming !== lastEmittedRef.current) {
+    if (!isFocusedRef.current && !isComposingRef.current && incoming !== lastEmittedRef.current && incoming !== valRef.current) {
       setVal(incoming);
       lastEmittedRef.current = incoming;
     }
@@ -416,6 +421,8 @@ function CellInput({ initialValue, onChange, onFocus, onBlur, dataRowIndex, data
   const recalcSize = React.useCallback(() => {
     const el = textareaRef.current;
     if (!el) return;
+    if (isComposingRef.current) return;
+    const prevHeight = el.style.height;
     el.style.height = '';
     if (!val) {
       setDetectedLines(prev => (prev !== 1 ? 1 : prev));
@@ -432,10 +439,13 @@ function CellInput({ initialValue, onChange, onFocus, onBlur, dataRowIndex, data
     const contentHeight = Math.max(0, naturalScrollH - padTop - padBot);
     const estLines = Math.max(1, Math.round(contentHeight / lineHeightPx));
     setDetectedLines(prev => (prev !== estLines ? estLines : prev));
-    if (naturalScrollH > fullCellH + 2 || (estLines >= 2 && naturalScrollH > Math.ceil(lineHeightPx + padTop + padBot) + 2)) {
-      el.style.height = `${Math.max(naturalScrollH, fullCellH)}px`;
+    const nextHeight = (naturalScrollH > fullCellH + 2 || (estLines >= 2 && naturalScrollH > Math.ceil(lineHeightPx + padTop + padBot) + 2))
+      ? `${Math.max(naturalScrollH, fullCellH)}px`
+      : '';
+    if (nextHeight !== prevHeight) {
+      el.style.height = nextHeight;
     } else {
-      el.style.height = '';
+      el.style.height = prevHeight;
     }
   }, [val, baseLineHeight]);
   React.useLayoutEffect(() => {
@@ -460,8 +470,10 @@ function CellInput({ initialValue, onChange, onFocus, onBlur, dataRowIndex, data
     if (readOnly) return;
     const newVal = e.target.value;
     setVal(newVal);
-    const composing = isComposingRef.current || Boolean((e.nativeEvent as any)?.isComposing);
-    if (!composing && newVal !== lastEmittedRef.current) {
+    if (newVal.includes('€')) {
+      isComposingRef.current = false;
+    }
+    if (newVal !== lastEmittedRef.current) {
       lastEmittedRef.current = newVal;
       onChange(newVal);
     }
@@ -504,6 +516,7 @@ function CellInput({ initialValue, onChange, onFocus, onBlur, dataRowIndex, data
           lastEmittedRef.current = finalVal;
           onChange(finalVal);
         }
+        requestAnimationFrame(() => recalcSize());
       }}
       readOnly={readOnly}
       autoCorrect="off"
@@ -535,12 +548,14 @@ function ImeSafeInput({
   const isComposingRef = React.useRef(false);
   const lastEmittedRef = React.useRef(value || '');
   const prevExternalRef = React.useRef(value || '');
+  const localValRef = React.useRef(localVal);
+  localValRef.current = localVal;
 
   React.useEffect(() => {
     const incoming = value || '';
     if (incoming === prevExternalRef.current) return;
     prevExternalRef.current = incoming;
-    if (!isFocusedRef.current && !isComposingRef.current && incoming !== lastEmittedRef.current) {
+    if (!isFocusedRef.current && !isComposingRef.current && incoming !== lastEmittedRef.current && incoming !== localValRef.current) {
       setLocalVal(incoming);
       lastEmittedRef.current = incoming;
     }
@@ -560,8 +575,10 @@ function ImeSafeInput({
       onChange={(e) => {
         const nextVal = e.target.value;
         setLocalVal(nextVal);
-        const composing = isComposingRef.current || Boolean((e.nativeEvent as any)?.isComposing);
-        if (!composing && nextVal !== lastEmittedRef.current) {
+        if (nextVal.includes('€')) {
+          isComposingRef.current = false;
+        }
+        if (nextVal !== lastEmittedRef.current) {
           lastEmittedRef.current = nextVal;
           onChangeValue(nextVal);
         }
@@ -614,6 +631,8 @@ function ImeSafeTextarea({
   const lastEmittedRef = React.useRef(value || '');
   const prevExternalRef = React.useRef(value || '');
   const lastSyncRevRef = React.useRef(syncRevision);
+  const localValRef = React.useRef(localVal);
+  localValRef.current = localVal;
 
   React.useEffect(() => {
     const incoming = value || '';
@@ -626,7 +645,7 @@ function ImeSafeTextarea({
     }
     if (incoming === prevExternalRef.current) return;
     prevExternalRef.current = incoming;
-    if (!isFocusedRef.current && !isComposingRef.current && incoming !== lastEmittedRef.current) {
+    if (!isFocusedRef.current && !isComposingRef.current && incoming !== lastEmittedRef.current && incoming !== localValRef.current) {
       setLocalVal(incoming);
       lastEmittedRef.current = incoming;
     }
@@ -641,6 +660,8 @@ function ImeSafeTextarea({
     if (!autoResize) return;
     const el = textareaRef.current;
     if (!el) return;
+    if (isComposingRef.current) return;
+    const prevHeight = el.style.height;
     el.style.height = '';
     if (!localVal) {
       setDetectedLines(prev => (prev !== 1 ? 1 : prev));
@@ -657,10 +678,13 @@ function ImeSafeTextarea({
     const contentHeight = Math.max(0, naturalScrollH - padTop - padBot);
     const estLines = Math.max(1, Math.round(contentHeight / lineHeightPx));
     setDetectedLines(prev => (prev !== estLines ? estLines : prev));
-    if (naturalScrollH > fullCellH + 2 || (estLines >= 2 && naturalScrollH > Math.ceil(lineHeightPx + padTop + padBot) + 2)) {
-      el.style.height = `${Math.max(naturalScrollH, fullCellH)}px`;
+    const nextHeight = (naturalScrollH > fullCellH + 2 || (estLines >= 2 && naturalScrollH > Math.ceil(lineHeightPx + padTop + padBot) + 2))
+      ? `${Math.max(naturalScrollH, fullCellH)}px`
+      : '';
+    if (nextHeight !== prevHeight) {
+      el.style.height = nextHeight;
     } else {
-      el.style.height = '';
+      el.style.height = prevHeight;
     }
   }, [autoResize, localVal, baseLineHeight]);
 
@@ -684,8 +708,10 @@ function ImeSafeTextarea({
       onChange={(e) => {
         const nextVal = e.target.value;
         setLocalVal(nextVal);
-        const composing = isComposingRef.current || Boolean((e.nativeEvent as any)?.isComposing);
-        if (!composing && nextVal !== lastEmittedRef.current) {
+        if (nextVal.includes('€')) {
+          isComposingRef.current = false;
+        }
+        if (nextVal !== lastEmittedRef.current) {
           lastEmittedRef.current = nextVal;
           onChangeValue(nextVal);
         }
@@ -698,6 +724,7 @@ function ImeSafeTextarea({
           lastEmittedRef.current = finalVal;
           onChangeValue(finalVal);
         }
+        requestAnimationFrame(() => recalcSize());
       }}
       onBlur={(e) => {
         isFocusedRef.current = false;
@@ -930,6 +957,7 @@ export function Notepad() {
   const [notesColor, setNotesColor] = React.useState<string>(() => localStorage.getItem('grid_notepad_notes_color') || 'default');
   const [onlineNotesColor, setOnlineNotesColor] = React.useState<string>('default');
   const [onlineCustomLabels, setOnlineCustomLabels] = React.useState<string[]>([]);
+  const [onlineLabelHighlights, setOnlineLabelHighlights] = React.useState<Record<string, boolean>>({});
   const [onlineTrashItems, setOnlineTrashItems] = React.useState<TrashItem[]>([]);
   const [selectedTrashIds, setSelectedTrashIds] = React.useState<string[]>([]);
   const [trashSearchQuery, setTrashSearchQuery] = React.useState<string>('');
@@ -1026,12 +1054,13 @@ export function Notepad() {
     let bText = onlineBlueText;
     let sList = onlineSecretList;
     let labels = onlineCustomLabels;
+    let lHighlights: Record<string, boolean> = onlineLabelHighlights;
     let tItems = onlineTrashItems;
     let nColor = onlineNotesColor;
     let tColorMode = textColorMode;
     let pNotes: PadNote[] | null = null;
     if (!rawContent) {
-      return { documents: docs, blueText: bText, secretList: sList, customLabels: labels, trashItems: tItems, notesColor: nColor, textColorMode: tColorMode, padNotes: pNotes };
+      return { documents: docs, blueText: bText, secretList: sList, customLabels: labels, labelHighlights: lHighlights, trashItems: tItems, notesColor: nColor, textColorMode: tColorMode, padNotes: pNotes };
     }
     try {
       const parsed = JSON.parse(rawContent);
@@ -1042,6 +1071,7 @@ export function Notepad() {
         if (parsed.blueText !== undefined) bText = parsed.blueText;
         if (Array.isArray(parsed.secretList)) sList = parsed.secretList;
         if (Array.isArray(parsed.customLabels)) labels = parsed.customLabels;
+        if (parsed.labelHighlights && typeof parsed.labelHighlights === 'object') lHighlights = parsed.labelHighlights;
         if (Array.isArray(parsed.trashItems)) tItems = parsed.trashItems;
         if (parsed.notesColor !== undefined) nColor = parsed.notesColor;
         if (parsed.textColorMode !== undefined) tColorMode = parsed.textColorMode;
@@ -1049,7 +1079,7 @@ export function Notepad() {
       }
       labels = mergeAllLabels(Array.isArray(labels) ? labels : [], [], docs);
     } catch (e) {}
-    return { documents: docs, blueText: bText, secretList: sList, customLabels: labels, trashItems: Array.isArray(tItems) ? tItems : [], notesColor: nColor, textColorMode: tColorMode, padNotes: pNotes };
+    return { documents: docs, blueText: bText, secretList: sList, customLabels: labels, labelHighlights: lHighlights, trashItems: Array.isArray(tItems) ? tItems : [], notesColor: nColor, textColorMode: tColorMode, padNotes: pNotes };
   };
   const restoreDocsOmittedMedia = async (docsInput: GridDocument[]): Promise<GridDocument[]> => {
     const docsArr = Array.isArray(docsInput) ? docsInput : [];
@@ -1148,6 +1178,7 @@ export function Notepad() {
         blueText: parsed.blueText || '',
         secretList: Array.isArray(parsed.secretList) ? parsed.secretList : [],
         customLabels: mergeAllLabels(Array.isArray(parsed.customLabels) ? parsed.customLabels : [], [], finalDocs),
+        labelHighlights: parsed.labelHighlights && typeof parsed.labelHighlights === 'object' ? parsed.labelHighlights : {},
         trashItems: sanitizeTrashItems(Array.isArray(parsed.trashItems) ? parsed.trashItems : []),
         notesColor: parsed.notesColor || 'default',
         textColorMode: parsed.textColorMode || textColorMode,
@@ -1158,6 +1189,7 @@ export function Notepad() {
       setOnlineBlueText(parsed.blueText || '');
       setOnlineSecretList(Array.isArray(parsed.secretList) ? parsed.secretList : []);
       setOnlineCustomLabels(mergeAllLabels(Array.isArray(parsed.customLabels) ? parsed.customLabels : [], [], finalDocs));
+      setOnlineLabelHighlights(parsed.labelHighlights && typeof parsed.labelHighlights === 'object' ? parsed.labelHighlights : {});
       setOnlineTrashItems(sanitizeTrashItems(Array.isArray(parsed.trashItems) ? parsed.trashItems : []));
       setOnlineNotesColor(parsed.notesColor || 'default');
       if (openModal) {
@@ -1501,7 +1533,8 @@ export function Notepad() {
     customLabelsOverride?: string[],
     notesColorOverride?: string,
     textColorModeOverride?: string,
-    trashItemsOverride?: TrashItem[]
+    trashItemsOverride?: TrashItem[],
+    labelHighlightsOverride?: Record<string, boolean>
   ) => {
       const token = gistToken || localStorage.getItem('grid_notepad_gist_token');
       if (!token) {
@@ -1542,11 +1575,15 @@ export function Notepad() {
             return rowChanged ? { ...d, rows: nextRows } : d;
           });
           const finalPadNotes = Array.isArray(latestPadNotesRef.current) ? latestPadNotesRef.current : [];
+          const finalLabelHighlights = labelHighlightsOverride !== undefined
+            ? labelHighlightsOverride
+            : (isOnlineEditor ? onlineLabelHighlights : latestLabelHighlightsRef.current);
           let backupData: any = {
             documents: gistSafeDocs,
             blueText: finalBlueText,
             secretList: finalSecretList,
             customLabels: finalCustomLabels,
+            labelHighlights: finalLabelHighlights,
             trashItems: finalTrashItems,
             padNotes: finalPadNotes,
             notesColor: finalNotesColor,
@@ -1674,6 +1711,14 @@ export function Notepad() {
             setCustomLabels(restoredLabels);
             latestCustomLabelsRef.current = restoredLabels;
             localStorage.setItem('customLabels', JSON.stringify(restoredLabels));
+            if (parsedData.labelHighlights && typeof parsedData.labelHighlights === 'object') {
+              const cleanHighlights: Record<string, boolean> = {};
+              Object.entries(parsedData.labelHighlights).forEach(([k, v]) => { if (v) cleanHighlights[String(k)] = true; });
+              setOnlineLabelHighlights(cleanHighlights);
+              setLabelHighlights(cleanHighlights);
+              latestLabelHighlightsRef.current = cleanHighlights;
+              localStorage.setItem('grid_notepad_label_highlights', JSON.stringify(cleanHighlights));
+            }
             if (Array.isArray(parsedData.trashItems)) {
               restoredTrash = sanitizeTrashItems(parsedData.trashItems);
               setOnlineTrashItems(restoredTrash);
@@ -2177,13 +2222,13 @@ export function Notepad() {
     const year = d.getFullYear();
     const weekday = calWeekdaysFull[d.getDay()];
     return (
-      <span className="inline-flex items-center gap-0.5 font-semibold tabular-nums text-emerald-600 dark:text-emerald-400">
+      <span className="inline-flex items-center gap-px font-semibold tabular-nums text-emerald-600 dark:text-emerald-400 whitespace-nowrap">
         <span className="font-bold">{day}</span>
         <span className="opacity-40 font-normal">/</span>
         <span>{month}</span>
         <span className="opacity-40 font-normal">/</span>
         <span>{year}</span>
-        <span className="text-[10px] font-semibold ml-1 text-zinc-500 dark:text-zinc-400">· {weekday}</span>
+        <span className="text-[10px] font-semibold ml-0.5 text-zinc-500 dark:text-zinc-400">· {weekday}</span>
       </span>
     );
   };
@@ -2322,6 +2367,14 @@ export function Notepad() {
       return JSON.parse(localStorage.getItem('customLabels') || '[]');
     } catch (e) {
       return [];
+    }
+  });
+  const [labelHighlights, setLabelHighlights] = useState<Record<string, boolean>>(() => {
+    try {
+      const parsed = JSON.parse(localStorage.getItem('grid_notepad_label_highlights') || '{}');
+      return parsed && typeof parsed === 'object' ? parsed : {};
+    } catch {
+      return {};
     }
   });
   const TRASH_ITEMS_KEY = 'grid_notepad_trash_items';
@@ -2716,6 +2769,7 @@ export function Notepad() {
   const latestBlueTextRef = useRef<string>('');
   const latestSecretListRef = useRef<any[]>([]);
   const latestCustomLabelsRef = useRef<string[]>([]);
+  const latestLabelHighlightsRef = useRef<Record<string, boolean>>({});
   const latestTrashItemsRef = useRef<TrashItem[]>([]);
   const latestNotesColorRef = useRef<string>('default');
   const latestTextColorModeRef = useRef<string>('default');
@@ -2750,6 +2804,7 @@ export function Notepad() {
   latestColumnWidthsRef.current = columnWidths;
   latestActiveTagsRef.current = activeTags;
   latestCustomLabelsRef.current = customLabels;
+  latestLabelHighlightsRef.current = labelHighlights;
   latestTrashItemsRef.current = trashItems;
   latestNotesColorRef.current = notesColor;
   latestTextColorModeRef.current = textColorMode;
@@ -3095,10 +3150,27 @@ export function Notepad() {
     if (key === 'gray' || key === 'gri') return t('Gri', 'Gray');
     return name;
   };
-  const saveCustomLabels = (labels: string[], overrideDocs?: GridDocument[], triggerImmediateSync = true, trashOverride?: TrashItem[]) => {
+  const saveCustomLabels = (
+    labels: string[],
+    overrideDocs?: GridDocument[],
+    triggerImmediateSync = true,
+    trashOverride?: TrashItem[],
+    highlightsOverride?: Record<string, boolean>
+  ) => {
     setCustomLabels(labels);
     latestCustomLabelsRef.current = labels;
+    setOnlineCustomLabels(labels);
     localStorage.setItem('customLabels', JSON.stringify(labels));
+    if (highlightsOverride !== undefined) {
+      setLabelHighlights(highlightsOverride);
+      latestLabelHighlightsRef.current = highlightsOverride;
+      setOnlineLabelHighlights(highlightsOverride);
+      localStorage.setItem('grid_notepad_label_highlights', JSON.stringify(highlightsOverride));
+    }
+    if (overrideDocs !== undefined) {
+      setCloudDocs(overrideDocs);
+      cloudDocsRef.current = overrideDocs;
+    }
     markSettingsUpdated();
     markPendingSync();
 
@@ -3115,6 +3187,21 @@ export function Notepad() {
          trashOverride !== undefined ? trashOverride : latestTrashItemsRef.current
        );
     }
+  };
+  const toggleLabelHighlight = (labelName: string) => {
+    const clean = (labelName || '').trim();
+    if (!clean) return;
+    const prevMap = latestLabelHighlightsRef.current || {};
+    const nextVal = !prevMap[clean];
+    const nextMap: Record<string, boolean> = { ...prevMap };
+    if (nextVal) nextMap[clean] = true;
+    else delete nextMap[clean];
+    saveCustomLabels(latestCustomLabelsRef.current, latestDocsRef.current, true, undefined, nextMap);
+    showToast(
+      nextVal
+        ? t(`✓ Etiketa "${clean}" u nënvizua dhe u ngarkua në Cloud!`, `✓ Label "${clean}" underlined and synced to Cloud!`)
+        : t(`✓ Nënvizimi u hoq nga "${clean}" dhe u sinkronizua!`, `✓ Underline removed from "${clean}" and synced!`)
+    );
   };
   const isDocAllDeletedX = (doc: any) => {
     if (!doc || !doc.rows || doc.rows.length === 0) return false;
@@ -3297,6 +3384,11 @@ const handleSaveLabelModal = () => {
     }
     const updatedLabels = [...customLabels];
     updatedLabels[index] = trimmed;
+    const nextHighlights: Record<string, boolean> = { ...(latestLabelHighlightsRef.current || {}) };
+    if (nextHighlights[oldName]) {
+      delete nextHighlights[oldName];
+      nextHighlights[trimmed] = true;
+    }
     const nowIso = new Date().toISOString();
     // Update all documents that had the old tag to have the new tag with fresh updatedAt
     const updatedDocs = documents.map(doc => {
@@ -3312,7 +3404,7 @@ const handleSaveLabelModal = () => {
     setDocuments(updatedDocs);
     latestDocsRef.current = updatedDocs;
     saveDocsLocalSafe(updatedDocs);
-    saveCustomLabels(updatedLabels, updatedDocs, true);
+    saveCustomLabels(updatedLabels, updatedDocs, true, undefined, nextHighlights);
     
     if (selectedLabelFolder === oldName) {
        setSelectedLabelFolder(trimmed);
@@ -3342,6 +3434,8 @@ const handleSaveLabelModal = () => {
            
            setDocuments(updatedDocs);
            latestDocsRef.current = updatedDocs;
+           setCloudDocs(updatedDocs);
+           cloudDocsRef.current = updatedDocs;
            saveDocsLocalSafe(updatedDocs);
            triggerAutoSave(updatedDocs, true);
            setTransferringInfo(null);
@@ -3364,6 +3458,8 @@ const handleSaveLabelModal = () => {
      const trashEntry = buildTrashFromLabel(labelName, affectedDocIds);
      const nextTrash = appendItemsToTrashState([trashEntry]);
      const updatedLabels = customLabels.filter((_, i) => i !== index);
+     const nextHighlights: Record<string, boolean> = { ...(latestLabelHighlightsRef.current || {}) };
+     delete nextHighlights[labelName];
      const nowIso = new Date().toISOString();
      // Remove tag from documents with fresh updatedAt
      const updatedDocs = documents.map(doc => {
@@ -3379,7 +3475,7 @@ const handleSaveLabelModal = () => {
      setDocuments(updatedDocs);
      latestDocsRef.current = updatedDocs;
      saveDocsLocalSafe(updatedDocs);
-     saveCustomLabels(updatedLabels, updatedDocs, true, nextTrash);
+     saveCustomLabels(updatedLabels, updatedDocs, true, nextTrash, nextHighlights);
      if (selectedLabelFolder === labelName) {
         setSelectedLabelFolder(null);
      }
@@ -3521,13 +3617,24 @@ const handleSaveLabelModal = () => {
            }
         });
         if (Array.isArray(remote.customLabels)) {
-           remote.customLabels.forEach((lbl: string) => {
-              if (lbl && !mergedLabels.includes(lbl)) {
-                 if (!localIsDirty || remoteIsNewer) {
-                    mergedLabels.push(lbl);
-                 }
+           if (remoteIsNewer || mergedLabels.length === 0) {
+              if (remoteIsNewer && !localIsDirty) {
+                 mergedLabels = remote.customLabels.filter((lbl: any) => typeof lbl === 'string' && lbl.trim());
+              } else {
+                 remote.customLabels.forEach((lbl: string) => {
+                    if (lbl && !mergedLabels.includes(lbl)) {
+                       mergedLabels.push(lbl);
+                    }
+                 });
               }
-           });
+           }
+        }
+        if (remote.labelHighlights && typeof remote.labelHighlights === 'object' && (remoteIsNewer || Object.keys(latestLabelHighlightsRef.current || {}).length === 0)) {
+           const nextHl: Record<string, boolean> = {};
+           Object.entries(remote.labelHighlights).forEach(([k, v]) => { if (v) nextHl[String(k)] = true; });
+           setLabelHighlights(nextHl);
+           latestLabelHighlightsRef.current = nextHl;
+           localStorage.setItem('grid_notepad_label_highlights', JSON.stringify(nextHl));
         }
         if (Array.isArray(remote.trashItems)) {
            if (remoteIsNewer && pendingTrashDeletes.length === 0) {
@@ -3795,7 +3902,8 @@ const handleSaveLabelModal = () => {
      customLabelsVal: string[],
      notesColorVal: string,
      textColorModeVal: string,
-     trashItemsVal: TrashItem[] = latestTrashItemsRef.current
+     trashItemsVal: TrashItem[] = latestTrashItemsRef.current,
+     labelHighlightsVal: Record<string, boolean> = latestLabelHighlightsRef.current || {}
   ) => {
      let safeSecrets: any[] = [];
      try {
@@ -3805,6 +3913,13 @@ const handleSaveLabelModal = () => {
      }
      if (safeSecrets.length > 1000) safeSecrets = safeSecrets.slice(0, 1000);
      let safeTrash = sanitizeTrashItems(trashItemsVal);
+     const cleanHighlights: Record<string, boolean> = {};
+     if (labelHighlightsVal && typeof labelHighlightsVal === 'object') {
+        Object.entries(labelHighlightsVal).forEach(([k, v]) => {
+           const cleanKey = String(k || '').trim();
+           if (cleanKey && v) cleanHighlights[cleanKey] = true;
+        });
+     }
      const rawPin = localStorage.getItem('grid_notepad_pin') || null;
      const rawGistToken = gistToken || localStorage.getItem('grid_notepad_gist_token') || null;
      const rawGistId = gistId || localStorage.getItem('grid_notepad_gist_id') || null;
@@ -3828,6 +3943,7 @@ const handleSaveLabelModal = () => {
         blueText: typeof blueTextVal === 'string' ? blueTextVal.slice(0, 100000) : '',
         secretList: secretsList,
         customLabels: Array.isArray(customLabelsVal) ? customLabelsVal.filter((v) => v != null).map((v) => String(v).slice(0, 200)).slice(0, 500) : [],
+        labelHighlights: cleanHighlights,
         trashItems: trashList,
         padNotes: padsList,
         notesColor: notesColorVal || 'default',
@@ -4053,7 +4169,8 @@ const handleSaveLabelModal = () => {
      notesColorVal: string = latestNotesColorRef.current,
      textColorModeVal: string = latestTextColorModeRef.current,
      trashItemsVal: TrashItem[] = latestTrashItemsRef.current,
-     silent = true
+     silent = true,
+     labelHighlightsVal: Record<string, boolean> = latestLabelHighlightsRef.current || {}
   ): Promise<boolean> => {
      const runTask = async (): Promise<boolean> => {
      if (!auth.currentUser || !navigator.onLine) return false;
@@ -4221,7 +4338,8 @@ const handleSaveLabelModal = () => {
         customLabelsVal,
         notesColorVal,
         textColorModeVal,
-        trashItemsVal
+        trashItemsVal,
+        labelHighlightsVal
      );
      const nextSettingsSig = computeFirestoreSettingsSig(settingsPayload);
      let prevSettingsSig = '';
@@ -5520,7 +5638,8 @@ const exportChatResponseToPdf = async () => {
      customLabelsToSync?: string[],
      deletedDocIds: string[] = [],
      notesColorToSync?: string,
-     trashItemsToSync?: TrashItem[]
+     trashItemsToSync?: TrashItem[],
+     labelHighlightsToSync?: Record<string, boolean>
    ) => {
     const seqAtStart = syncChangeSeqRef.current;
     const isOnlineMode = onlineViewRef.current === 'cloud' || onlineViewRef.current === 'gist';
@@ -5530,6 +5649,7 @@ const exportChatResponseToPdf = async () => {
     const finalSecretList = secretListToSync !== undefined ? secretListToSync : (isOnlineMode ? onlineSecretList : latestSecretListRef.current);
     const rawCustomLabels = customLabelsToSync !== undefined ? customLabelsToSync : (isOnlineMode ? onlineCustomLabels : latestCustomLabelsRef.current);
     const finalCustomLabels = mergeAllLabels(rawCustomLabels, [], docs);
+    const finalLabelHighlights = labelHighlightsToSync !== undefined ? labelHighlightsToSync : (isOnlineMode ? onlineLabelHighlights : (latestLabelHighlightsRef.current || {}));
     const rawTrashItems = trashItemsToSync !== undefined ? trashItemsToSync : (isOnlineMode ? onlineTrashItems : latestTrashItemsRef.current);
     const finalTrashItems = sanitizeTrashItems(rawTrashItems);
     const finalNotesColor = notesColorToSync !== undefined ? notesColorToSync : (isOnlineMode ? onlineNotesColor : latestNotesColorRef.current);
@@ -5562,6 +5682,7 @@ const exportChatResponseToPdf = async () => {
       blueText: finalBlueText,
       secretList: finalSecretList,
       customLabels: finalCustomLabels,
+      labelHighlights: finalLabelHighlights,
       trashItems: finalTrashItems,
       padNotes: finalPadNotes,
       notesColor: finalNotesColor,
@@ -5619,7 +5740,8 @@ const exportChatResponseToPdf = async () => {
         finalNotesColor,
         finalTextColorMode,
         finalTrashItems,
-        silent
+        silent,
+        finalLabelHighlights
       );
     }
 
@@ -5629,7 +5751,7 @@ const exportChatResponseToPdf = async () => {
     if (activeGistToken && activeGistId && !isGistSyncingRef.current) {
         isGistSyncingRef.current = true;
         try {
-           gistSuccess = await saveToGist(docs, true, finalBlueText, finalSecretList, finalCustomLabels, finalNotesColor, finalTextColorMode, finalTrashItems);
+           gistSuccess = await saveToGist(docs, true, finalBlueText, finalSecretList, finalCustomLabels, finalNotesColor, finalTextColorMode, finalTrashItems, finalLabelHighlights);
         } finally {
            isGistSyncingRef.current = false;
         }
@@ -5664,6 +5786,7 @@ const exportChatResponseToPdf = async () => {
         blueText?: string;
         secretList?: any[];
         customLabels?: string[];
+        labelHighlights?: Record<string, boolean>;
         trashItems?: TrashItem[];
         notesColor?: string;
      },
@@ -5680,6 +5803,7 @@ const exportChatResponseToPdf = async () => {
      const finalLabels = overrides?.customLabels !== undefined
         ? rawFinalLabels
         : mergeAllLabels(rawFinalLabels, [], finalDocs);
+     const finalLabelHighlights = overrides?.labelHighlights !== undefined ? overrides.labelHighlights : onlineLabelHighlights;
      const finalTrash = sanitizeTrashItems(overrides?.trashItems !== undefined ? overrides.trashItems : onlineTrashItems);
      const finalNotesColor = overrides?.notesColor !== undefined ? overrides.notesColor : onlineNotesColor;
 
@@ -5690,6 +5814,7 @@ const exportChatResponseToPdf = async () => {
            blueText: finalBlue,
            secretList: finalSecrets,
            customLabels: finalLabels,
+           labelHighlights: finalLabelHighlights,
            trashItems: finalTrash,
            padNotes: Array.isArray(latestPadNotesRef.current) ? latestPadNotesRef.current : [],
            notesColor: finalNotesColor,
@@ -5707,13 +5832,14 @@ const exportChatResponseToPdf = async () => {
            finalLabels,
            deletedDocIds,
            finalNotesColor,
-           finalTrash
+           finalTrash,
+           finalLabelHighlights
         );
         // Ensure Gist is also updated even if syncWithGoogleCloud skipped or is in Gist mode
         const activeGistToken = gistToken || localStorage.getItem('grid_notepad_gist_token');
         const activeGistId = gistId || localStorage.getItem('grid_notepad_gist_id');
         if (onlineView === 'gist' && activeGistToken && !activeGistId) {
-           await saveToGist(finalDocs, true, finalBlue, finalSecrets, finalLabels, finalNotesColor, textColorMode, finalTrash);
+           await saveToGist(finalDocs, true, finalBlue, finalSecrets, finalLabels, finalNotesColor, textColorMode, finalTrash, finalLabelHighlights);
         }
         if (!silent) {
            if (cloudOk) {
@@ -5736,6 +5862,7 @@ const exportChatResponseToPdf = async () => {
         blueText?: string;
         secretList?: any[];
         customLabels?: string[];
+        labelHighlights?: Record<string, boolean>;
         trashItems?: TrashItem[];
         notesColor?: string;
      }
@@ -6570,6 +6697,15 @@ const exportChatResponseToPdf = async () => {
        const rawServerLabels = Array.isArray(serverJson?.customLabels) ? serverJson.customLabels : [];
        const rawFsLabels = Array.isArray(fsRemote.settings?.customLabels) ? fsRemote.settings.customLabels : [];
        setOnlineCustomLabels(mergeAllLabels(rawFsLabels, rawServerLabels, mergedOnlineDocs));
+       const mergedHl: Record<string, boolean> = {};
+       const addHl = (obj: any) => {
+          if (obj && typeof obj === 'object') {
+             Object.entries(obj).forEach(([k, v]) => { if (v) mergedHl[String(k)] = true; });
+          }
+       };
+       addHl(serverJson?.labelHighlights);
+       addHl(fsRemote.settings?.labelHighlights);
+       setOnlineLabelHighlights(mergedHl);
        const serverTrash = Array.isArray(serverJson?.trashItems) ? serverJson.trashItems : [];
        const fsTrash = Array.isArray(fsRemote.settings?.trashItems) ? fsRemote.settings.trashItems : [];
        const mergedOnlineTrash = mergeTrashItems(fsTrash, serverTrash, getPendingTrashDeletes());
@@ -6579,6 +6715,7 @@ const exportChatResponseToPdf = async () => {
        setOnlineBlueText('');
        setOnlineSecretList([]);
        setOnlineCustomLabels(mergeAllLabels([], [], mergedOnlineDocs));
+       setOnlineLabelHighlights({});
        setOnlineTrashItems(latestTrashItemsRef.current);
        setOnlineNotesColor('default');
     }
@@ -6607,12 +6744,19 @@ const exportChatResponseToPdf = async () => {
         return;
      }
      const restoredLabels = mergeAllLabels(onlineCustomLabels, [], cloudDocs);
+     const restoredHighlights: Record<string, boolean> = {};
+     Object.entries(onlineLabelHighlights || {}).forEach(([k, v]) => {
+        if (v) restoredHighlights[String(k)] = true;
+     });
      setDocuments(cloudDocs);
      latestDocsRef.current = cloudDocs;
      saveDocsLocalSafe(cloudDocs);
      setCustomLabels(restoredLabels);
      latestCustomLabelsRef.current = restoredLabels;
      localStorage.setItem('customLabels', JSON.stringify(restoredLabels));
+     setLabelHighlights(restoredHighlights);
+     latestLabelHighlightsRef.current = restoredHighlights;
+     localStorage.setItem('grid_notepad_label_highlights', JSON.stringify(restoredHighlights));
      const restoredTrash = sanitizeTrashItems(onlineTrashItems);
      setTrashItems(restoredTrash);
      latestTrashItemsRef.current = restoredTrash;
@@ -6859,10 +7003,23 @@ const exportChatResponseToPdf = async () => {
                      localStorage.setItem('grid_notepad_gemini_key', data.geminiKey);
                   }
                   if (Array.isArray(data.customLabels)) {
-                     const mergedLbls = Array.from(new Set([...latestCustomLabelsRef.current, ...data.customLabels]));
-                     setCustomLabels(mergedLbls);
-                     latestCustomLabelsRef.current = mergedLbls;
-                     localStorage.setItem('customLabels', JSON.stringify(mergedLbls));
+                     const nextLbls = remoteTime > localTime || latestCustomLabelsRef.current.length === 0
+                        ? mergeAllLabels(data.customLabels, [], latestDocsRef.current)
+                        : mergeAllLabels(latestCustomLabelsRef.current, data.customLabels, latestDocsRef.current);
+                     setCustomLabels(nextLbls);
+                     latestCustomLabelsRef.current = nextLbls;
+                     setOnlineCustomLabels(nextLbls);
+                     localStorage.setItem('customLabels', JSON.stringify(nextLbls));
+                  }
+                  if (data.labelHighlights && typeof data.labelHighlights === 'object') {
+                     const nextHl: Record<string, boolean> = {};
+                     Object.entries(data.labelHighlights).forEach(([k, v]) => { if (v) nextHl[String(k)] = true; });
+                     setLabelHighlights(nextHl);
+                     latestLabelHighlightsRef.current = nextHl;
+                     setOnlineLabelHighlights(nextHl);
+                     try {
+                        localStorage.setItem('grid_notepad_label_highlights', JSON.stringify(nextHl));
+                     } catch {}
                   }
                   if (Array.isArray(data.trashItems)) {
                      const mergedTrash = mergeTrashItems(latestTrashItemsRef.current, data.trashItems, getPendingTrashDeletes());
@@ -8699,6 +8856,16 @@ const exportChatResponseToPdf = async () => {
     setDocuments(updatedDocs);
     latestDocsRef.current = updatedDocs;
     saveDocsLocalSafe(updatedDocs);
+    if (Array.isArray(initialTags) && initialTags.length > 0) {
+       const mergedTags = mergeAllLabels(latestCustomLabelsRef.current, initialTags, updatedDocs);
+       setCustomLabels(mergedTags);
+       latestCustomLabelsRef.current = mergedTags;
+       setOnlineCustomLabels(mergedTags);
+       localStorage.setItem('customLabels', JSON.stringify(mergedTags));
+       setCloudDocs(updatedDocs);
+       cloudDocsRef.current = updatedDocs;
+       markSettingsUpdated();
+    }
     triggerAutoSave(updatedDocs, true);
   };
   const openDocument = (doc: GridDocument) => {
@@ -10824,10 +10991,27 @@ const exportChatResponseToPdf = async () => {
        showToast(t("Duke përgatitur skedarin JSON...", "Preparing JSON backup file..."));
        await new Promise(resolve => setTimeout(resolve, 25));
        const docsSnapshot = latestDocsRef.current.length > 0 ? latestDocsRef.current : documents;
+       const exportedLabels = mergeAllLabels(latestCustomLabelsRef.current, [], docsSnapshot);
+       const exportedHighlights: Record<string, boolean> = {};
+       Object.entries(latestLabelHighlightsRef.current || {}).forEach(([k, v]) => {
+          if (v && String(k || '').trim()) exportedHighlights[String(k).trim()] = true;
+       });
+       const labelsBackup = exportedLabels.map(lbl => ({
+          name: lbl,
+          underlined: Boolean(exportedHighlights[lbl]),
+          lists: docsSnapshot
+             .filter(d => Array.isArray(d.tags) && d.tags.includes(lbl))
+             .map(d => ({ id: d.id, title: d.title, updatedAt: d.updatedAt }))
+       }));
        const backupData = {
+          version: '1.5.7',
+          exportedAt: new Date().toISOString(),
           documents: docsSnapshot,
-          customLabels: latestCustomLabelsRef.current,
+          customLabels: exportedLabels,
+          labelHighlights: exportedHighlights,
+          labelsBackup,
           trashItems: latestTrashItemsRef.current,
+          padNotes: latestPadNotesRef.current,
           blueText: latestBlueTextRef.current,
           secretList: latestSecretListRef.current,
           notesColor: latestNotesColorRef.current,
@@ -10855,6 +11039,8 @@ const exportChatResponseToPdf = async () => {
            
            let docsToSet: GridDocument[] = [];
            let labelsToSet: string[] = [];
+           const highlightsToSet: Record<string, boolean> = {};
+           let hasHighlightsPayload = false;
            
            if (Array.isArray(parsed)) {
               docsToSet = parsed;
@@ -10864,6 +11050,25 @@ const exportChatResponseToPdf = async () => {
               }
               if (Array.isArray(parsed.customLabels)) {
                  labelsToSet = parsed.customLabels;
+              }
+              if (Array.isArray(parsed.labelsBackup)) {
+                 const backupNames = parsed.labelsBackup
+                    .map((entry: any) => (entry && typeof entry.name === 'string' ? entry.name.trim() : ''))
+                    .filter(Boolean);
+                 labelsToSet = mergeAllLabels(labelsToSet, backupNames, docsToSet);
+                 parsed.labelsBackup.forEach((entry: any) => {
+                    if (entry && typeof entry.name === 'string' && entry.underlined) {
+                       highlightsToSet[entry.name.trim()] = true;
+                       hasHighlightsPayload = true;
+                    }
+                 });
+              }
+              if (parsed.labelHighlights && typeof parsed.labelHighlights === 'object') {
+                 hasHighlightsPayload = true;
+                 Object.entries(parsed.labelHighlights).forEach(([k, v]) => {
+                    const cleanK = String(k || '').trim();
+                    if (cleanK && v) highlightsToSet[cleanK] = true;
+                 });
               }
               if (Array.isArray(parsed.trashItems)) {
                  const restoredTrash = sanitizeTrashItems(parsed.trashItems);
@@ -10902,10 +11107,18 @@ const exportChatResponseToPdf = async () => {
            }
            
            if (docsToSet.length > 0 && docsToSet[0].id && docsToSet[0].rows) {
-              if (labelsToSet.length > 0) {
-                 setCustomLabels(labelsToSet);
-                 latestCustomLabelsRef.current = labelsToSet;
-                 localStorage.setItem('customLabels', JSON.stringify(labelsToSet));
+              const finalLabels = mergeAllLabels(labelsToSet, [], docsToSet);
+              if (finalLabels.length > 0) {
+                 setCustomLabels(finalLabels);
+                 latestCustomLabelsRef.current = finalLabels;
+                 setOnlineCustomLabels(finalLabels);
+                 localStorage.setItem('customLabels', JSON.stringify(finalLabels));
+              }
+              if (hasHighlightsPayload) {
+                 setLabelHighlights(highlightsToSet);
+                 latestLabelHighlightsRef.current = highlightsToSet;
+                 setOnlineLabelHighlights(highlightsToSet);
+                 localStorage.setItem('grid_notepad_label_highlights', JSON.stringify(highlightsToSet));
               }
               markSettingsUpdated();
               setDocuments(docsToSet);
@@ -11070,6 +11283,7 @@ const exportChatResponseToPdf = async () => {
                     localStorage.removeItem('grid_notepad_blue');
                     localStorage.removeItem('grid_notepad_secret_list');
                     localStorage.removeItem('customLabels');
+                    localStorage.removeItem('grid_notepad_label_highlights');
                     localStorage.removeItem('grid_notepad_pads_v1');
                     localStorage.removeItem(TRASH_ITEMS_KEY);
                     localStorage.removeItem(PENDING_TRASH_DELETES_KEY);
@@ -11085,13 +11299,17 @@ const exportChatResponseToPdf = async () => {
                     setActivePadId(null);
                     setCustomLabels([]);
                     latestCustomLabelsRef.current = [];
+                    setLabelHighlights({});
+                    latestLabelHighlightsRef.current = {};
+                    setOnlineCustomLabels([]);
+                    setOnlineLabelHighlights({});
                     setTrashItems([]);
                     latestTrashItemsRef.current = [];
                     setOnlineTrashItems([]);
                     setCloudDocs([]);
                     markSettingsUpdated();
                     markPendingSync(delIds);
-                    await syncWithGoogleCloud([], true, '', [], [], delIds, 'default', []);
+                    await syncWithGoogleCloud([], true, '', [], [], delIds, 'default', [], {});
                     showToast(t('Të gjitha të dhënat u fshinë nga pajisja dhe Cloud.', 'All data deleted from device and Cloud.'));
                 }
             });
@@ -11105,12 +11323,28 @@ const exportChatResponseToPdf = async () => {
                showToast(t("Duke përgatitur eksportimin JSON...", "Preparing JSON export..."));
                await new Promise(resolve => setTimeout(resolve, 25));
                const docsSnapshot = latestDocsRef.current.length > 0 ? latestDocsRef.current : documents;
+               const exportedLabels = mergeAllLabels(latestCustomLabelsRef.current, [], docsSnapshot);
+               const exportedHighlights: Record<string, boolean> = {};
+               Object.entries(latestLabelHighlightsRef.current || {}).forEach(([k, v]) => {
+                  if (v && String(k || '').trim()) exportedHighlights[String(k).trim()] = true;
+               });
+               const labelsBackup = exportedLabels.map(lbl => ({
+                  name: lbl,
+                  underlined: Boolean(exportedHighlights[lbl]),
+                  lists: docsSnapshot
+                     .filter(d => Array.isArray(d.tags) && d.tags.includes(lbl))
+                     .map(d => ({ id: d.id, title: d.title, updatedAt: d.updatedAt }))
+               }));
                const data = {
+                   version: '1.5.7',
+                   exportedAt: new Date().toISOString(),
                    documents: docsSnapshot,
                    blueText: latestBlueTextRef.current,
                    secretList: latestSecretListRef.current,
                    padNotes: latestPadNotesRef.current,
-                   customLabels: latestCustomLabelsRef.current,
+                   customLabels: exportedLabels,
+                   labelHighlights: exportedHighlights,
+                   labelsBackup,
                    trashItems: latestTrashItemsRef.current,
                    notesColor: latestNotesColorRef.current,
                    textColorMode: latestTextColorModeRef.current,
@@ -11148,6 +11382,7 @@ const exportChatResponseToPdf = async () => {
                       let nextBlue = latestBlueTextRef.current;
                       let nextSecrets = latestSecretListRef.current;
                       let nextLabels = latestCustomLabelsRef.current;
+                      let nextLabelHighlights = latestLabelHighlightsRef.current || {};
                       let nextTrash = latestTrashItemsRef.current;
                       let nextNotesColor = latestNotesColorRef.current;
                       if (jsonData.documents) {
@@ -11168,11 +11403,37 @@ const exportChatResponseToPdf = async () => {
                           setSecretList(jsonData.secretList);
                           latestSecretListRef.current = jsonData.secretList;
                       }
-                      if (jsonData.customLabels !== undefined) {
-                          nextLabels = jsonData.customLabels;
-                          localStorage.setItem('customLabels', JSON.stringify(jsonData.customLabels));
-                          setCustomLabels(jsonData.customLabels);
-                          latestCustomLabelsRef.current = jsonData.customLabels;
+                      if (jsonData.customLabels !== undefined || Array.isArray(jsonData.labelsBackup)) {
+                          const rawLbls = Array.isArray(jsonData.customLabels) ? jsonData.customLabels : [];
+                          const backupLbls = Array.isArray(jsonData.labelsBackup)
+                             ? jsonData.labelsBackup.map((entry: any) => (entry && typeof entry.name === 'string' ? entry.name.trim() : '')).filter(Boolean)
+                             : [];
+                          nextLabels = mergeAllLabels(rawLbls, backupLbls, nextDocs);
+                          localStorage.setItem('customLabels', JSON.stringify(nextLabels));
+                          setCustomLabels(nextLabels);
+                          latestCustomLabelsRef.current = nextLabels;
+                          setOnlineCustomLabels(nextLabels);
+                      }
+                      if ((jsonData.labelHighlights && typeof jsonData.labelHighlights === 'object') || Array.isArray(jsonData.labelsBackup)) {
+                          const importedHl: Record<string, boolean> = {};
+                          if (Array.isArray(jsonData.labelsBackup)) {
+                             jsonData.labelsBackup.forEach((entry: any) => {
+                                if (entry && typeof entry.name === 'string' && entry.underlined) {
+                                   importedHl[entry.name.trim()] = true;
+                                }
+                             });
+                          }
+                          if (jsonData.labelHighlights && typeof jsonData.labelHighlights === 'object') {
+                             Object.entries(jsonData.labelHighlights).forEach(([k, v]) => {
+                                const cleanK = String(k || '').trim();
+                                if (cleanK && v) importedHl[cleanK] = true;
+                             });
+                          }
+                          nextLabelHighlights = importedHl;
+                          localStorage.setItem('grid_notepad_label_highlights', JSON.stringify(importedHl));
+                          setLabelHighlights(importedHl);
+                          latestLabelHighlightsRef.current = importedHl;
+                          setOnlineLabelHighlights(importedHl);
                       }
                       if (Array.isArray(jsonData.trashItems)) {
                           nextTrash = sanitizeTrashItems(jsonData.trashItems);
@@ -11209,7 +11470,7 @@ const exportChatResponseToPdf = async () => {
                       markSettingsUpdated();
                       markPendingSync();
                       if (navigator.onLine) {
-                          syncWithGoogleCloud(nextDocs, true, nextBlue, nextSecrets, nextLabels, getPendingDeletes(), nextNotesColor, nextTrash);
+                          syncWithGoogleCloud(nextDocs, true, nextBlue, nextSecrets, nextLabels, getPendingDeletes(), nextNotesColor, nextTrash, nextLabelHighlights);
                       }
                       showToast(t('Të dhënat u importuan dhe po sinkronizohen!', 'Data imported and syncing!'));
                   }
@@ -13898,8 +14159,13 @@ const exportChatResponseToPdf = async () => {
                                     const currentDocs = latestDocsRef.current.length > 0 ? latestDocsRef.current : documents;
                                     const localLabels = mergeAllLabels(latestCustomLabelsRef.current, [], currentDocs);
                                     const nextMerged = mergeAllLabels(onlineCustomLabels, localLabels, docsList);
+                                    const mergedHighlights: Record<string, boolean> = { ...(onlineLabelHighlights || {}) };
+                                    Object.entries(latestLabelHighlightsRef.current || {}).forEach(([k, v]) => {
+                                       if (v) mergedHighlights[String(k)] = true;
+                                    });
                                     setOnlineCustomLabels(nextMerged);
-                                    await syncOnlineManualSnapshot({ customLabels: nextMerged, docs: docsList }, [], false);
+                                    setOnlineLabelHighlights(mergedHighlights);
+                                    await syncOnlineManualSnapshot({ customLabels: nextMerged, labelHighlights: mergedHighlights, docs: docsList }, [], false);
                                  }}
                                  className="px-3 py-1.5 bg-blue-600 hover:bg-blue-500 text-white text-xs font-bold rounded-lg transition-all active:scale-95 flex items-center gap-1 shadow-sm"
                               >
@@ -13908,6 +14174,10 @@ const exportChatResponseToPdf = async () => {
                               <button
                                  onClick={() => {
                                     const mergedLocalLabels = mergeAllLabels(latestCustomLabelsRef.current, allOnlineLabels, docsList);
+                                    const mergedLocalHl: Record<string, boolean> = { ...(latestLabelHighlightsRef.current || {}) };
+                                    Object.entries(onlineLabelHighlights || {}).forEach(([k, v]) => {
+                                       if (v) mergedLocalHl[String(k)] = true;
+                                    });
                                     const updatedDocs = documents.map(d => {
                                        const matchOnline = docsList.find(od => od.id === d.id);
                                        if (matchOnline && Array.isArray(matchOnline.tags) && matchOnline.tags.length > 0) {
@@ -13922,6 +14192,9 @@ const exportChatResponseToPdf = async () => {
                                     setCustomLabels(mergedLocalLabels);
                                     latestCustomLabelsRef.current = mergedLocalLabels;
                                     localStorage.setItem('customLabels', JSON.stringify(mergedLocalLabels));
+                                    setLabelHighlights(mergedLocalHl);
+                                    latestLabelHighlightsRef.current = mergedLocalHl;
+                                    localStorage.setItem('grid_notepad_label_highlights', JSON.stringify(mergedLocalHl));
                                     showToast(t(`⚡ U rikthyen ${allOnlineLabels.length} etiketa në Notebook!`, `⚡ Restored ${allOnlineLabels.length} labels to Notebook!`));
                                  }}
                                  className="px-3 py-1.5 bg-orange-600 hover:bg-orange-500 text-white text-xs font-bold rounded-lg transition-all active:scale-95 flex items-center gap-1 shadow-sm"
@@ -14026,42 +14299,67 @@ const exportChatResponseToPdf = async () => {
                               <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-3">
                                  {allOnlineLabels.map(lbl => {
                                     const matchingCount = docsList.filter(d => (d.tags || []).includes(lbl)).length;
+                                    const isUnderlinedOnline = Boolean(onlineLabelHighlights?.[lbl]);
                                     return (
                                        <div
                                           key={lbl}
                                           onClick={() => setOnlineSelectedLabel(lbl)}
                                           className={`p-3.5 rounded-xl border flex items-center justify-between gap-2 cursor-pointer transition-all hover:border-indigo-500/50 ${
+                                             isUnderlinedOnline ? 'border-amber-500/60 ring-1 ring-amber-500/25 ' : ''
+                                          }${
                                              isDark ? "bg-zinc-950/60 border-zinc-800" : "bg-white border-zinc-200"
                                           }`}
                                        >
                                           <div className="flex items-center gap-2 min-w-0">
-                                             <span className={`px-2 py-0.5 rounded-md text-xs font-bold border truncate ${getTagColors(lbl)}`}>
+                                             <span className={`px-2 py-0.5 rounded-md text-xs font-bold border truncate ${getTagColors(lbl)} ${isUnderlinedOnline ? 'underline decoration-2 decoration-amber-500 underline-offset-2' : ''}`}>
                                                 #{lbl}
                                              </span>
                                              <span className="text-[11px] font-bold text-zinc-500 shrink-0">
                                                 {matchingCount} {t('lista', 'lists')}
                                              </span>
                                           </div>
-                                          <button
-                                             onClick={async (e) => {
-                                                e.stopPropagation();
-                                                const matchingDocIds = docsList.filter(d => (d.tags || []).includes(lbl)).map(d => d.id);
-                                                const nextTrash = appendItemsToTrashState([buildTrashFromLabel(lbl, matchingDocIds)]);
-                                                const nextLabels = allOnlineLabels.filter(item => item !== lbl);
-                                                const nextDocs = docsList.map(d =>
-                                                   (d.tags || []).includes(lbl)
-                                                      ? { ...d, tags: (d.tags || []).filter(tItem => tItem !== lbl), updatedAt: new Date().toISOString() }
-                                                      : d
-                                                );
-                                                setOnlineCustomLabels(nextLabels);
-                                                if (!isGist) setCloudDocs(nextDocs);
-                                                await syncOnlineManualSnapshot({ docs: nextDocs, customLabels: nextLabels, trashItems: nextTrash }, [], false);
-                                             }}
-                                             className="p-1.5 rounded-lg bg-red-500/15 hover:bg-red-600 text-red-500 hover:text-white border border-red-500/30 transition-colors shrink-0"
-                                             title={t('Fshi etiketën online', 'Delete online label')}
-                                          >
-                                             <Trash2 className="w-3.5 h-3.5" />
-                                          </button>
+                                          <div className="flex items-center gap-1 shrink-0">
+                                             <button
+                                                onClick={async (e) => {
+                                                   e.stopPropagation();
+                                                   const nextHl: Record<string, boolean> = { ...(onlineLabelHighlights || {}) };
+                                                   if (nextHl[lbl]) delete nextHl[lbl];
+                                                   else nextHl[lbl] = true;
+                                                   setOnlineLabelHighlights(nextHl);
+                                                   setLabelHighlights(nextHl);
+                                                   latestLabelHighlightsRef.current = nextHl;
+                                                   localStorage.setItem('grid_notepad_label_highlights', JSON.stringify(nextHl));
+                                                   await syncOnlineManualSnapshot({ labelHighlights: nextHl }, [], false);
+                                                }}
+                                                className={`p-1.5 rounded-lg border transition-colors ${isUnderlinedOnline ? 'bg-amber-500/20 border-amber-500 text-amber-500' : 'border-zinc-500/20 text-zinc-400 hover:text-amber-500 hover:border-amber-500/40'}`}
+                                                title={isUnderlinedOnline ? t('Hiq Nënvizimin', 'Remove Underline') : t('Nënvizo Etiketën', 'Underline Label')}
+                                             >
+                                                <Underline className="w-3.5 h-3.5" />
+                                             </button>
+                                             <button
+                                                onClick={async (e) => {
+                                                   e.stopPropagation();
+                                                   const matchingDocIds = docsList.filter(d => (d.tags || []).includes(lbl)).map(d => d.id);
+                                                   const nextTrash = appendItemsToTrashState([buildTrashFromLabel(lbl, matchingDocIds)]);
+                                                   const nextLabels = allOnlineLabels.filter(item => item !== lbl);
+                                                   const nextHl: Record<string, boolean> = { ...(onlineLabelHighlights || {}) };
+                                                   delete nextHl[lbl];
+                                                   const nextDocs = docsList.map(d =>
+                                                      (d.tags || []).includes(lbl)
+                                                         ? { ...d, tags: (d.tags || []).filter(tItem => tItem !== lbl), updatedAt: new Date().toISOString() }
+                                                         : d
+                                                   );
+                                                   setOnlineCustomLabels(nextLabels);
+                                                   setOnlineLabelHighlights(nextHl);
+                                                   if (!isGist) setCloudDocs(nextDocs);
+                                                   await syncOnlineManualSnapshot({ docs: nextDocs, customLabels: nextLabels, labelHighlights: nextHl, trashItems: nextTrash }, [], false);
+                                                }}
+                                                className="p-1.5 rounded-lg bg-red-500/15 hover:bg-red-600 text-red-500 hover:text-white border border-red-500/30 transition-colors shrink-0"
+                                                title={t('Fshi etiketën online', 'Delete online label')}
+                                             >
+                                                <Trash2 className="w-3.5 h-3.5" />
+                                             </button>
+                                          </div>
                                        </div>
                                     );
                                  })}
@@ -16010,8 +16308,8 @@ const exportChatResponseToPdf = async () => {
                          isDark={isDark}
                          t={t}
                          onTagCreated={(newTag) => {
-                            if (!customLabels.includes(newTag)) {
-                               saveCustomLabels([...customLabels, newTag], undefined, false);
+                            if (!latestCustomLabelsRef.current.includes(newTag)) {
+                               saveCustomLabels([...latestCustomLabelsRef.current, newTag], undefined, true);
                             }
                          }}
                          onChange={(nextTags) => {
@@ -20785,7 +21083,7 @@ const exportChatResponseToPdf = async () => {
                      <div className="min-w-0">
                         <h3 className="text-sm sm:text-base font-extrabold truncate flex items-center gap-2">
                            {t('Rreth NoteBook3 & Privatësia', 'About NoteBook3 & Privacy')}
-                           <span className="px-2 py-0.5 rounded-full text-[10px] font-mono font-black bg-emerald-500/15 text-emerald-500 border border-emerald-500/30">v1.5.6</span>
+                           <span className="px-2 py-0.5 rounded-full text-[10px] font-mono font-black bg-emerald-500/15 text-emerald-500 border border-emerald-500/30">v1.5.7</span>
                         </h3>
                         <p className={`text-[11px] truncate ${isDark ? 'text-zinc-400' : 'text-zinc-500'}`}>
                            com.notebook3.app · {t('Gati për Google Play & GitHub APK', 'Google Play & GitHub APK Ready')}
@@ -20871,7 +21169,7 @@ const exportChatResponseToPdf = async () => {
                         <div className="grid grid-cols-2 gap-2.5">
                            <div className={`p-3 rounded-xl border ${isDark ? 'bg-zinc-950/60 border-zinc-800' : 'bg-white border-zinc-200'}`}>
                               <div className="text-[10px] font-bold uppercase text-zinc-500">{t('Versioni', 'Version')}</div>
-                              <div className="text-sm font-black mt-0.5">1.5.6</div>
+                              <div className="text-sm font-black mt-0.5">1.5.7</div>
                            </div>
                            <div className={`p-3 rounded-xl border ${isDark ? 'bg-zinc-950/60 border-zinc-800' : 'bg-white border-zinc-200'}`}>
                               <div className="text-[10px] font-bold uppercase text-zinc-500">{t('ID e Paketës', 'Package ID')}</div>
@@ -20907,9 +21205,9 @@ const exportChatResponseToPdf = async () => {
                            type="button"
                            onClick={() => {
                               const policyText = t(
-                                 'NoteBook3 (com.notebook3.app) v1.5.6 — Publikues: Genti83 (në bashkëpunim me Gemini Studio). Politikë Privatësie: Offline-First, zero reklama/gjurmues, zero READ_CALENDAR ose MANAGE_EXTERNAL_STORAGE. Sinkronizimi Firebase/GitHub Gist dhe funksionet AI përdoren vetëm me kërkesë të përdoruesit, me të drejtë të plotë për fshirje të dhënash (Settings -> App Reset).',
-                                 'NoteBook3 (com.notebook3.app) v1.5.6 — Publisher: Genti83 (in collaboration with Gemini Studio). Privacy Policy: Offline-First, zero ads/trackers, no READ_CALENDAR or MANAGE_EXTERNAL_STORAGE. Optional cloud sync and AI features require explicit user action, with full user data deletion via Settings -> App Reset.',
-                                 'NoteBook3 (com.notebook3.app) v1.5.6 — Εκδότης: Genti83 (σε συνεργασία με Gemini Studio). Πολιτική Απορρήτου: Offline-First, μηδέν διαφημίσεις/ιχνηλάτες, χωρίς READ_CALENDAR ή MANAGE_EXTERNAL_STORAGE. Ο συγχρονισμός Firebase/GitHub Gist και οι λειτουργίες AI ενεργοποιούνται μόνο από τον χρήστη, με πλήρη διαγραφή δεδομένων (Ρυθμίσεις -> Επαναφορά).'
+                                 'NoteBook3 (com.notebook3.app) v1.5.7 — Publikues: Genti83 (në bashkëpunim me Gemini Studio). Politikë Privatësie: Offline-First, zero reklama/gjurmues, zero READ_CALENDAR ose MANAGE_EXTERNAL_STORAGE. Sinkronizimi Firebase/GitHub Gist dhe funksionet AI përdoren vetëm me kërkesë të përdoruesit, me të drejtë të plotë për fshirje të dhënash (Settings -> App Reset).',
+                                 'NoteBook3 (com.notebook3.app) v1.5.7 — Publisher: Genti83 (in collaboration with Gemini Studio). Privacy Policy: Offline-First, zero ads/trackers, no READ_CALENDAR or MANAGE_EXTERNAL_STORAGE. Optional cloud sync and AI features require explicit user action, with full user data deletion via Settings -> App Reset.',
+                                 'NoteBook3 (com.notebook3.app) v1.5.7 — Εκδότης: Genti83 (σε συνεργασία με Gemini Studio). Πολιτική Απορρήτου: Offline-First, μηδέν διαφημίσεις/ιχνηλάτες, χωρίς READ_CALENDAR ή MANAGE_EXTERNAL_STORAGE. Ο συγχρονισμός Firebase/GitHub Gist και οι λειτουργίες AI ενεργοποιούνται μόνο από τον χρήστη, με πλήρη διαγραφή δεδομένων (Ρυθμίσεις -> Επαναφορά).'
                               );
                               navigator.clipboard.writeText(policyText);
                               showToast(t('✓ Politika e Privatësisë u kopjua!', '✓ Privacy Policy copied!'));
@@ -21502,7 +21800,7 @@ const exportChatResponseToPdf = async () => {
                            <span className="flex items-center gap-3">
                               <ShieldCheck className="w-4 h-4 shrink-0" /> {t('Rreth App, Privatësia & Lejet', 'About App, Privacy & Permissions')}
                            </span>
-                           <span className="text-[10px] font-mono opacity-80">v1.5.6</span>
+                           <span className="text-[10px] font-mono opacity-80">v1.5.7</span>
                        </button>
                        <button
                           onClick={() => {
@@ -21689,16 +21987,16 @@ const exportChatResponseToPdf = async () => {
                                    getDocCardStyle(doc, isDark)
                                 }`}
                              >
-                                <div className="flex flex-col flex-1 shadow-none min-w-0 pr-2 gap-0.5">
+                                <div className="flex flex-col flex-1 shadow-none min-w-0 pr-1.5 gap-0.5">
                                    <div className="flex items-center gap-1.5 min-w-0">
                                       {doc.pinned && <Pin className="w-3 h-3 text-amber-500 shrink-0 fill-amber-500" />}
                                       {doc.isReadOnly && <ShieldCheck className="w-3 h-3 text-amber-500 shrink-0" title={t("Vetëm Lexim", "Read-Only")} />}
                                       <h3 className={`font-bold text-sm truncate ${textColor}`}>{doc.title}</h3>
                                       {renderDocLockIcon(doc)}
                                    </div>
-                                  <div className={`flex flex-row flex-wrap items-center gap-x-2 gap-y-0.5 text-[10px] text-zinc-500`}>
-                                     <span className="flex items-center gap-0.5 text-emerald-600 dark:text-emerald-400"><Calendar className="w-2.5 h-2.5 shrink-0" /> {renderSplitDate(doc.createdAt)}</span>
-                                     <span className="flex items-center gap-0.5 text-zinc-400 dark:text-zinc-500 tabular-nums"><Save className="w-2.5 h-2.5 shrink-0 text-zinc-500" /> <span className="text-sky-600 dark:text-sky-400 font-semibold">{safeFormatDate(doc.updatedAt, 'HH:mm')}</span></span>
+                                  <div className={`flex flex-row flex-nowrap items-center gap-x-1.5 min-w-0 whitespace-nowrap overflow-hidden text-[10px] text-zinc-500 tabular-nums`}>
+                                     <span className="flex items-center gap-0.5 text-emerald-600 dark:text-emerald-400 shrink-0"><Calendar className="w-2.5 h-2.5 shrink-0" /> {renderSplitDate(doc.createdAt)}</span>
+                                     <span className="flex items-center gap-0.5 text-zinc-400 dark:text-zinc-500 shrink-0"><Save className="w-2.5 h-2.5 shrink-0 text-zinc-500" /> <span className="text-sky-600 dark:text-sky-400 font-semibold">{safeFormatDate(doc.updatedAt, 'HH:mm')}</span></span>
                                   </div>
                                   {(doc.tags && doc.tags.length > 0) && (
                                     <div className="flex flex-wrap gap-1 mt-0.5">
@@ -21724,7 +22022,7 @@ const exportChatResponseToPdf = async () => {
                                  {/* Pin Button */}
                                  <button
                                     onClick={(e) => togglePinDocument(e, doc)}
-                                    className={`p-1.5 rounded-lg transition-colors ${doc.pinned ? 'text-amber-500 bg-amber-500/10' : 'text-zinc-400 hover:text-amber-500'} ${isDark ? "hover:bg-zinc-800" : "hover:bg-zinc-100"}`}
+                                    className={`p-1 sm:p-1.5 rounded-lg transition-colors ${doc.pinned ? 'text-amber-500 bg-amber-500/10' : 'text-zinc-400 hover:text-amber-500'} ${isDark ? "hover:bg-zinc-800" : "hover:bg-zinc-100"}`}
                                     title={doc.pinned ? t("Hiq Fiksimin", "Unpin") : t("Fikso në Krye", "Pin to Top")}
                                  >
                                     <Pin className="w-3.5 h-3.5" />
@@ -21732,7 +22030,7 @@ const exportChatResponseToPdf = async () => {
                                  {/* Duplicate Button */}
                                  <button
                                     onClick={(e) => handleDuplicateDocument(e, doc)}
-                                    className={`p-1.5 rounded-lg text-zinc-400 hover:text-emerald-500 transition-colors ${isDark ? "hover:bg-zinc-800" : "hover:bg-zinc-100"}`}
+                                    className={`p-1 sm:p-1.5 rounded-lg text-zinc-400 hover:text-emerald-500 transition-colors ${isDark ? "hover:bg-zinc-800" : "hover:bg-zinc-100"}`}
                                     title={t("Dupliko Listën", "Duplicate List")}
                                  >
                                     <Copy className="w-3.5 h-3.5" />
@@ -21740,7 +22038,7 @@ const exportChatResponseToPdf = async () => {
                                  {/* Transfer List button */}
                                  <button
                                     onClick={() => setTransferDocId(doc.id)}
-                                    className={`p-1.5 rounded-lg text-zinc-400 hover:text-blue-500 transition-colors ${isDark ? "hover:bg-zinc-800" : "hover:bg-zinc-100"}`}
+                                    className={`p-1 sm:p-1.5 rounded-lg text-zinc-400 hover:text-blue-500 transition-colors ${isDark ? "hover:bg-zinc-800" : "hover:bg-zinc-100"}`}
                                     title={t("Transfero te Etiketa", "Transfer to Label")}
                                  >
                                     <FolderOpen className="w-3.5 h-3.5" />
@@ -21751,7 +22049,7 @@ const exportChatResponseToPdf = async () => {
                                        setDocToDelete(doc.id);
                                     }} 
                                     title={t("Fshi Listën", "Delete List")}
-                                    className="p-1.5 rounded-lg bg-red-600 hover:bg-red-500 text-white active:scale-95 transition-all"
+                                    className="p-1 sm:p-1.5 rounded-lg bg-red-600 hover:bg-red-500 text-white active:scale-95 transition-all"
                                  >
                                     <Trash2 className="w-3.5 h-3.5 pointer-events-none" />
                                  </button>
@@ -22293,6 +22591,7 @@ const exportChatResponseToPdf = async () => {
                                 {/* LABELS LIST */}
                                 {filteredLabels.map((label, idx) => {
                                    const labelDocsCount = documents.filter(doc => doc.tags && doc.tags.includes(label)).length;
+                                   const isUnderlined = Boolean(labelHighlights[label]);
                                    
                                    return (
                                       <div
@@ -22302,6 +22601,8 @@ const exportChatResponseToPdf = async () => {
                                                ? 'p-2.5 sm:p-3.5 flex-col justify-between h-[80px] sm:h-[84px] hover:-translate-y-1'
                                                : 'p-3 items-center justify-between'
                                          } ${
+                                            isUnderlined ? 'border-amber-500/60 ring-1 ring-amber-500/25 ' : ''
+                                         }${
                                             isDark 
                                                ? "bg-zinc-900 border-zinc-800 hover:border-orange-500/50 hover:bg-zinc-800" 
                                                : "bg-white border-zinc-200 hover:border-orange-500/50 hover:bg-orange-50/10"
@@ -22311,32 +22612,56 @@ const exportChatResponseToPdf = async () => {
                                          {catalogLayout === 'grid' ? (
                                             <>
                                                {/* Top Row: Label Name */}
-                                               <LabelScrollingText label={label} textColor={textColor} />
-                                               {/* Bottom Row: Folder Icon and List Count */}
-                                               <div className="flex items-center gap-2">
-                                                  <div className="p-1 bg-orange-500/10 text-orange-500 rounded-lg shrink-0 w-6 h-6 flex items-center justify-center shadow-inner">
-                                                     <FolderOpen className="w-3.5 h-3.5" />
+                                               <LabelScrollingText label={label} textColor={textColor} underlined={isUnderlined} />
+                                               {/* Bottom Row: Folder Icon, List Count, & Quick Underline Toggle */}
+                                               <div className="flex items-center justify-between gap-1.5">
+                                                  <div className="flex items-center gap-1.5 min-w-0">
+                                                     <div className="p-1 bg-orange-500/10 text-orange-500 rounded-lg shrink-0 w-6 h-6 flex items-center justify-center shadow-inner">
+                                                        <FolderOpen className="w-3.5 h-3.5" />
+                                                     </div>
+                                                     <span className="text-[9px] text-zinc-500 font-bold truncate">
+                                                        {labelDocsCount === 1 
+                                                           ? t("1 Listë", "1 List") 
+                                                           : t(`${labelDocsCount} Lista`, `${labelDocsCount} Lists`)}
+                                                     </span>
                                                   </div>
-                                                  <span className="text-[9px] text-zinc-500 font-bold truncate">
-                                                     {labelDocsCount === 1 
-                                                        ? t("1 Listë", "1 List") 
-                                                        : t(`${labelDocsCount} Lista`, `${labelDocsCount} Lists`)}
-                                                  </span>
+                                                  <button
+                                                     type="button"
+                                                     onClick={(e) => {
+                                                        e.stopPropagation();
+                                                        toggleLabelHighlight(label);
+                                                     }}
+                                                     className={`p-1 rounded-lg border shrink-0 transition-colors ${isUnderlined ? 'bg-amber-500/20 border-amber-500 text-amber-500' : 'border-transparent text-zinc-400 hover:text-amber-500'}`}
+                                                     title={isUnderlined ? t("Hiq Nënvizimin", "Remove Underline") : t("Nënvizo Etiketën", "Underline Label")}
+                                                  >
+                                                     <Underline className="w-3 h-3" />
+                                                  </button>
                                                </div>
                                             </>
                                          ) : (
                                             <>
                                                {/* Left side: Icon + Name */}
-                                               <div className="flex items-center gap-3 min-w-0 flex-grow pr-4">
+                                               <div className="flex items-center gap-3 min-w-0 flex-grow pr-3">
                                                   <div className="p-1.5 bg-orange-500/10 text-orange-500 rounded-lg shrink-0 w-8 h-8 flex items-center justify-center shadow-inner">
                                                      <FolderOpen className="w-4 h-4" />
                                                   </div>
                                                   <div className="min-w-0 flex-grow">
-                                                     <LabelScrollingText label={label} textColor={textColor} />
+                                                     <LabelScrollingText label={label} textColor={textColor} underlined={isUnderlined} />
                                                   </div>
                                                </div>
-                                               {/* Right side: Count & arrow */}
+                                               {/* Right side: Underline toggle, Count & arrow */}
                                                <div className="flex items-center gap-2 shrink-0">
+                                                  <button
+                                                     type="button"
+                                                     onClick={(e) => {
+                                                        e.stopPropagation();
+                                                        toggleLabelHighlight(label);
+                                                     }}
+                                                     className={`p-1.5 rounded-lg border transition-colors ${isUnderlined ? 'bg-amber-500/20 border-amber-500 text-amber-500' : 'border-zinc-500/20 text-zinc-400 hover:text-amber-500 hover:border-amber-500/40'}`}
+                                                     title={isUnderlined ? t("Hiq Nënvizimin", "Remove Underline") : t("Nënvizo Etiketën", "Underline Label")}
+                                                  >
+                                                     <Underline className="w-3.5 h-3.5" />
+                                                  </button>
                                                   <span className="text-xs text-zinc-500 font-bold">
                                                      {labelDocsCount === 1 
                                                         ? t("1 Listë", "1 List") 
@@ -22417,34 +22742,49 @@ const exportChatResponseToPdf = async () => {
                                         <ChevronRight className="w-2.5 h-2.5" />
                                         <span className="text-zinc-400">{selectedLabelFolder}</span>
                                      </div>
-                                     <h3 className={`text-base font-extrabold ${textColor}`}>
+                                     <h3 className={`text-base font-extrabold ${textColor} ${labelHighlights[selectedLabelFolder] ? 'underline decoration-2 decoration-amber-500 underline-offset-4' : ''}`}>
                                         {selectedLabelFolder}
                                      </h3>
                                   </div>
                                </div>
                                {/* Label Management Actions inside Folder */}
-                               {currentLabelIdx !== -1 && (
-                                  <div className="flex items-center gap-1.5">
-                                     <button
-                                        onClick={() => handleRenameCustomLabel(currentLabelIdx)}
-                                        className={`flex items-center gap-1.5 px-3 py-1.5 text-xs font-bold border rounded-xl hover:bg-orange-500/5 active:scale-95 transition-all cursor-pointer ${
-                                           isDark ? "border-orange-500/30 text-orange-400 hover:border-orange-500" : "border-orange-500/30 text-orange-600 hover:border-orange-500"
-                                        }`}
-                                        title={t("Ndrysho emrin", "Rename label")}
-                                     >
-                                        <Edit className="w-3.5 h-3.5" />
-                                        <span className="hidden sm:inline">{t("Ndrysho emrin", "Rename")}</span>
-                                     </button>
-                                     <button
-                                        onClick={() => handleDeleteCustomLabel(currentLabelIdx)}
-                                        className="flex items-center gap-1.5 px-3 py-1.5 text-xs font-bold bg-red-600 hover:bg-red-500 text-white rounded-xl active:scale-95 transition-all cursor-pointer shadow-sm"
-                                        title={t("Fshi etiketën", "Delete label")}
-                                     >
-                                        <Trash2 className="w-3.5 h-3.5" />
-                                        <span className="hidden sm:inline">{t("Fshi", "Delete")}</span>
-                                     </button>
-                                  </div>
-                               )}
+                               <div className="flex items-center gap-1.5">
+                                  <button
+                                     type="button"
+                                     onClick={() => toggleLabelHighlight(selectedLabelFolder)}
+                                     className={`flex items-center gap-1.5 px-2.5 py-1.5 text-xs font-bold border rounded-xl active:scale-95 transition-all cursor-pointer ${
+                                        labelHighlights[selectedLabelFolder]
+                                           ? "bg-amber-500/20 border-amber-500 text-amber-500"
+                                           : (isDark ? "border-zinc-700 text-zinc-300 hover:border-amber-500 hover:text-amber-400" : "border-zinc-300 text-zinc-700 hover:border-amber-500 hover:text-amber-600")
+                                     }`}
+                                     title={labelHighlights[selectedLabelFolder] ? t("Hiq Nënvizimin", "Remove Underline") : t("Nënvizo Etiketën", "Underline Label")}
+                                  >
+                                     <Underline className="w-3.5 h-3.5" />
+                                     <span className="hidden sm:inline">{t("Nënvizo", "Underline")}</span>
+                                  </button>
+                                  {currentLabelIdx !== -1 && (
+                                     <>
+                                        <button
+                                           onClick={() => handleRenameCustomLabel(currentLabelIdx)}
+                                           className={`flex items-center gap-1.5 px-3 py-1.5 text-xs font-bold border rounded-xl hover:bg-orange-500/5 active:scale-95 transition-all cursor-pointer ${
+                                              isDark ? "border-orange-500/30 text-orange-400 hover:border-orange-500" : "border-orange-500/30 text-orange-600 hover:border-orange-500"
+                                           }`}
+                                           title={t("Ndrysho emrin", "Rename label")}
+                                        >
+                                           <Edit className="w-3.5 h-3.5" />
+                                           <span className="hidden sm:inline">{t("Ndrysho emrin", "Rename")}</span>
+                                        </button>
+                                        <button
+                                           onClick={() => handleDeleteCustomLabel(currentLabelIdx)}
+                                           className="flex items-center gap-1.5 px-3 py-1.5 text-xs font-bold bg-red-600 hover:bg-red-500 text-white rounded-xl active:scale-95 transition-all cursor-pointer shadow-sm"
+                                           title={t("Fshi etiketën", "Delete label")}
+                                        >
+                                           <Trash2 className="w-3.5 h-3.5" />
+                                           <span className="hidden sm:inline">{t("Fshi", "Delete")}</span>
+                                        </button>
+                                     </>
+                                  )}
+                               </div>
                             </div>
                      
                      <div className={catalogLayout === 'grid' 
@@ -22489,7 +22829,7 @@ const exportChatResponseToPdf = async () => {
                                         getDocCardStyle(doc, isDark)
                                      }`}
                                   >
-                                     <div className="flex flex-col flex-1 shadow-none min-w-0 pr-2 gap-0.5">
+                                     <div className="flex flex-col flex-1 shadow-none min-w-0 pr-1.5 gap-0.5">
                                         <div className="flex items-center gap-1.5 min-w-0">
                                            {doc.pinned && <Pin className="w-3 h-3 text-amber-500 shrink-0 fill-amber-500" />}
                                            <h3 className={`font-bold text-sm truncate ${textColor}`}>{doc.title}</h3>
@@ -22500,9 +22840,9 @@ const exportChatResponseToPdf = async () => {
                                            )}
                                            {renderDocLockIcon(doc)}
                                         </div>
-                                       <div className="flex flex-row flex-wrap items-center gap-x-2 gap-y-0.5 text-[10px] text-zinc-500 tabular-nums">
-                                          <span className="flex items-center gap-0.5 font-semibold text-emerald-600 dark:text-emerald-400"><Calendar className="w-2.5 h-2.5 shrink-0" /> {renderSplitDate(doc.createdAt)}</span>
-                                          <span className="flex items-center gap-0.5 text-zinc-500 dark:text-zinc-400"><Save className="w-2.5 h-2.5 shrink-0" /> <span className="font-semibold text-sky-600 dark:text-sky-400">{safeFormatDate(doc.updatedAt, 'HH:mm')}</span></span>
+                                       <div className="flex flex-row flex-nowrap items-center gap-x-1.5 min-w-0 whitespace-nowrap overflow-hidden text-[10px] text-zinc-500 tabular-nums">
+                                          <span className="flex items-center gap-0.5 font-semibold text-emerald-600 dark:text-emerald-400 shrink-0"><Calendar className="w-2.5 h-2.5 shrink-0" /> {renderSplitDate(doc.createdAt)}</span>
+                                          <span className="flex items-center gap-0.5 text-zinc-500 dark:text-zinc-400 shrink-0"><Save className="w-2.5 h-2.5 shrink-0" /> <span className="font-semibold text-sky-600 dark:text-sky-400">{safeFormatDate(doc.updatedAt, 'HH:mm')}</span></span>
                                        </div>
                                        {(doc.tags && doc.tags.length > 0) && (
                                           <div className="flex flex-wrap gap-1 mt-0.5">
@@ -22518,7 +22858,7 @@ const exportChatResponseToPdf = async () => {
                                        {/* Pin Button */}
                                        <button
                                           onClick={(e) => togglePinDocument(e, doc)}
-                                          className={`p-1.5 rounded-lg transition-colors ${doc.pinned ? 'text-amber-500 bg-amber-500/10' : 'text-zinc-400 hover:text-amber-500'} ${isDark ? "hover:bg-zinc-800" : "hover:bg-zinc-100"}`}
+                                          className={`p-1 sm:p-1.5 rounded-lg transition-colors ${doc.pinned ? 'text-amber-500 bg-amber-500/10' : 'text-zinc-400 hover:text-amber-500'} ${isDark ? "hover:bg-zinc-800" : "hover:bg-zinc-100"}`}
                                           title={doc.pinned ? t("Hiq Fiksimin", "Unpin") : t("Fikso në Krye", "Pin to Top")}
                                        >
                                           <Pin className={`w-3.5 h-3.5 ${doc.pinned ? 'fill-amber-500' : ''}`} />
@@ -22526,7 +22866,7 @@ const exportChatResponseToPdf = async () => {
                                        {/* Duplicate Button */}
                                        <button
                                           onClick={(e) => handleDuplicateDocument(e, doc)}
-                                          className={`p-1.5 rounded-lg text-zinc-400 hover:text-emerald-500 transition-colors ${isDark ? "hover:bg-zinc-800" : "hover:bg-zinc-100"}`}
+                                          className={`p-1 sm:p-1.5 rounded-lg text-zinc-400 hover:text-emerald-500 transition-colors ${isDark ? "hover:bg-zinc-800" : "hover:bg-zinc-100"}`}
                                           title={t("Dupliko Listën", "Duplicate List")}
                                        >
                                           <CopyPlus className="w-3.5 h-3.5" />
@@ -22534,7 +22874,7 @@ const exportChatResponseToPdf = async () => {
                                        {/* Transfer Button */}
                                        <button
                                           onClick={() => setTransferDocId(doc.id)}
-                                          className={`p-1.5 rounded-lg text-zinc-400 hover:text-blue-500 transition-colors ${isDark ? "hover:bg-zinc-800" : "hover:bg-zinc-100"}`}
+                                          className={`p-1 sm:p-1.5 rounded-lg text-zinc-400 hover:text-blue-500 transition-colors ${isDark ? "hover:bg-zinc-800" : "hover:bg-zinc-100"}`}
                                           title={t("Transfero te Etiketa", "Transfer to Label")}
                                        >
                                           <FolderOpen className="w-3.5 h-3.5" />
@@ -22545,7 +22885,7 @@ const exportChatResponseToPdf = async () => {
                                              setDocToDelete(doc.id);
                                           }} 
                                           title={t("Fshi Listën", "Delete List")}
-                                          className="p-1.5 rounded-lg bg-red-600 hover:bg-red-500 text-white active:scale-95 transition-all"
+                                          className="p-1 sm:p-1.5 rounded-lg bg-red-600 hover:bg-red-500 text-white active:scale-95 transition-all"
                                        >
                                           <Trash2 className="w-3.5 h-3.5 pointer-events-none" />
                                        </button>

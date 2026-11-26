@@ -25,6 +25,7 @@
         "blueText": { "type": "string", "description": "The encrypted or plain drafting text of the secrets modal" },
         "secretList": { "type": "array", "description": "Secrets checklist items with colors" },
         "customLabels": { "type": "array", "description": "Custom folder labels" },
+        "labelHighlights": { "type": "object", "description": "Map of underlined/highlighted custom labels" },
         "padNotes": { "type": "array", "description": "Plain-text Pad notes synced across devices" },
         "trashItems": { "type": "array", "description": "Deleted lists, notes, and labels archived in Listat ne Kosh" },
         "notesColor": { "type": "string", "description": "Color for text notes" },

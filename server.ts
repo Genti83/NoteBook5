@@ -167,7 +167,7 @@ async function startServer() {
          return res.status(401).json({ success: false, error: 'Ju lutemi kyçuni me Email/Fjalëkalim ose me Google për të sinkronizuar të dhënat.' });
       }
 
-      const { documents, activeDocId, blueText, secretList, padNotes, pin, gistToken, gistId, customLabels, notesColor, textColorMode, textSize, textWeight, settingsUpdatedAt, trashItems } = req.body;
+      const { documents, activeDocId, blueText, secretList, padNotes, pin, gistToken, gistId, customLabels, labelHighlights, notesColor, textColorMode, textSize, textWeight, settingsUpdatedAt, trashItems } = req.body;
       const key = (verified.email || verified.uid).toLowerCase();
       const storedDocs = offloadHeavyMediaOnServer(key, Array.isArray(documents) ? documents : []);
 
@@ -181,6 +181,7 @@ async function startServer() {
         secretList: secretList !== undefined ? secretList : db[key]?.secretList,
         padNotes: Array.isArray(padNotes) ? padNotes : (db[key]?.padNotes || []),
         customLabels: customLabels !== undefined ? customLabels : db[key]?.customLabels,
+        labelHighlights: labelHighlights !== undefined ? labelHighlights : (db[key]?.labelHighlights || {}),
         trashItems: Array.isArray(trashItems) ? trashItems : (db[key]?.trashItems || []),
         notesColor: notesColor !== undefined ? notesColor : db[key]?.notesColor,
         textColorMode: textColorMode !== undefined ? textColorMode : db[key]?.textColorMode,
@@ -212,6 +213,7 @@ async function startServer() {
         docCount: (documents || []).length,
         documents: lightDocsForHistory,
         customLabels: db[key].customLabels || [],
+        labelHighlights: db[key].labelHighlights || {},
         secretList: db[key].secretList || [],
         padNotes: db[key].padNotes || [],
         trashItems: db[key].trashItems || [],
@@ -247,7 +249,15 @@ async function startServer() {
       const db = readCloudDb();
       const record = db[userId];
       if (!record || !record.documents) {
-        return res.json({ success: true, documents: [], padNotes: record?.padNotes || [], trashItems: record?.trashItems || [], lastUpdated: null });
+        return res.json({
+          success: true,
+          documents: [],
+          customLabels: record?.customLabels || [],
+          labelHighlights: record?.labelHighlights || {},
+          padNotes: record?.padNotes || [],
+          trashItems: record?.trashItems || [],
+          lastUpdated: null
+        });
       }
       return res.json({
         success: true,
@@ -257,6 +267,7 @@ async function startServer() {
         secretList: record.secretList,
         padNotes: Array.isArray(record.padNotes) ? record.padNotes : [],
         customLabels: record.customLabels || [],
+        labelHighlights: record.labelHighlights || {},
         trashItems: Array.isArray(record.trashItems) ? record.trashItems : [],
         notesColor: record.notesColor || 'default',
         textColorMode: record.textColorMode || 'default',

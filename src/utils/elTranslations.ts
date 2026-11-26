@@ -768,7 +768,7 @@ export const EL_TRANSLATIONS: Record<string, string> = {
   'The Personal Calendar syncs with your device clock privately: it never reads private OS calendar events (no READ_CALENDAR) and never connects to Google Calendar.': 'Το Προσωπικό Ημερολόγιο συγχρονίζεται ιδιωτικά με το ρολόι συσκευής: δεν διαβάζει ιδιωτικά συμβάντα (χωρίς READ_CALENDAR) και δεν συνδέεται με το Google Calendar.',
   'Firebase Cloud and GitHub Gist sync only run when explicitly activated by the user with their own credentials.': 'Ο συγχρονισμός Firebase Cloud και GitHub Gist εκτελείται μόνο όταν ενεργοποιηθεί ρητά από τον χρήστη με δικά του στοιχεία.',
   'Data Deletion Rights: Users retain full control to delete individual notes, Trash items, Cloud/Gist snapshots, or wipe all app data cleanly via Settings -> Delete all data (App Reset).': 'Δικαίωμα Διαγραφής Δεδομένων: Οι χρήστες διατηρούν πλήρη έλεγχο διαγραφής μεμονωμένων σημειώσεων, στοιχείων Κάδου, αντιγράφων Cloud/Gist ή πλήρους διαγραφής μέσω Ρυθμίσεις -> Διαγραφή όλων.',
-  'NoteBook3 (com.notebook3.app) v1.5.6 — Publisher: Genti83 (in collaboration with Gemini Studio). Privacy Policy: Offline-First, zero ads/trackers, no READ_CALENDAR or MANAGE_EXTERNAL_STORAGE. Optional cloud sync and AI features require explicit user action, with full user data deletion via Settings -> App Reset.': 'NoteBook3 (com.notebook3.app) v1.5.6 — Εκδότης: Genti83 (σε συνεργασία με Gemini Studio). Πολιτική Απορρήτου: Offline-First, 0 διαφημίσεις/ιχνηλάτες, χωρίς READ_CALENDAR ή MANAGE_EXTERNAL_STORAGE. Προαιρετικός συγχρονισμός cloud & AI μόνο με ενέργεια χρήστη, με πλήρη διαγραφή από Ρυθμίσεις -> App Reset.',
+  'NoteBook3 (com.notebook3.app) v1.5.7 — Publisher: Genti83 (in collaboration with Gemini Studio). Privacy Policy: Offline-First, zero ads/trackers, no READ_CALENDAR or MANAGE_EXTERNAL_STORAGE. Optional cloud sync and AI features require explicit user action, with full user data deletion via Settings -> App Reset.': 'NoteBook3 (com.notebook3.app) v1.5.7 — Εκδότης: Genti83 (σε συνεργασία με Gemini Studio). Πολιτική Απορρήτου: Offline-First, 0 διαφημίσεις/ιχνηλάτες, χωρίς READ_CALENDAR ή MANAGE_EXTERNAL_STORAGE. Προαιρετικός συγχρονισμός cloud & AI μόνο με ενέργεια χρήστη, με πλήρη διαγραφή από Ρυθμίσεις -> App Reset.',
   '✓ Privacy Policy copied!': '✓ Η Πολιτική Απορρήτου αντιγράφηκε!',
   'Copy Privacy Policy Summary': 'Αντιγραφή Σύνοψης Πολιτικής Απορρήτου',
   'Minimal Android permissions declared in compliance with Google Play Policy:': 'Ελάχιστες άδειες Android δηλωμένες σύμφωνα με την πολιτική του Google Play:',
@@ -1013,6 +1013,10 @@ export const EL_TRANSLATIONS: Record<string, string> = {
   '✓ Auto (Set 90)': '✓ Αυτόματο (Ορισμός 90)',
   'Switch to Auto': 'Μετάβαση σε Αυτόματο',
   'New notes will auto-add rows as you type.': 'Οι νέες σημειώσεις θα προσθέτουν γραμμές αυτόματα καθώς γράφετε.',
+  'Remove Underline': 'Αφαίρεση Υπογράμμισης',
+  'Underline Label': 'Υπογράμμιση Ετικέτας',
+  '✓ Label underlined & synced!': '✓ Η ετικέτα υπογραμμίστηκε & συγχρονίστηκε!',
+  '✓ Underline removed & synced!': '✓ Η υπογράμμιση αφαιρέθηκε & συγχρονίστηκε!',
 };
 
 export function translateDynamicToGreek(sq: string, en: string): string {
